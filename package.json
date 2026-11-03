@@ -1,0 +1,28 @@
+{
+  "name": "shooter-game",
+  "version": "0.1.0",
+  "description": "Multiplayer tactical shooter — browser client (Three.js), authoritative Node server",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/server.js",
+    "start:client": "vite --port 5173 --host",
+    "build": "vite build",
+    "test": "node --test test/sim.test.js",
+    "test:sim": "node tools/simtest.js"
+  },
+  "dependencies": {
+    "three": "^0.170.0",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1",
+    "vite": "^6.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}
