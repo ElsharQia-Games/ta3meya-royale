@@ -17,6 +17,13 @@ import { clamp, wrapAngle, TAU } from './math.js';
 
 export const PROTOCOL_VERSION = 6;
 
+// A join is only accepted for the exact wire format this server speaks. The
+// snapshot/input layouts are not forward/backward compatible, so silently
+// accepting an older client would corrupt its cache instead of failing loudly.
+export function isProtocolCompatible(version) {
+  return version === PROTOCOL_VERSION;
+}
+
 export const MSG = {
   INPUT: 0x10,
   PING: 0x11,
@@ -150,6 +157,60 @@ export function wireToSimInput(w, previous = null) {
     clientTime: w.clientTime,
     // Retained for reconnect / debug; never trusted for authority.
     prev: previous,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Server input scheduling
+//
+// These helpers are pure so the queue bound and the stale-input policy can be
+// tested with explicit timestamps instead of wall-clock sleeps.
+// ---------------------------------------------------------------------------
+
+// 16 inputs at 60 Hz is ~267 ms of buffered latency: below a 300 ms one-way
+// path, but small enough that a flooding client cannot add a full second.
+export const MAX_INPUT_BACKLOG = 16;
+// Stop repeating held movement/shoot after this long without a fresh frame.
+export const INPUT_STALE_MS = 250;
+
+export function backlogLimit(configMax) {
+  const n = Number(configMax);
+  return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(Math.floor(n), MAX_INPUT_BACKLOG)) : MAX_INPUT_BACKLOG;
+}
+
+// Append one input, dropping the oldest while the queue is at the bound.
+// Returns how many inputs were dropped so the caller can expose it in /stats.
+export function pushBoundedInput(queue, input, limit = MAX_INPUT_BACKLOG) {
+  limit = backlogLimit(limit);
+  let dropped = 0;
+  while (queue.length >= limit) { queue.shift(); dropped++; }
+  queue.push(input);
+  return dropped;
+}
+
+// True once a client has been silent longer than the grace window. Latency
+// shifts arrival times but does not widen the gap between 60 Hz frames; only a
+// real stall (pause, tab hidden, loss burst) reaches this threshold.
+export function isStaleInput(lastInputAt, now, staleMs = INPUT_STALE_MS) {
+  return lastInputAt > 0 && now - lastInputAt > staleMs;
+}
+
+// Build the simulation input used when no fresh frame is available. A held
+// frame keeps movement/shoot for the grace window but never repeats one-shot
+// actions; a stale frame is fully neutralised except for view angles.
+export function heldSimInput(last, stale) {
+  if (stale) {
+    return {
+      f: false, b: false, l: false, r: false, jump: false, sprint: false,
+      ads: false, shoot: false, reload: false, grenade: false, smoke: false,
+      heal: false, interact: false, slot: -1, cycle: false, stance: null,
+      enterVehicle: undefined, yaw: last.yaw, pitch: last.pitch,
+      seq: 0, viewTime: 0,
+    };
+  }
+  return {
+    ...last, reload: false, grenade: false, smoke: false, heal: false,
+    interact: false, cycle: false, slot: -1, stance: null, enterVehicle: undefined,
   };
 }
 
@@ -421,18 +482,47 @@ export function decodeSnapshot(buf) {
   const keyframe = !!(v.getUint8(1) & 1);
   const seq = v.getUint16(2, true);
   const serverTime = v.getFloat64(4, true);
+  if (!Number.isFinite(serverTime)) return null;
   const baseSeq = v.getUint16(12, true);
   const count = v.getUint8(14);
   const removedCount = v.getUint8(15);
   let off = 16;
   const removed = [];
+  if (off + removedCount * 2 > buf.byteLength) return null;
   for (let i = 0; i < removedCount; i++) { removed.push(v.getUint16(off, true)); off += 2; }
   const players = [];
   for (let i = 0; i < count; i++) {
+    if (off + 4 > buf.byteLength) return null;
+    const mask = v.getUint16(off + 2, true);
+    if (mask & ~F_ALL || off + playerBlockSize(mask) > buf.byteLength) return null;
     const r = readPlayer(v, off); off = r.off;
     players.push(r.player);
   }
+  if (off !== buf.byteLength) return null;
   return { keyframe, seq, serverTime, baseSeq, players, removed, bytes: buf.byteLength };
+}
+
+// 16-bit modular sequence comparison. Snapshot sequence wraps at 65535 -> 0,
+// so plain `<` would reject the first snapshot after the wrap.
+export function seqNewer(a, b) {
+  return a !== b && (((a - b) & 0xffff) < 0x8000);
+}
+
+// Decide whether a snapshot can be applied to the current cache.
+//
+// A delta is only valid when its baseSeq equals the last applied snapshot. If
+// the baseline is missing (a frame was dropped, or a reconnect reset the
+// cache), applying the delta would publish a partial/wrong cache. Return
+// 'missing-base' so the caller can drop it and ask for a keyframe instead.
+export function snapshotAcceptance(snap, lastAppliedSeq) {
+  if (!snap) return 'invalid';
+  const hasBaseline = Number.isInteger(lastAppliedSeq) && lastAppliedSeq >= 0;
+  if (!hasBaseline) return snap.keyframe ? 'keyframe' : 'missing-base';
+  if (snap.seq === lastAppliedSeq) return 'duplicate';
+  if (!seqNewer(snap.seq, lastAppliedSeq)) return 'stale';
+  if (snap.keyframe) return 'keyframe';
+  if (snap.baseSeq !== lastAppliedSeq) return 'missing-base';
+  return 'ok';
 }
 
 // Apply a decoded snapshot to a client-side cache Map.
