@@ -112,6 +112,7 @@ class App {
     this.hud.onSettings = (s) => this.applySettings(s);
     this.hud.onLeave = () => this.leave();
     this.hud.onRestart = () => this.restart();
+    this.hud.onShare = () => this.copyLink();
     this.hud.onUiMode = () => this.syncInputMode();
     this.hud.releasePointer = () => { this.input.clearHeld(); this.input.releaseLock(); };
     this.hud.requestPointer = () => { if (this.active) this.input.requestLock(); };

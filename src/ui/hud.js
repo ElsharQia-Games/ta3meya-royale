@@ -262,10 +262,11 @@ export class HUD {
       input.addEventListener('change', () => this._commitSettings(false));
     }
 
-    $('settings-close').onclick = () => this._cancelSettings();
-    $('settings-save').onclick = () => this._commitSettings(true);
-    $('settings-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
-    $('settings-resume').onclick = () => { this._commitSettings(false); this.toggleSettings(false); };
+    if ($('settings-close')) $('settings-close').onclick = () => this._cancelSettings();
+    if ($('settings-save')) $('settings-save').onclick = () => this._commitSettings(true);
+    if ($('settings-leave')) $('settings-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
+    if ($('settings-resume')) $('settings-resume').onclick = () => { this._commitSettings(false); this.toggleSettings(false); };
+    if ($('settings-share')) $('settings-share').onclick = () => { if (this.onShare) this.onShare(); };
   }
 
   _syncSettingsInputs() {
@@ -340,8 +341,8 @@ export class HUD {
     this.endTitle = $('end-title');
     this.endSub = $('end-sub');
     this.endTable = $('end-table');
-    $('end-again').onclick = () => { if (this.onRestart) this.onRestart(); };
-    $('end-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
+    if ($('end-again')) $('end-again').onclick = () => { if (this.onRestart) this.onRestart(); };
+    if ($('end-leave')) $('end-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
   }
 
   showEnd(winner, scoreboard, mode, score = null) {
