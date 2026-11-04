@@ -94,6 +94,9 @@ const charInfo = await page.evaluate(() => {
   }
   if (!stage) return null;
   const dummy = g.addPlayer('MANNEQUIN', 0, { connected: true, forceSpawn: stage });
+  // Freeze the mannequin: a connected player is stepped with an empty input,
+  // which resets yaw to 0 every tick and turns the pose shot away from camera.
+  dummy.connected = false;
   // Face +z (toward the camera) so the sun behind the camera front-lights it.
   dummy.yaw = Math.PI; dummy.pitch = 0; dummy.stance = 0;
   const p = a.offlinePlayer;
@@ -150,6 +153,46 @@ await page.evaluate(() => {
 await page.waitForTimeout(300);
 await page.screenshot({ path: path.join(OUT, '13-viewmodel.png') });
 
+// ---- viewmodel framing / near-plane / muzzle alignment (hip) ----
+const vmAudit = () => {
+  const a = window.__frontline;
+  const cam = a.renderer.camera;
+  const V3 = cam.position.constructor;
+  const vm = a.viewmodel;
+  vm.root.updateWorldMatrix(true, true);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  let minViewZ = Infinity, maxViewZ = -Infinity;
+  vm.root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    o.geometry.computeBoundingBox();
+    const b = o.geometry.boundingBox;
+    for (let i = 0; i < 8; i++) {
+      const c = new V3(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
+      c.applyMatrix4(o.matrixWorld);
+      const view = c.clone().applyMatrix4(cam.matrixWorldInverse);
+      minViewZ = Math.min(minViewZ, -view.z);
+      maxViewZ = Math.max(maxViewZ, -view.z);
+      c.project(cam);
+      minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
+      minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
+    }
+  });
+  const muzzle = vm.muzzleWorld();
+  const fwd = new V3(0, 0, -1).applyQuaternion(cam.quaternion);
+  const toMuzzle = muzzle.clone().sub(cam.position).normalize();
+  return {
+    ndc: [minX, maxX, minY, maxY].map((v) => +v.toFixed(2)),
+    inFrame: minX > -1 && maxX < 1 && minY > -1 && maxY < 1,
+    nearZ: +minViewZ.toFixed(3), farZ: +maxViewZ.toFixed(3), near: +cam.near.toFixed(3),
+    muzzleDot: +toMuzzle.dot(fwd).toFixed(3),
+    muzzleOffset: +(muzzle.clone().sub(cam.position).length()).toFixed(2),
+    ads: +vm.ads.toFixed(2), kick: +vm.kick.toFixed(3), kickYaw: +vm.kickYaw.toFixed(3),
+    visible: vm.root.visible,
+  };
+};
+const hip = await page.evaluate(vmAudit);
+console.log('viewmodel-hip', JSON.stringify(hip));
+
 // ---- ADS ----
 const fovHip = await page.evaluate(() => +window.__frontline.renderer.camera.fov.toFixed(1));
 await page.evaluate(() => { window.__frontline.input.mouse.right = true; });
@@ -159,6 +202,18 @@ const adsInfo = await page.evaluate(() => {
   const a = window.__frontline;
   return { fov: +a.renderer.camera.fov.toFixed(1), adsF: +(a.adsF ?? 0).toFixed(2), vmVisible: a.viewmodel.root.visible };
 });
+const adsVm = await page.evaluate(vmAudit);
+console.log('viewmodel-ads', JSON.stringify(adsVm));
+// Recoil must return to zero: kick once, then sample after the damp settles.
+const recoil = await page.evaluate(async () => {
+  const a = window.__frontline;
+  const vm = a.viewmodel;
+  vm.fire(1);
+  const peak = { kick: +vm.kick.toFixed(3), yaw: +vm.kickYaw.toFixed(3) };
+  await new Promise((r) => setTimeout(r, 800));
+  return { peak, settled: { kick: +vm.kick.toFixed(4), yaw: +vm.kickYaw.toFixed(4) } };
+});
+console.log('viewmodel-recoil', JSON.stringify(recoil));
 await page.evaluate(() => { window.__frontline.input.mouse.right = false; });
 
 const info = await page.evaluate(() => {
@@ -174,6 +229,77 @@ const info = await page.evaluate(() => {
 });
 console.log('ads', JSON.stringify({ fovHip, ...adsInfo }));
 console.log('render', JSON.stringify(info));
+
+// ---- character pose / nameplate / facing audit (no extra screenshots) ----
+// The mannequin is frozen (connected=false) so the sim cannot reset its yaw.
+const poses = [
+  [3, 0, true, '3m-stand'], [3, 1, true, '3m-crouch'], [3, 2, true, '3m-prone'],
+  [15, 0, true, '15m-stand'], [15, 1, true, '15m-crouch'], [15, 2, true, '15m-prone'],
+  [40, 0, true, '40m-stand'], [40, 1, true, '40m-crouch'], [40, 2, true, '40m-prone'],
+  [5, 0, false, '5m-dead'],
+];
+const poseInfo = await page.evaluate((poses) => {
+  const a = window.__frontline;
+  const p = a.offlinePlayer;
+  const w = a.world;
+  const dummy = [...a.offlineGame.players.values()].find((x) => x.name === 'MANNEQUIN');
+  return { px: p.pos[0], pz: p.pos[2], py: p.pos[1], dummyId: dummy?.id, poses };
+}, poses);
+for (const [d, stance, alive, label] of poses) {
+  await page.evaluate(({ px, pz, d, stance, alive }) => {
+    const a = window.__frontline;
+    const dummy = [...a.offlineGame.players.values()].find((x) => x.name === 'MANNEQUIN');
+    const z = pz - d;
+    dummy.pos = [px, a.world.terrainHeight(px, z) + 0.1, z];
+    dummy.vel = [0, 0, 0];
+    dummy.stance = stance;
+    dummy.alive = alive;
+    dummy.yaw = Math.PI;           // face the camera (+z)
+    dummy.pitch = 0;
+  }, { px: poseInfo.px, pz: poseInfo.pz, d, stance, alive });
+  await page.waitForTimeout(alive ? 2200 : 6000);
+  const row = await page.evaluate((label) => {
+    const a = window.__frontline;
+    const cam = a.renderer.camera;
+    const V3 = cam.position.constructor;
+    const w = a.world;
+    const v = [...a.characters.values()].find((c) => c.name === 'MANNEQUIN');
+    if (!v) return { label, missing: true };
+    const root = v.model.root;
+    root.updateWorldMatrix(true, true);
+    let minY = Infinity, maxY = -Infinity;
+    root.traverse((o) => {
+      if (!o.isMesh || !o.geometry) return;
+      o.geometry.computeBoundingBox();
+      const b = o.geometry.boundingBox;
+      for (let i = 0; i < 8; i++) {
+        const c = new V3(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
+        c.applyMatrix4(o.matrixWorld);
+        minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
+      }
+    });
+    const ground = w.terrainHeight(v.pos[0], v.pos[2]);
+    const plate = v.plate.sprite;
+    const platePx = (plate.scale.y / Math.max(0.1, cam.position.distanceTo(plate.position)))
+      * (900 / 2) / Math.tan(cam.fov * Math.PI / 360);
+    const textPx = platePx * ((v.plate.fontSize || 26) / v.plate.canvas.height);
+    const gunTip = new V3(0, 0, -0.62);
+    v.model.gun.localToWorld(gunTip);
+    const fz = gunTip.z - v.pos[2];
+    return {
+      label, stance: v.stance, alive: v.alive,
+      posY: +v.pos[1].toFixed(2), rootY: +root.position.y.toFixed(2), hipsY: +v.model.hips.position.y.toFixed(2),
+      footPen: +(ground - minY).toFixed(2), height: +(maxY - minY).toFixed(2),
+      platePx: +platePx.toFixed(1), textPx: +textPx.toFixed(1),
+      plateVisible: plate.visible,
+      rootRotY: +root.rotation.y.toFixed(2), rootRotX: +root.rotation.x.toFixed(2),
+      gunFaces: fz > 0.2 ? '+z' : fz < -0.2 ? '-z' : 'flat',
+      teamHex: '#' + v.model.mats.teamMat.color.getHexString(),
+      teamEmissive: +v.model.mats.teamMat.emissive.r.toFixed(2),
+    };
+  }, label);
+  console.log('pose', JSON.stringify(row));
+}
 console.log('errors:', errors.length ? errors.slice(0, 8) : 'none');
 
 await browser.close();
