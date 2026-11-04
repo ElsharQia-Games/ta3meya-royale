@@ -5,7 +5,7 @@ import { CFG } from '../../shared/config.js';
 import { clamp, damp } from '../../shared/math.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { createWeaponModel, poseWeaponMechanics } from './weapon-model.js';
-import { solveTwoBone } from './animation.js';
+import { solveTwoBone, boltMotion } from './animation.js';
 import { texture } from './textures.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -34,8 +34,8 @@ export class ViewModel {
     this.ads = 0;
     this.lastLook = [0, 0];
     this._mats = {
-      sleeve: new THREE.MeshStandardMaterial({ color: 0x768266, map: texture('fabric'), roughness: .95 }),
-      glove: new THREE.MeshStandardMaterial({ color: 0x414c3c, roughness: .87 }),
+      sleeve: new THREE.MeshStandardMaterial({ color: 0x93a08a, map: texture('fabric'), bumpMap: texture('webbing'), bumpScale: .003, roughness: .95 }),
+      glove: new THREE.MeshStandardMaterial({ color: 0x58614e, map: texture('webbing'), roughness: .91 }),
       trim: new THREE.MeshStandardMaterial({ color: 0x222f29, roughness: .65 }),
     };
     this.arms = [this.makeArm(-1), this.makeArm(1)];
@@ -47,6 +47,7 @@ export class ViewModel {
     if (this.weapon === key) return;
     this.model?.dispose();
     this.weapon = key;
+    this.shotT = Infinity; this.kick = 0; this.kickYaw = 0;
     this.model = createWeaponModel(key, true);
     this.gun = this.model.root;
     this.root.add(this.gun);
@@ -69,6 +70,10 @@ export class ViewModel {
     }
     const strap = new THREE.Mesh(new RoundedBoxGeometry(.076, .015, .08, 1, .004), this._mats.trim);
     strap.position.set(0, -.025, .015); hand.add(strap);
+    const thumb = new THREE.Mesh(new RoundedBoxGeometry(.024, .041, .043, 1, .009), this._mats.glove);
+    thumb.position.set(-side * .037, .011, -.022); thumb.rotation.z = side * -.35; hand.add(thumb);
+    const knuckle = new THREE.Mesh(new RoundedBoxGeometry(.06, .014, .026, 1, .006), this._mats.trim);
+    knuckle.position.set(0, .036, -.018); hand.add(knuckle);
     this.armsRoot.add(upper, lower, elbow, hand);
     return { side, upper, lower, elbow, hand };
   }
@@ -101,7 +106,8 @@ export class ViewModel {
     const { speed, grounded, ads, lookDX, lookDY, reloadT, switchT, moving } = ctx;
     if (ctx.weapon && ctx.weapon !== this.weapon) this.build(ctx.weapon);
     this.shotT += dt;
-    const targetAds = ads && reloadT <= 0 && !ctx.healT ? 1 : 0;
+    const bolt = this.weapon === 'sniper' ? boltMotion(this.shotT).hand : 0;
+    const targetAds = ads && reloadT <= 0 && !ctx.healT ? 1 - bolt * .85 : 0;
     this.ads = damp(this.ads, targetAds, 16, dt);
     this.kick = damp(this.kick, 0, 12, dt);
     this.kickYaw = damp(this.kickYaw, 0, 12, dt);
@@ -110,7 +116,7 @@ export class ViewModel {
     this.bob += dt * (4 + speed * 1.5);
     const bobAmt = grounded ? clamp(speed / CFG.PLAYER.SPRINT, 0, 1) : 0.2;
     const bx = Math.sin(this.bob) * 0.012 * bobAmt;
-    const by = Math.abs(Math.cos(this.bob)) * 0.011 * bobAmt;
+    const by = Math.abs(Math.cos(this.bob)) * .011 * bobAmt + Math.sin(this.bob * .36) * .0025;
     // sway follows the look velocity, lagging slightly
     this.swayX = damp(this.swayX, clamp(-lookDX * 0.0012, -0.03, 0.03), 8, dt);
     this.swayY = damp(this.swayY, clamp(-lookDY * 0.0012, -0.03, 0.03), 8, dt);
@@ -139,14 +145,27 @@ export class ViewModel {
       this.root.position.y += motion.lift * .23;
       this.root.position.x -= motion.lift * .04;
       this.root.position.z -= motion.lift * .08;
-      if (this.weapon === 'rpg') { this.root.position.z += motion.lift * .08; this.root.position.y -= motion.lift * .07; }
+      if (this.weapon === 'rpg') {
+        this.root.position.z += motion.lift * .31; this.root.position.y -= motion.lift * .13;
+        rx += motion.lift * .22; ry += motion.lift * .09; rz -= motion.lift * .16;
+      }
     }
+    this.run = damp(this.run || 0, speed > CFG.PLAYER.WALK * 1.2 && !ads && !motion.active ? 1 : 0, 9, dt);
+    this.root.position.y -= this.run * .105;
+    this.root.position.x += this.run * .035;
+    rx += this.run * .19; ry += this.run * .13; rz -= this.run * .19;
+    if (bolt) { rx += bolt * .045; rz -= bolt * .055; }
     if (switchT > 0) {
       const s = clamp(switchT / (CFG.WEAPONS[this.weapon]?.switchTime || .5), 0, 1);
       this.root.position.y -= s * 0.28;
       rx += s * 0.5;
     }
     if (ctx.healT > 0) { this.root.position.y -= .28; rx += .4; }
+    if (Number.isFinite(ctx.deathAge)) {
+      const t = clamp(ctx.deathAge / .6, 0, 1);
+      this.root.position.y -= t * t * .65; this.root.position.x += t * .17;
+      rx += t * .6; rz -= t * .8;
+    }
     this.root.rotation.set(rx, ry, rz);
     this.root.updateMatrix();
     this.poseArm(this.arms[0], support.applyMatrix4(this.root.matrix));

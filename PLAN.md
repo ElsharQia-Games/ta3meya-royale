@@ -4,7 +4,7 @@
 **Reference bar:** PUBG (scale, ballistics, BR pacing), Battlefield (combined arms, destruction, audio), The Finals (movement feel, destruction spectacle, UI polish).
 
 ## Architecture (current)
-- **Client:** Three.js r170 + WebGL2. Original procedural equipment/world, CC0 terrain PBR maps, local OFL fonts, CSM, generated IBL, post-processing and WebAudio synthesis (see ASSETS.md).
+- **Client:** Three.js r170 + WebGL2. Original equipment/world, CC0 nature and PBR maps, local OFL fonts, CSM, generated IBL, post-processing and sampled/synthesized WebAudio (see ASSETS.md).
 - **Shared simulation:** plain ES modules imported by both client and server, fixed 60 Hz, custom kinematic capsule controller over heightfield + AABB world. Identical-input replay is tested in Node; cross-browser bitwise determinism is not established. The Rapier decision and corrected determinism evidence are in DECISIONS.md.
 - **Server:** Node.js 20+, `ws`, 60 Hz simulation, 30 Hz snapshots. Authoritative movement, weapons, loot, zone, vehicles, destruction, modes. Lag-compensated hit resolution.
 - **Transport:** WebSocket over TCP (universal, tunnel-friendly, ordered/reliable). 60 Hz small binary inputs up, 30 Hz quantised/delta binary snapshots down. Evaluated WebTransport/WebRTC in DECISIONS.md.
@@ -64,13 +64,18 @@ their provenance and the concrete visual observations.
 
 ## Blackshore / combined-arms presentation pass
 
+**Current owner steering:** defer automated tests and focus on design, usable
+reused assets, sniper/RPG feel, sound and death/transition animation. Production
+builds and posed visual previews support this art pass; full acceptance runs
+remain pending rather than being implied by those previews.
+
 User steering: combine grounded tactical pacing with stronger combined-arms
 spectacle and graphic/motion polish; improve sound, sniper/RPG and death flows.
 Continue the existing four worktrees if their provider becomes available. Their
 last attempts hit quota; the controller owns this pass locally.
 
-1. Preserve the current lifecycle corrections. Finish the interrupted multiplayer
-   check using bounded, software-renderer-appropriate navigation deadlines.
+1. Preserve the current lifecycle corrections and private multiplayer fixtures.
+   Resume interrupted network checks only after the owner's test pause is lifted.
 2. Add authoritative combat kits (Assault, Recon, Breacher, Heavy) with a lobby
    selector and respawn persistence. BR keeps its looted arsenal. Add one-shot
    reloadable RPG: swept live projectile, impacts/blast/cover/vehicle damage,
@@ -84,6 +89,7 @@ last attempts hit quota; the controller owns this pass locally.
    death-to-spectate/respawn transitions. Tie animation/audio to actual state.
 5. Refine industrial-coastal world dressing, sightlines and action feedback;
    use spatially bounded render batches so distant content is actually culled.
-6. Validate each new kit/weapon/death path in Node and browser, inspect screenshots
-   and recorded transitions, then run combined unit/build/multiplayer/stress/
-   load/impairment checks. Hardware GPU/VPS/WAN gates still require that environment.
+6. Build and inspect focused art captures now. Record current sniper/RPG/death
+   motion and review the audio mix next. Node/browser acceptance, multiplayer,
+   stress/load/impairment checks are deferred; hardware GPU/VPS/WAN gates still
+   require that environment.

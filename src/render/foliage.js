@@ -31,9 +31,12 @@ function tuftGeometry() {
   for (let i = 0; i < 9; i++) {
     const angle = i * 2.4;
     const x = Math.cos(angle) * .09, z = Math.sin(angle) * .09;
-    const h = .2 + .075 * Math.sin(i * 5.3);
-    const side = [Math.cos(angle + Math.PI / 2) * .012, Math.sin(angle + Math.PI / 2) * .012];
-    vertices.push(x - side[0], 0, z - side[1], x + side[0], 0, z + side[1], x * 1.7, h, z * 1.7);
+    const h = .19 + .10 * Math.sin(i * 5.3);
+    const side = [Math.cos(angle + Math.PI / 2) * .017, Math.sin(angle + Math.PI / 2) * .017];
+    const left = [x - side[0], 0, z - side[1]], right = [x + side[0], 0, z + side[1]];
+    const midLeft = [x * 1.28 - side[0] * .6, h * .62, z * 1.28 - side[1] * .6];
+    const midRight = [x * 1.28 + side[0] * .6, h * .62, z * 1.28 + side[1] * .6];
+    vertices.push(...left, ...right, ...midRight, ...left, ...midRight, ...midLeft, ...midLeft, ...midRight, x * 1.9, h, z * 1.9);
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -45,8 +48,8 @@ export class GroundCover {
   constructor(renderer, world) {
     this.renderer = renderer;
     this.world = world;
-    this.cell = 1.55;
-    this.radius = 31;
+    this.cell = .83;
+    this.radius = 39;
     this.lastX = Infinity; this.lastZ = Infinity;
     const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .96, side: THREE.DoubleSide });
     renderer.registerMaterial(material);
@@ -75,6 +78,8 @@ export class GroundCover {
       const hash = (Math.imul(gx, 73856093) ^ Math.imul(gz, 19349663) ^ w.seed) >>> 0;
       const f = (hash % 997) / 997;
       const x = (gx + f * .7) * this.cell, z = (gz + ((hash >>> 10) % 991) / 991 * .7) * this.cell;
+      const patch = Math.sin(x * .22 + Math.cos(z * .17)) * Math.cos(z * .19);
+      if (patch < -.25 && f < .65) continue;
       if (Math.abs(x) > 488 || Math.abs(z) > 488 || w.isWater(x, z) || w.nearBuilding(x, z, .9)) continue;
       let road = false;
       for (const s of this.roadSegments) {
@@ -86,12 +91,12 @@ export class GroundCover {
       if (road) continue;
       position.set(x, w.terrainHeight(x, z) - .025, z);
       rotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), f * Math.PI * 2);
-      const size = .55 + f * .7;
+      const size = .75 + f * .85;
       scale.set(size, size * (.75 + f * .5), size);
       matrix.compose(position, rotation, scale);
       this.mesh.setMatrixAt(count, matrix);
       colour.setHex(BLACKSHORE.foliage[hash % BLACKSHORE.foliage.length]);
-      colour.lerp(new THREE.Color(0xb9a574), f * .4);
+      colour.lerp(new THREE.Color(0x9a996b), f * .2).multiplyScalar(.7);
       this.mesh.setColorAt(count++, colour);
     }
     this.mesh.count = count;

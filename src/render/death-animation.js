@@ -60,9 +60,10 @@ export class DeathAnimation {
     }
     for (const [leg, knee, legSide] of [[m.legL, m.kneeL, -1], [m.legR, m.kneeR, 1]]) {
       const bend = prone ? -1.28 : .45 + (legSide === side ? .45 : 0);
+      const restThigh = legSide === side ? .31 : .07, restKnee = legSide === side ? -.46 : -.13;
       rotations(leg, [q(prone ? -1.35 : crouched ? 1.4 : .2), q(bend + .2, 0, legSide * .09),
-        q(bend, legSide * .05, legSide * .16), q(bend * .93, legSide * .04, legSide * .14)]);
-      rotations(knee, [q(prone ? .1 : -.5), q(prone ? -.08 : -1.2), q(prone ? -.13 : -.9), q(prone ? -.11 : -.85)]);
+        q(prone ? bend : restThigh + .08, legSide * .05, legSide * .16), q(prone ? bend : restThigh, legSide * .04, legSide * .14)]);
+      rotations(knee, [q(prone ? .1 : -.5), q(prone ? -.08 : -1.2), q(prone ? -.13 : restKnee - .1), q(prone ? -.11 : restKnee)]);
     }
     this.handStart = m.arms.map(arm => arm.hand.position.clone());
     this.clip = new THREE.AnimationClip(`collapse-${id}`, this.duration, tracks);
@@ -98,7 +99,7 @@ export class DeathAnimation {
       this.model.root.position.y += lift;
     }
     return this.handStart.map((start, i) => start.clone().lerp(
-      new THREE.Vector3(i === 0 ? -.32 : .27, -.02, i === 0 ? -.1 : -.22), ease));
+      new THREE.Vector3(i === 0 ? -.32 : .29, i === 0 ? .06 : .21, i === 0 ? -.12 : .07), ease));
   }
 
   dispose() {

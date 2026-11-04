@@ -205,6 +205,17 @@ kbd { display: inline-block; padding: 4px 6px; border: 1px solid #82958d66; bord
 .elimination-confirmation { position: absolute; top: 60%; left: 50%; transform: translateX(-50%); opacity: 0; text-align: center; padding: 10px 25px; background: linear-gradient(90deg,#15271d00,#13261adc,#15271d00); }
 .elimination-confirmation b { display: block; color: var(--accent); font: 700 23px var(--display); letter-spacing: .13em; }.elimination-confirmation span { display: block; margin-top: 5px; font: 400 10px var(--mono); color: #d4dcc6; }
 .scene-curtain { position: fixed; inset: 0; pointer-events: none; opacity: 0; display: grid; place-items: center; background: #0a1515; color: var(--accent); font: 700 31px var(--display); letter-spacing: .18em; z-index: 100; }
+.scene-curtain { align-content: center; gap: 19px; background: radial-gradient(ellipse at 50% 50%, #1a2c28, #081313 75%); }
+.scene-curtain span { color: #8eaa96; font: 400 10px var(--mono); letter-spacing: .22em; }
+.scene-curtain b { font: 800 clamp(26px, 3.3vw, 48px) var(--display); letter-spacing: .075em; }
+.scene-curtain i { display: block; width: 82px; height: 2px; background: var(--amber); box-shadow: 0 0 22px #e4af6840; }
+.death-card { box-shadow: 0 12px 55px #050b0b55; }
+.death-card.spectating { bottom: 110px; padding: 13px 20px; }
+.death-card.spectating h2, .death-card.spectating .death-detail, .death-card.spectating .death-weapon, .death-card.spectating .death-progress { display: none; }
+.death-card.spectating .death-status { margin-top: 10px; }
+.optic-overlay { position: absolute; inset: 0; pointer-events: none; opacity: 0; z-index: -1;
+  background: radial-gradient(circle at var(--optic-x, 50%) var(--optic-y, 50%), transparent calc(var(--optic-radius, 30vh) * .93), #06100e24 calc(var(--optic-radius, 30vh) * 1.12), #030a09b0 calc(var(--optic-radius, 30vh) * 1.8), #030706de calc(var(--optic-radius, 30vh) * 3)); }
+.optic-label { position: absolute; top: calc(var(--optic-y, 50%) + var(--optic-radius, 30vh) + 54px); left: var(--optic-x, 50%); transform: translateX(-50%); padding: 5px 9px; background: #0b1715b8; color: #b0bdae; font: 400 9px var(--mono); letter-spacing: .15em; }
 .mode-option, .kit-option, .btn { transition: transform .16s, background .18s, border-color .18s; }
 .btn:active { transform: translateY(1px); }
 .modal:not(.hidden) > .panel { animation: panel-enter .22s cubic-bezier(.2,.8,.2,1); }

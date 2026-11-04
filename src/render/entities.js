@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { CFG, STANCE, TEAMS } from '../../shared/config.js';
 import { lerpAngle, clamp, damp } from '../../shared/math.js';
-import { stanceHeight } from '../../shared/physics.js';
+import { stanceHeight, supportHeight } from '../../shared/physics.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { createWeaponModel, poseWeaponMechanics } from './weapon-model.js';
 import { solveTwoBone } from './animation.js';
@@ -11,7 +11,7 @@ import { batchStaticParts } from './geometry.js';
 import { createVehicleModel } from './vehicle-model.js';
 import { smokeObscures } from '../../shared/visibility.js';
 import { DeathAnimation } from './death-animation.js';
-import { torsoGeometry, carrierPlate } from './character-shapes.js';
+import { torsoGeometry, carrierPlate, headGeometry } from './character-shapes.js';
 
 const SKIN = [0xc99a72, 0x9c6b4a, 0x6f4a32, 0xe0b48c, 0x8a5a3c];
 const UNIFORM = [0x737961, 0x80765d, 0x60746c, 0x807763];
@@ -27,13 +27,13 @@ function part(geo, mat, x, y, z) {
 function makeCharacter(color, skin) {
   const root = new THREE.Group();
   root.rotation.order = 'YXZ';
-  const cloth = new THREE.MeshStandardMaterial({ color, map: texture('fabric'), roughness: 0.9 });
-  const vestMat = new THREE.MeshStandardMaterial({ color: 0x657253, map: texture('fabric'), roughness: .92 });
+  const cloth = new THREE.MeshStandardMaterial({ color, map: texture('fabric'), bumpMap: texture('webbing'), bumpScale: .004, roughness: .96 });
+  const vestMat = new THREE.MeshStandardMaterial({ color: 0x74806b, map: texture('webbing'), roughness: .94 });
   const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7 });
   const bootMat = new THREE.MeshStandardMaterial({ color: 0x303a2d, roughness: 0.9 });
   const helmetMat = new THREE.MeshStandardMaterial({ color: 0x657056, roughness: 0.72, metalness: 0.15 });
-  const lensMat = new THREE.MeshStandardMaterial({ color: 0x263f37, roughness: .16, metalness: .7 });
-  const strapMat = new THREE.MeshStandardMaterial({ color: 0x9b9674, roughness: .95 });
+  const lensMat = new THREE.MeshStandardMaterial({ color: 0x4c5b43, roughness: .12, metalness: .8 });
+  const strapMat = new THREE.MeshStandardMaterial({ color: 0x747c66, map: texture('webbing'), roughness: .97 });
   const teamMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, emissiveIntensity: 0.08 });
   const rounded = (w, h, d, mat, x, y, z, radius = .025) => part(new RoundedBoxGeometry(w, h, d, 2, radius), mat, x, y, z);
 
@@ -48,12 +48,12 @@ function makeCharacter(color, skin) {
   torso.add(part(carrierPlate(), vestMat, 0, .075, .137));
   for (const side of [-1, 1]) torso.add(rounded(.037, .19, .23, vestMat, side * .187, .23, 0, .01));
   torso.add(rounded(.33, .19, .26, cloth, 0, -.025, 0, .05));
-  const pack = rounded(.29, .37, .16, vestMat, 0, .28, .225, .055);
+  const pack = rounded(.27, .34, .14, vestMat, 0, .28, .222, .055);
   torso.add(pack);
-  torso.add(rounded(.24, .13, .06, cloth, 0, .16, .35));
+  torso.add(rounded(.22, .11, .045, cloth, 0, .18, .31));
   for (const side of [-1, 1]) {
     torso.add(rounded(.035, .43, .021, strapMat, side * .158, .3, -.17, .004));
-    torso.add(rounded(.034, .31, .02, strapMat, side * .1, .32, .342, .004));
+    torso.add(rounded(.027, .29, .018, strapMat, side * .095, .32, .3, .004));
     torso.add(rounded(.095, .16, .095, vestMat, side * .23, .07, .02, .014));
   }
   for (let i = 0; i < 3; i++) {
@@ -62,6 +62,9 @@ function makeCharacter(color, skin) {
   }
   torso.add(rounded(.36, .047, .29, bootMat, 0, .006, 0, .006));
   torso.add(rounded(.075, .035, .023, strapMat, 0, .006, -.16, .005));
+  for (let row = 0; row < 4; row++) for (let col = 0; col < 4; col++) {
+    torso.add(rounded(.053, .015, .011, strapMat, -.119 + col * .079, .295 + row * .035, -.188, .004));
+  }
   torso.add(rounded(.08, .17, .06, bootMat, -.19, .43, .19, .009));
   torso.add(part(new THREE.CylinderGeometry(.006, .006, .23, 5), bootMat, -.19, .62, .19));
   // team patch on the chest
@@ -73,18 +76,22 @@ function makeCharacter(color, skin) {
   const head = new THREE.Group();
   head.position.y = .69;
   torso.add(head);
-  const face = part(new THREE.SphereGeometry(.143, 14, 10), skinMat, 0, 0, 0);
-  face.scale.set(.91, 1.03, .96); head.add(face);
-  const helmet = part(new THREE.SphereGeometry(.164, 16, 10, 0, Math.PI * 2, 0, Math.PI * .55), helmetMat, 0, .032, 0);
+  head.add(part(headGeometry(), skinMat, 0, 0, 0));
+  const helmet = part(new THREE.SphereGeometry(.139, 24, 16, 0, Math.PI * 2, 0, Math.PI * .57), helmetMat, 0, .037, .005);
+  helmet.scale.set(1, .87, 1.08);
   head.add(helmet);
-  head.add(rounded(.28, .037, .1, helmetMat, 0, .075, -.14, .01));
-  head.add(rounded(.264, .079, .067, bootMat, 0, .005, -.14, .02));
-  head.add(rounded(.224, .046, .014, lensMat, 0, .008, -.178, .01));
-  head.add(rounded(.22, .105, .145, cloth, 0, -.075, -.072, .04));
-  head.add(part(new THREE.CylinderGeometry(.132, .145, .08, 12), strapMat, 0, -.166, 0));
-  head.add(rounded(.045, .025, .09, bootMat, -.17, .044, -.025, .007));
-  head.add(rounded(.045, .025, .09, bootMat, .17, .044, -.025, .007));
-  head.add(rounded(.035, .027, .046, strapMat, 0, .188, -.05, .005));
+  head.add(rounded(.22, .014, .06, helmetMat, 0, .06, -.125, .009));
+  head.add(rounded(.2, .049, .034, bootMat, 0, .008, -.105, .013));
+  for (const side of [-1, 1]) {
+    head.add(rounded(.082, .029, .013, lensMat, side * .05, .012, -.126, .01));
+    head.add(rounded(.029, .076, .076, bootMat, side * .126, -.012, .007, .013));
+    head.add(rounded(.027, .062, .058, helmetMat, side * .14, -.007, .006, .012));
+    head.add(rounded(.012, .11, .019, strapMat, side * .094, -.077, -.006, .005));
+    head.add(rounded(.017, .023, .091, bootMat, side * .135, .061, .005, .006));
+  }
+  head.add(rounded(.163, .103, .092, cloth, 0, -.083, -.048, .034));
+  head.add(part(new THREE.CylinderGeometry(.058, .071, .105, 16), cloth, 0, -.166, .004));
+  head.add(rounded(.026, .036, .014, bootMat, 0, .105, -.124, .004));
 
   const armL = new THREE.Group(), armR = new THREE.Group();
   torso.add(armL, armR);
@@ -107,12 +114,14 @@ function makeCharacter(color, skin) {
   legL.position.set(-0.14, -0.02, 0); legR.position.set(0.14, -0.02, 0);
   hips.add(legL, legR);
   for (const [leg, knee] of [[legL, kneeL], [legR, kneeR]]) {
-    leg.add(part(new THREE.CapsuleGeometry(0.11, 0.22, 3, 8), cloth, 0, -0.2, 0));
+    leg.add(part(new THREE.CapsuleGeometry(.105, .23, 5, 12), cloth, 0, -.2, 0));
     knee.position.set(0, -0.42, 0);
     leg.add(knee);
-    knee.add(part(new THREE.CapsuleGeometry(0.09, 0.3, 3, 8), cloth, 0, -0.2, 0));
+    knee.add(part(new THREE.CapsuleGeometry(.083, .3, 5, 12), cloth, 0, -.2, 0));
     knee.add(rounded(.14, .12, .055, bootMat, 0, -.025, -.1, .025));
-    knee.add(rounded(.16, .13, .28, bootMat, 0, -.41, -.05, .045));
+    knee.add(rounded(.148, .11, .255, bootMat, 0, -.415, -.058, .041));
+    knee.add(rounded(.153, .027, .265, bootMat, 0, -.463, -.058, .012));
+    knee.add(rounded(.11, .048, .12, strapMat, 0, -.374, -.072, .019));
     leg.add(rounded(.05, .15, .13, vestMat, leg === legL ? -.1 : .1, -.17, .01, .013));
   }
 
@@ -206,9 +215,14 @@ export class CharacterView {
     this.visible = true;
     this.deathAnimation = null;
     this.death = null;
+    this.droppedWeapon = null; this.hasWeapon = true;
     this.weaponKey = 'ar'; this.reloadT = 0; this.shotT = Infinity;
     this.inVehicle = 0; this.seat = -1; this.vehicle = null;
     this.hitKick = 0;
+    this.shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
+      map: texture('contactShadow'), transparent: true, opacity: .35, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -1 }));
+    this.shadow.rotation.x = -Math.PI / 2; scene.add(this.shadow);
   }
 
   setTeam(team) {
@@ -226,12 +240,14 @@ export class CharacterView {
     this.stance = p.stance ?? this.stance;
     this.alive = !!p.alive;
     if (p.death) this.death = p.death;
+    this.deathAge = p.deathAge;
     this.name = p.name || this.name;
     if (p.team !== undefined && p.team !== this.team) this.setTeam(p.team);
     this.hp = p.hp;
     this.reloadT = p.reloadT ?? p.reload ?? 0;
     this.ads = !!(p.ads ?? p.adsing);
     this.ammo = p.mag || 0;
+    if ('weapon' in p) this.hasWeapon = !!p.weapon;
     this.inVehicle = p.inVehicle || p.vehicle || 0;
     this.seat = p.seat ?? -1;
     if (p.weapon && p.weapon !== this.weaponKey) {
@@ -274,16 +290,31 @@ export class CharacterView {
     this.plate.update(this.name || '', this.team, this.hp ?? 100, 100, !this.alive);
 
     if (!this.alive) {
-      if (!this.deathAnimation) this.deathAnimation = new DeathAnimation(m, this.world, this.pos,
-        this.death || { yaw: this.yaw, stance: this.stance }, this.id);
-      const hands = this.deathAnimation.update(dt);
+      if (!this.deathAnimation) {
+        if (this.hasWeapon) {
+          m.gun.updateWorldMatrix(true, true);
+          const weapon = createWeaponModel(this.weaponKey, false);
+          const position = m.gun.getWorldPosition(new THREE.Vector3()), rotation = m.gun.getWorldQuaternion(new THREE.Quaternion());
+          this.scene.add(weapon.root); this.renderer?.registerObject(weapon.root);
+          this.droppedWeapon = { weapon, position, rotation };
+        }
+        this.deathAnimation = new DeathAnimation(m, this.world, this.pos,
+          this.death || { yaw: this.yaw, stance: this.stance }, this.id);
+      }
+      const delta = Number.isFinite(this.deathAge) ? Math.max(0, this.deathAge - this.deathAnimation.age) : dt;
+      const hands = this.deathAnimation.update(delta);
       this.deathT = this.deathAnimation.age;
+      this.updateDroppedWeapon();
       this.poseArms(hands);
       m.gun.visible = false;
       this.plate.sprite.visible = false;
+      this.updateShadow();
       return;
     }
-    if (this.deathAnimation) { this.deathAnimation.dispose(); this.deathAnimation = null; this.death = null; }
+    if (this.deathAnimation) {
+      this.deathAnimation.dispose(); this.deathAnimation = null; this.death = null;
+      this.droppedWeapon?.weapon.dispose(); this.droppedWeapon = null;
+    }
     this.deathT = 0;
     r.rotation.x = 0;
     r.rotation.z = 0;
@@ -337,6 +368,7 @@ export class CharacterView {
     const hands = m.arms.map(arm => seated && this.seat === 0 ? new THREE.Vector3(arm.side * .155, .5, -.27)
       : (arm.side < 0 ? support.clone() : trigger.clone()).applyMatrix4(m.gun.matrix));
     this.poseArms(hands);
+    this.updateShadow();
 
     const d3 = cameraPos
       ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2]) : 99;
@@ -365,8 +397,34 @@ export class CharacterView {
     }
   }
 
+  updateShadow() {
+    const position = this.model.root.position;
+    const y = this.world ? supportHeight(this.world, position.x, position.z, this.pos[1], .15, .25) : this.pos[1];
+    const gap = Math.max(0, position.y - y);
+    this.shadow.visible = this.visible && !this.inVehicle && gap < 3;
+    this.shadow.position.set(position.x, y + .018, position.z);
+    this.shadow.rotation.set(-Math.PI / 2, 0, -this.yaw);
+    this.shadow.scale.set(this.alive ? .67 + gap * .3 : 1.65, this.alive ? .6 + gap * .3 : .85, 1);
+    this.shadow.material.opacity = .35 / (1 + gap);
+  }
+
+  updateDroppedWeapon() {
+    const dropped = this.droppedWeapon;
+    if (!dropped) return;
+    const t = clamp((this.deathT - .1) / .65, 0, 1), ease = t * t * (3 - 2 * t);
+    const side = this.id % 2 ? 1 : -1;
+    const x = dropped.position.x + side * .23, z = dropped.position.z + .12;
+    const y = this.world ? supportHeight(this.world, x, z, this.pos[1], .1, .25) : this.pos[1];
+    dropped.weapon.root.position.copy(dropped.position).lerp(new THREE.Vector3(x, y + .075, z), ease);
+    dropped.weapon.root.position.y += Math.sin(t * Math.PI) * .07;
+    dropped.weapon.root.quaternion.copy(dropped.rotation).slerp(
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, this.yaw + .18, Math.PI / 2, 'YXZ')), ease);
+  }
+
   dispose() {
     this.deathAnimation?.dispose();
+    this.droppedWeapon?.weapon.dispose();
+    this.shadow.removeFromParent(); this.shadow.geometry.dispose(); this.shadow.material.dispose();
     this.scene.remove(this.model.root);
     const materials = new Set();
     this.model.root.traverse(o => { o.geometry?.dispose(); if (o.material) materials.add(o.material); });

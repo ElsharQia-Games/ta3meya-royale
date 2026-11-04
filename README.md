@@ -19,6 +19,20 @@ Open **http://localhost:3000**. Select a mode, enter a callsign/room, and deploy
 Friends use the same server URL and room code. **Enter Training** runs the shared
 simulation and bots in the browser. Graphics quality is adjustable in Settings.
 
+For **TDM**, choose a combat kit before deploying:
+
+| Kit | Equipment |
+|---|---|
+| Assault | K4 carbine / P92 |
+| Recon | AX-50 sniper / P92 |
+| Breacher | M12 shotgun / VEX-9 |
+| Heavy | M249 / R7 RPG |
+
+Your kit returns on respawn. In **BR**, everyone starts with a sidearm and finds
+weapons in the field. The R7 fires a travelling rocket; press **R** to load its
+next round: the support hand presents it at the muzzle and slides it into the
+tube. The AX-50 has a magnified mil-marked optic and visible bolt cycle.
+
 The server defaults to localhost. Options: `HOST`, `PORT`, `BOTS`, `MAX_PLAYERS`.
 For LAN hosting: `HOST=0.0.0.0 npm start`.
 
@@ -76,9 +90,10 @@ supplies spare ammunition. Smoke affects bot vision and obscures nameplates.
 - Shared fixed60Hz movement, step/slope/headroom handling, jump buffering/coyote
   time, swimming and fall damage. Repeatability is tested in Node; sharing JS is
   not proof of cross-browser bitwise determinism.
-- Seven weapon classes, gravity/drag/penetration ballistic solving, scheduled
-  travel-time damage, armour, head/torso/leg zones and capped server rewind.
-- Protocol6:32-byte inputs,30Hz delta snapshots, exact snapshot-keyed ACKs,
+- Eight weapon classes. Rifles/pistols use gravity/drag/penetration solving and
+  scheduled travel-time damage; RPG rockets sweep current targets during flight.
+  Armour, head/torso/leg zones and capped server rewind apply to rifle ballistics.
+- Protocol7:32-byte inputs,30Hz delta snapshots, exact snapshot-keyed ACKs,
   missing-baseline recovery, prediction/reconciliation, remote interpolation,
   connection lifecycle guards and bounded input queues.
 - Navigable buildings, deterministic loot placement, destructible cover and
@@ -87,12 +102,21 @@ supplies spare ammunition. Smoke affects bot vision and obscures nameplates.
 - Car/truck hull collisions, four-contact suspension, signed steering/reverse,
   braking, seats, clear exits, flood cutoff and ballistic/blast/impact damage.
   Handling remains a constrained arcade model rather than full rigid-body physics.
-- Original equipment with named sights/muzzles/grips, two-bone arm IK, reload/
-  pump/bolt/feed-cover poses, articulated characters and steering hands.
-- Local CC0 terrain/nature assets, OFL fonts, generated IBL, CSM, sky/fog/water,
-  pooled tracers/particles/decals and procedural stereo spatial audio.
+- Original equipment with named sights/muzzles/grips, two-bone arm IK, front-loaded
+  rockets, bolt/pump/feed-cover poses, brass ejection, sprint carry and steering hands.
+- Articulated death/fall/settle clips, dropped weapon visuals, a falling local
+  camera, attacker/weapon cards and deployment/respawn transitions.
+- Weathered coastal facades, corrugated containers, sandbags, shaped barricades,
+  drums/wrecks, textured roads/verges, layered dust and rocket exhaust.
+- Local CC0 surface/nature assets, OFL fonts, generated IBL, CSM and sky/fog/water.
+- 36 local CC0 audio clips: recorded firearms and Foley, HRTF positioning,
+  occlusion/distance filtering, phase-driven reload/bolt cues and synthesized bass.
 
 ## Validation
+
+**Current work prioritizes design, animation and sound. Automated acceptance
+tests are paused at the owner's request.** The commands below are retained for
+later validation, not reported as passing for the latest art revision.
 
 ```sh
 npm test
@@ -119,11 +143,21 @@ simulation clock; it records both clocks/frame times. Video is silent, with
 audio-engine level measurements stored separately. SwiftShader FPS is not a
 hardware-GPU benchmark.
 
+For posed art review without gameplay assertions:
+
+```sh
+QA_URL=http://127.0.0.1:3000/ QA_OUT=qa/shots/coastal-art npm run qa:art
+```
+
+`ART_FRAMES` optionally selects comma-separated frame names; setup still runs
+for skipped frames. Current focused evidence and remaining motion/audio work
+are recorded in `qa/reports/COMBINED-ARMS.md`.
+
 ## Project map / evidence
 
 - `shared/`: configuration, world, physics, weapons, vehicles, visibility, wire codec.
 - `server/`: authoritative rooms/network loop and bot navigation.
-- `src/`: client/prediction, rendering, UI, input and procedural audio.
+- `src/`: client/prediction, rendering, UI, input and sampled/procedural audio.
 - `public/`: shipped assets and license notices. Asset import is optional Python;
   the game/build does not require it.
 - [PLAN.md](PLAN.md), [PROGRESS.md](PROGRESS.md): scope and current status.

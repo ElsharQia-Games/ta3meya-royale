@@ -6,22 +6,26 @@ import { texture, stencil } from './textures.js';
 import { batchStaticParts } from './geometry.js';
 
 export function createRocketGeometry(detailed = true) {
+  // Forward is -Z: the warhead tip leads, the motor and fins trail behind.
   const root = new THREE.Group(); root.name = 'rocket_round';
   const olive = new THREE.MeshStandardMaterial({ color: 0x717458, map: texture('equipment'), metalness: .28, roughness: .62 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x343d35, metalness: .42, roughness: .54 });
   const brass = new THREE.MeshStandardMaterial({ color: 0xbb9453, metalness: .65, roughness: .45 });
-  const cyl = (top, bottom, length, z, mat) => {
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(top, bottom, length, detailed ? 24 : 10), mat);
-    mesh.rotation.x = -Math.PI / 2; mesh.position.z = z; root.add(mesh); return mesh;
+  // radiusFront/radiusBack run along -Z to +Z.
+  const cyl = (radiusFront, radiusBack, length, z, mat) => {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radiusBack, radiusFront, length, detailed ? 24 : 10), mat);
+    mesh.rotation.x = Math.PI / 2; mesh.position.z = z; root.add(mesh); return mesh;
   };
-  cyl(.048, .026, .19, -.035, olive);
-  cyl(.003, .048, .11, -.185, dark);
-  cyl(.026, .026, .21, .165, dark);
-  cyl(.05, .05, .022, -.112, brass);
+  // Local span: tip at -0.24, nozzle mouth at +0.28 (0.52 m overall).
+  cyl(.004, .036, .12, -.18, dark);       // warhead cone, tip at the front
+  cyl(.036, .034, .16, -.04, olive);      // warhead body
+  cyl(.034, .03, .04, .06, brass);        // motor collar
+  cyl(.03, .03, .14, .15, dark);          // motor tube
+  cyl(.03, .037, .06, .25, dark);         // exhaust nozzle flare
   for (let i = 0; i < 4; i++) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(.042, .003, .09), dark);
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(.03, .003, .07), dark);
     const angle = i * Math.PI / 2;
-    fin.position.set(Math.cos(angle) * .026, Math.sin(angle) * .026, .21); fin.rotation.z = angle; root.add(fin);
+    fin.position.set(Math.cos(angle) * .019, Math.sin(angle) * .019, .22); fin.rotation.z = angle; root.add(fin);
   }
   batchStaticParts(root);
   return { root, materials: [olive, dark, brass] };
@@ -53,16 +57,16 @@ export function createLauncherModel(detailed) {
   box([.035, .105, .047], [0, -.085, -.25], 'rubber');
   box([.012, .073, .078], [.024, -.065, .006], 'steel');
   box([.015, .105, .1], [-.057, .066, -.04]);
-  const sight = new THREE.Object3D(); sight.name = 'optical_center'; sight.position.set(-.063, .142, -.043); root.add(sight);
-  const housing = new THREE.Mesh(new THREE.TorusGeometry(.029, .004, 6, 24), mats.steel);
+  const sight = new THREE.Object3D(); sight.name = 'optical_center'; sight.position.set(-.05, .128, -.01); root.add(sight);
+  const housing = new THREE.Mesh(new THREE.TorusGeometry(.021, .0032, 6, 24), mats.steel);
   housing.position.copy(sight.position); root.add(housing);
-  box([.073, .007, .065], [-.063, .111, -.043]);
-  const reticle = new THREE.Group(); reticle.name = 'reticle'; reticle.position.set(-.063, .142, -.065); root.add(reticle);
+  box([.05, .006, .055], [-.05, .101, -.01]);
+  const reticle = new THREE.Group(); reticle.name = 'reticle'; reticle.position.set(-.05, .128, -.028); root.add(reticle);
   const red = new THREE.MeshBasicMaterial({ color: 0xecb36b, depthTest: false, depthWrite: false, toneMapped: false });
-  const dot = new THREE.Mesh(new THREE.CircleGeometry(.0011, 12), red); reticle.add(dot);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(.0009, 12), red); reticle.add(dot);
   for (let i = 1; i <= 3; i++) {
-    const rung = new THREE.Mesh(new THREE.PlaneGeometry(.008 + i * .004, .00065), red);
-    rung.position.y = -i * .005; reticle.add(rung);
+    const rung = new THREE.Mesh(new THREE.PlaneGeometry(.006 + i * .003, .0005), red);
+    rung.position.y = -i * .004; reticle.add(rung);
   }
   if (detailed) {
     const mark = new THREE.Mesh(new THREE.PlaneGeometry(.27, .102), mats.mark);
@@ -73,16 +77,18 @@ export function createLauncherModel(detailed) {
     }
   }
   const round = createRocketGeometry(detailed);
-  const magazine = round.root; magazine.position.set(0, 0, -.51); root.add(magazine);
+  // The round sits inside the bore with its nose just proud of the muzzle and
+  // its motor end toward the rear of the tube, where the exhaust vents.
+  const magazine = round.root; magazine.position.set(0, 0, -.22); root.add(magazine);
   const anchor = (name, x, y, z) => { const o = new THREE.Object3D(); o.name = name; o.position.set(x, y, z); root.add(o); return o; };
-  const muzzle = anchor('muzzle', 0, 0, -.75);
+  const muzzle = anchor('muzzle', 0, 0, -.46);
   const rightGrip = anchor('right_grip', 0, -.095, .04);
   const leftGrip = anchor('left_grip', -.012, -.063, -.25);
   const backblast = anchor('backblast', 0, 0, .46);
   batchStaticParts(root);
   return { key: 'rpg', root, magazine, magRest: magazine.position.clone(), muzzle, backblast,
     sight, rightGrip, leftGrip, gripRest: leftGrip.position.clone(), reticle, slide: null,
-    profile: { optic: 'launcher', sightY: .142 },
+    profile: { optic: 'launcher', sightY: sight.position.y },
     dispose() {
       const geometries = new Set(); root.traverse(o => { if (o.geometry) geometries.add(o.geometry); });
       geometries.forEach(g => g.dispose());

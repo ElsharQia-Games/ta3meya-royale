@@ -439,11 +439,7 @@ function statePayload(room) {
       phaseT: +game.zone.phaseT.toFixed(1),
     },
     vehicles: game.vehicles.map(packVehicle),
-    projectiles: game.projectiles.map(pr => ({
-      id: pr.id,
-      type: pr.type, x: +pr.pos[0].toFixed(2), y: +pr.pos[1].toFixed(2), z: +pr.pos[2].toFixed(2),
-      fuse: +pr.fuse.toFixed(2), deployed: !!pr.deployed,
-    })),
+    projectiles: game.projectiles.map(packProjectile),
     smokes: game.smokes.map(s => ({ id: s.id, x: +s.x.toFixed(1), y: +s.y.toFixed(1), z: +s.z.toFixed(1), r: s.r })),
   };
 }

@@ -4,6 +4,7 @@ import { CFG, TEAMS, MATCH_STATE } from '../../shared/config.js';
 import { clamp } from '../../shared/math.js';
 import { WEAPON_KEYS } from '../../shared/weapons.js';
 import { CombatFeedback } from './combat.js';
+import { OpticOverlay } from './optic.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, parent, text) => {
@@ -108,6 +109,7 @@ export class HUD {
     this.reloadTrack = el('div', 'reload-track', ammo);
     this.reloadFill = el('i', '', this.reloadTrack);
     this.combat = new CombatFeedback(root);
+    this.optic = new OpticOverlay(root);
 
     this.vehiclePanel = el('div', 'vehicle-panel hidden', root);
     this.vehicleRole = el('div', 'vehicle-role', this.vehiclePanel, 'UTILITY / DRIVER');
@@ -386,7 +388,7 @@ export class HUD {
   update(dt, ctx) {
     const { player, state, roster, vehicles, loot, cameraYaw, spectator } = ctx;
     if (!player) return;
-    this.combat.update(player, state);
+    this.combat.update(player, state, spectator);
 
     if (roster) {
       const me = roster.find(p => p.id === this.playerId);

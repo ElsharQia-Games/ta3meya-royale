@@ -23,6 +23,7 @@
     "qa:visual": "node qa/visual.mjs",
     "qa:design": "node qa/design.mjs",
     "qa:arsenal": "node qa/arsenal.mjs",
+    "qa:art": "node qa/art-preview.mjs",
     "qa:vehicle": "node qa/vehicle.mjs",
     "qa:journeys": "node qa/journeys.mjs",
     "qa:scenes": "node qa/scenes.mjs",

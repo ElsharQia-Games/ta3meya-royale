@@ -17,6 +17,15 @@ export function reloadMotion(remaining, duration) {
   };
 }
 
+export function boltMotion(age) {
+  if (!Number.isFinite(age)) return { hand: 0, lift: 0, travel: 0 };
+  return {
+    hand: smooth((age - .12) / .14) * (1 - smooth((age - .94) / .2)),
+    lift: smooth((age - .2) / .1) * (1 - smooth((age - .86) / .13)),
+    travel: smooth((age - .32) / .17) * (1 - smooth((age - .64) / .2)),
+  };
+}
+
 export function solveTwoBone(shoulder, target, pole, upper, lower) {
   const delta = target.map((v, i) => v - shoulder[i]);
   const raw = Math.hypot(...delta);

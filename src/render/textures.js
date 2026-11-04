@@ -1,5 +1,5 @@
-// Procedural textures. Everything is generated in a canvas at load time, so the
-// project ships with zero third-party art assets and no licensing ambiguity.
+// Original procedural detail, markings and fallback maps. Selected photographed
+// CC0 surfaces are loaded separately by WorldRenderer; see ASSETS.md.
 import * as THREE from 'three';
 
 const cache = new Map();
@@ -396,15 +396,16 @@ function grainHeight() {
 
 function fabric() {
   const c = canvas(256), ctx = c.getContext('2d'), r = rng(914);
-  ctx.fillStyle = '#c9c6ae'; ctx.fillRect(0, 0, 256, 256);
-  const colours = ['#a4a587', '#ddd4b0', '#8a947a', '#bcb895'];
-  for (let i = 0; i < 120; i++) {
+  ctx.fillStyle = '#a8b09a'; ctx.fillRect(0, 0, 256, 256);
+  const colours = ['#858f7b', '#bcc0a6', '#65786c', '#a2a58b'];
+  for (let i = 0; i < 230; i++) {
     const x = r() * 256, y = r() * 256;
     ctx.fillStyle = colours[i % colours.length];
     ctx.beginPath(); ctx.moveTo(x, y);
-    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, d = 6 + r() * 20; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
+    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, d = 3 + r() * 13; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
     ctx.fill();
   }
+  for (let i = 0; i < 1800; i++) { ctx.fillStyle = colours[i % colours.length] + '70'; ctx.fillRect(r() * 256, r() * 256, 1 + r() * 3, 1 + r() * 2); }
   ctx.strokeStyle = '#202c2015'; ctx.lineWidth = .6;
   for (let i = 0; i < 256; i += 3) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(256, i); ctx.stroke(); }
   grain(ctx, 256, r, 9);
@@ -437,6 +438,52 @@ function equipment() {
   return finish(c);
 }
 
+function webbing() {
+  const c = canvas(256), ctx = c.getContext('2d'), r = rng(5109);
+  ctx.fillStyle = '#d5d1bc'; ctx.fillRect(0, 0, 256, 256);
+  for (let y = 0; y < 256; y += 3) for (let x = 0; x < 256; x += 3) {
+    ctx.fillStyle = (x + y) % 2 ? '#b9b29b' : '#ece7cf';
+    ctx.fillRect(x, y, 2, 1);
+  }
+  grain(ctx, 256, r, 12); return finish(c);
+}
+
+function hazard() {
+  const c = canvas(256), ctx = c.getContext('2d'), r = rng(9309);
+  ctx.fillStyle = '#c5b477'; ctx.fillRect(0, 0, 256, 256);
+  ctx.fillStyle = '#27342f';
+  for (let i = -6; i < 10; i++) {
+    ctx.beginPath(); ctx.moveTo(i * 48, 0); ctx.lineTo(i * 48 + 26, 0);
+    ctx.lineTo(i * 48 - 102, 256); ctx.lineTo(i * 48 - 128, 256); ctx.fill();
+  }
+  for (let i = 0; i < 1500; i++) {
+    ctx.fillStyle = i % 2 ? '#b2aa844c' : '#343a302a';
+    ctx.fillRect(r() * 256, r() * 256, 1 + r() * 5, 1 + r() * 2);
+  }
+  return finish(c);
+}
+
+function contactShadow() {
+  const c = canvas(128), ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 10, 64, 64, 63);
+  g.addColorStop(0, '#07110bd0'); g.addColorStop(.36, '#07110b88'); g.addColorStop(1, '#07110b00');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
+  const map = finish(c); map.wrapS = map.wrapT = THREE.ClampToEdgeWrapping; return map;
+}
+
+function verge() {
+  const c = canvas(256), ctx = c.getContext('2d'), r = rng(3811);
+  const data = ctx.createImageData(256, 256);
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+    const n = r(), i = (y * 256 + x) * 4;
+    const edge = Math.max(0, 1 - x / 256 + Math.sin(y * .047) * .11 + (n - .5) * .22);
+    data.data[i] = 105 + n * 40; data.data[i + 1] = 104 + n * 34; data.data[i + 2] = 83 + n * 31;
+    data.data[i + 3] = Math.min(220, edge ** 1.8 * 225);
+  }
+  ctx.putImageData(data, 0, 0);
+  const map = finish(c); map.wrapS = THREE.ClampToEdgeWrapping; return map;
+}
+
 export function stencil(text, sub = 'BLACKSHORE') {
   const key = `stencil:${text}:${sub}`;
   if (cache.has(key)) return cache.get(key);
@@ -452,7 +499,7 @@ export function stencil(text, sub = 'BLACKSHORE') {
 
 const FACTORIES = {
   concrete, brick, plaster, wood, metal, sandbag, glass, rock,
-  ground, asphalt, skyGradient, clouds, grainHeight, fabric, bark, equipment,
+  ground, asphalt, skyGradient, clouds, grainHeight, fabric, bark, equipment, webbing, hazard, contactShadow, verge,
 };
 
 export function texture(name) {

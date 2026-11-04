@@ -3,7 +3,8 @@
 ## External runtime assets
 No commercial game geometry, textures, audio, maps or logos are used. Original
 procedural equipment/world assets are supplemented by the locally hosted fonts,
-CC0 terrain maps and selected CC0 foliage/rock models below. Runtime assets are
+CC0 ground/coastal maps, firearm/Foley recordings and selected CC0 foliage/rock
+models below. Runtime assets are
 served from this project.
 
 | Asset | Source | License / local notice |
@@ -12,6 +13,7 @@ served from this project.
 | IBM Plex Mono, Regular and Medium | [Google Fonts](https://fonts.google.com/specimen/IBM+Plex+Mono), [project](https://github.com/IBM/plex); files from `fonts.gstatic.com/s/ibmplexmono/v20/` | SIL OFL-1.1, reserved font name Plex, unmodified binaries; `public/fonts/IBMPlex-OFL.txt` |
 | Grass Ground albedo, OpenGL normal and roughness | [Poly Haven asset](https://polyhaven.com/a/grass_ground), [license](https://polyhaven.com/license) | CC0-1.0; local WebP conversions in `public/textures/`, source/hash details in `public/textures/NOTICE.md` |
 | Seven derived nature templates and their maps | [Quaternius Stylized Nature MegaKit, free Standard](https://quaternius.itch.io/stylized-nature-megakit) | CC0-1.0; `public/models/nature/LICENSE.txt`, `NOTICE.md` and `manifest.json` |
+| Coastal plaster, layered concrete, worn brick and asphalt: 12 local 1K maps | [Poly Haven](https://polyhaven.com/) | CC0-1.0; `public/textures/coastal/NOTICE.md`, source URLs/hashes in `manifest.json`; 2,963,644 bytes |
 
 Downloaded 2026-11-04 from the URLs returned by the Google Fonts CSS API for the
 specified families/weights. Copyright and license notices accompany the fonts.
@@ -22,7 +24,8 @@ specified families/weights. Copyright and license notices accompany the fonts.
 | Terrain, towns, buildings, roads, props | Procedural generation from seeded noise/layout code | Original, project-owned |
 | Concrete, brick, wood, metal, fallback ground, rock, camouflage, bark, decals, sky textures | Canvas2D / DataTexture generation at runtime | Original, project-owned |
 | Characters, weapons, vehicles | Procedural Three.js geometry | Original, project-owned |
-| Gunshots, footsteps, explosions, ambience, UI sounds | WebAudio / OfflineAudioContext synthesis | Original, project-owned |
+| Field equipment, rocket rounds, scope details, contact-shadow/dust textures | Original Three.js geometry and Canvas2D generation | Original, project-owned; no commercial-game assets |
+| Additional ambience, sub-bass and tonal feedback | WebAudio synthesis, mixed with the CC0 recordings below | Original, project-owned |
 | UI, icons, minimap | CSS/Canvas drawn | Original, project-owned |
 
 ## Dependencies (npm)

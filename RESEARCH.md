@@ -23,14 +23,43 @@
 - **[Three.js r170 colour-management guide](https://raw.githubusercontent.com/mrdoob/three.js/r170/docs/manual/en/introduction/Color-management.html)** (read2026-11-04): lighting/vertex colours use Linear-sRGB; colour maps use sRGB; normal/roughness data have no colour space. Custom ShaderMaterial output must use the correct output conversion. Review sky, cloud and water passes before compensating with arbitrary exposure/fill changes.
 
 ## Audio
-- **Actual WebAudio implementation:** StereoPannerNode, BiquadFilterNode, noise/oscillator envelopes, DynamicsCompressorNode and analyser measurements. HRTF, OfflineAudioContext gunshot baking and room reverb are possible extensions, not implemented facts.
-- Layered gunshot transients/body/tails, distance filtering, footsteps and speed-reactive engine audio are implemented. Numerical levels are checked separately from listening quality.
+- **Current WebAudio implementation:** local decoded firearm/Foley samples, HRTF
+  PannerNodes for world sources, centred local sounds, BiquadFilter distance/LOS
+  filtering, phase-driven reload/bolt cues, noise/oscillator layers and dynamic
+  compression. Samples have a 48-voice owner; room convolution remains future work.
+- The Free Firearm Sound Library's actual archive/CSV and CC0 asset page, and
+  three Kenney packs' included CC0 licences, supplied 36 clips. Provenance and
+  transformations are in `public/audio/`. Source decoding is distinct from a
+  subjective listening review.
+- Requested LANDR/Pixabay acquisition was investigated. LANDR's inspected standard
+  Samples Licence excludes standalone SFX use; Pixabay sound pages returned403.
+  Neither source is represented as downloaded. Exact evidence/import guidance is
+  in `public/audio/NOTICE.md`.
 
 ## Reused asset/component evidence
 - [Poly Haven Grass Ground metadata](https://api.polyhaven.com/info/grass_ground) identifies Charlotte Baglioni and dry grass/soil material. The [license](https://polyhaven.com/license) is CC0. Source JPEGs were checked against API hashes; local conversion/normal downsizing is recorded in `public/textures/NOTICE.md`.
 - [Quaternius Standard pack](https://quaternius.itch.io/stylized-nature-megakit) was downloaded through its free option. The archive's actual `License_Standard.txt` says CC0. Seven templates were derived; leaves retain source alpha with a project palette. Exact original/derived provenance is shipped with the assets.
 - Installed `GLTFLoader.js` explicitly supports `EXT_texture_webp`. The importer emits that extension rather than relabelling WebP as PNG. Shader/geometry behavior was then checked in actual Chromium captures.
 - Browser event tracing showed `document.pointerLockElement` could update before the queued `pointerlockchange` listener. Input now checks current state at event/frame boundaries; the observed failure was reproduced in a regression before fixing it.
+- The current coastal pass uses Poly Haven's public asset/file API to select
+  `blue_plaster_weathered`, `concrete_layers`, `asphalt_02` and `brick_wall_001`.
+  The source licence and all four imported albedos were directly inspected.
+  Twelve local1K WebP maps total2,963,644 bytes; normals/roughness are linear data.
+  Shared surface ownership and per-building colour variants avoid duplicate downloads.
+- Quaternius Universal Base Characters was also reviewed: the source page specifies
+  humanoid rigs and roughly13k triangles per base. The existing articulated-group
+  rig would need a genuine skin/bone retargeting layer to use those characters;
+  no claim of importing that kit is made. Current operator geometry is original.
+- Installed Three r170 CSM source overwrites `material.onBeforeCompile` in
+  `setupMaterial`; surface work uses standard material maps and keeps CSM ownership.
+  Field props reuse installed `ExtrudeGeometry`, `RoundedBoxGeometry` and spatial
+  `BufferGeometryUtils` batching. Death motion uses `AnimationMixer`/`LoopOnce`.
+- Local model inspection fixed rocket cone orientation against the shared -Z
+  forward convention and separated front-load alignment from insertion. Scope
+  geometry and the ocular overlay now share eyepiece dimensions/projection.
+  Review also found a blast fixture buried inside its opaque container; its
+  replacement is staged on the exposed surface. No new external asset/licence
+  claims are implied by these original-geometry refinements.
 
 ## Gameplay references (design, not code/assets)
 - PUBG weapon/ballistics/zone pacing, Battlefield vehicle/destruction/audio layering, The Finals movement/feedback/UI clarity. Recorded in REFERENCE.md.

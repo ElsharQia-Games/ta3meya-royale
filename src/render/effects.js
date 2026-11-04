@@ -7,6 +7,7 @@ import { clamp } from '../../shared/math.js';
 import { moveProjectile } from '../../shared/weapons.js';
 import { advanceRocket } from '../../shared/projectiles.js';
 import { createRocketGeometry } from './launcher-model.js';
+import { Casings } from './casings.js';
 
 const MAX_PARTICLES = 900;
 const MAX_TRACERS = 96;
@@ -41,6 +42,9 @@ export class Effects {
     this.pendingImpacts = [];
     this.rockets = new Map();
     this.blastTexture = blastTexture();
+    this.dustTexture = dustTexture();
+    this.puffs = []; this.shockwaves = [];
+    this.casings = new Casings(this.scene, renderer, world);
   }
 
   // -------------------------------------------------------------------------
@@ -64,7 +68,7 @@ export class Effects {
         void main() {
           vColor = color;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = max(1.0, psize * uScale / max(0.001, -mv.z));
+          gl_PointSize = mv.z < -0.03 ? min(180.0, psize * uScale / -mv.z) : 0.0;
           gl_Position = projectionMatrix * mv;
         }
       `,
@@ -374,6 +378,16 @@ export class Effects {
     light.position.set(p[0], p[1] + 1, p[2]);
     this.scene.add(light);
     this.explosions.push({ mesh, light, t: 0, radius });
+    for (let i = 0; i < 18; i++) {
+      const a = i * 2.399, speed = 2 + i % 4;
+      this.puff([p[0], p[1] + .2, p[2]], [Math.cos(a) * speed, .55 + i % 3 * .7, Math.sin(a) * speed],
+        i % 3 ? 0x9c9178 : 0x55564d, 1.1 + (i % 3) * .45, 2 + (i % 4) * .2, .6);
+    }
+    const ring = new THREE.Mesh(new THREE.RingGeometry(.74, 1, 48), new THREE.MeshBasicMaterial({ color: 0xc4b48e,
+      transparent: true, opacity: .26, depthWrite: false, side: THREE.DoubleSide }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(p[0], (this.world?.terrainHeight(p[0], p[2]) ?? p[1]) + .07, p[2]);
+    this.scene.add(ring); this.shockwaves.push({ mesh: ring, t: 0, radius });
     for (let i = 0; i < 42; i++) {
       const a = Math.random() * Math.PI * 2, b = Math.random() * Math.PI;
       const sp = 5 + Math.random() * 16;
@@ -397,6 +411,7 @@ export class Effects {
     const cx = ev.x, cy = ev.y, cz = ev.z;
     const n = 6;
     const colors = [0x8a643c, 0x6f747b, 0x9b8a63, 0x9a9a92];
+    for (let i = 0; i < 5; i++) this.puff([cx, cy + .3, cz], [(Math.random() - .5) * 2, .4 + Math.random(), (Math.random() - .5) * 2], 0x928d79, .5, 1.4, .43);
     for (let i = 0; i < n; i++) {
       const geo = new THREE.BoxGeometry(
         Math.max(0.1, (ev.sx || 1) / n) * (0.6 + Math.random() * 0.6),
@@ -435,10 +450,23 @@ export class Effects {
     this.renderer.registerObject(model.root); this.scene.add(model.root);
     const rocket = { id: ev.projectileId, model, weapon: ev.w || 'rpg', pos: ev.o.slice(),
       vel: ev.v.slice(), fuse: ev.life || CFG.WEAPONS.rpg.rocket.life, accumulator: 0,
-      correction: new THREE.Vector3(), held: false, trailT: 0 };
+      correction: new THREE.Vector3(), held: false, trailT: 0, trailPosition: new THREE.Vector3(...ev.o) };
     model.root.position.set(...rocket.pos); this.rockets.set(rocket.id, rocket);
     for (let i = 0; i < 10; i++) this.spawnParticle(...ev.o,
       (Math.random() - .5) * 2, Math.random() * 1.2, (Math.random() - .5) * 2, .3 + Math.random() * .3, .15, 0xa5ac93, 0);
+    const direction = new THREE.Vector3(...ev.v).normalize();
+    for (let i = 0; i < 4; i++) this.puff(new THREE.Vector3(...ev.o).addScaledVector(direction, -.8 - i * .4).toArray(),
+      direction.clone().multiplyScalar(-2).add(new THREE.Vector3(0, .3, 0)).toArray(), 0xb5b2a0, .24 + i * .08, .55, .26);
+  }
+
+  puff(position, velocity, color, size, life, opacity = .35) {
+    if (this.puffs.length >= 80) {
+      const old = this.puffs.shift(); old.mesh.removeFromParent(); old.mesh.material.dispose();
+    }
+    const material = new THREE.SpriteMaterial({ map: this.dustTexture, color, transparent: true, opacity,
+      depthWrite: false, rotation: Math.random() * Math.PI * 2 });
+    const mesh = new THREE.Sprite(material); mesh.position.set(...position); mesh.scale.setScalar(size);
+    this.scene.add(mesh); this.puffs.push({ mesh, velocity: new THREE.Vector3(...velocity), size, life, max: life, opacity });
   }
 
   syncProjectiles(list) {
@@ -475,6 +503,23 @@ export class Effects {
   // -------------------------------------------------------------------------
   update(dt) {
     this.time += dt;
+    this.casings.update(dt);
+    for (let i = this.puffs.length - 1; i >= 0; i--) {
+      const p = this.puffs[i]; p.life -= dt;
+      if (p.life <= 0) { p.mesh.removeFromParent(); p.mesh.material.dispose(); this.puffs.splice(i, 1); continue; }
+      const t = 1 - p.life / p.max;
+      p.mesh.position.addScaledVector(p.velocity, dt); p.velocity.multiplyScalar(Math.exp(-1.8 * dt));
+      p.mesh.position.x += dt * .19; p.mesh.position.y += dt * .2;
+      p.mesh.scale.setScalar(p.size * (1 + t * 2.1));
+      p.mesh.material.opacity = p.opacity * Math.min(1, t * 14) * Math.pow(1 - t, .75);
+      p.mesh.material.rotation += dt * .05;
+    }
+    for (let i = this.shockwaves.length - 1; i >= 0; i--) {
+      const wave = this.shockwaves[i]; wave.t += dt;
+      wave.mesh.scale.setScalar(.4 + wave.t * wave.radius * 2.6);
+      wave.mesh.material.opacity = Math.max(0, 1 - wave.t / .6) ** 2 * .2;
+      if (wave.t >= .6) { wave.mesh.removeFromParent(); wave.mesh.geometry.dispose(); wave.mesh.material.dispose(); this.shockwaves.splice(i, 1); }
+    }
     for (const rocket of this.rockets.values()) {
       rocket.accumulator += dt; rocket.trailT += dt;
       while (rocket.accumulator + 1e-9 >= CFG.SIM_DT) {
@@ -487,7 +532,9 @@ export class Effects {
       model.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), new THREE.Vector3(...rocket.vel).normalize());
       if (rocket.trailT > .024) {
         rocket.trailT = 0;
-        this.spawnParticle(model.position.x, model.position.y, model.position.z, 0, .12, 0, .8, .2, 0xa7aa9b, 0);
+        const distance = model.position.distanceTo(rocket.trailPosition), count = Math.min(5, Math.ceil(distance / 1.5));
+        for (let i = 1; i <= count; i++) this.puff(rocket.trailPosition.clone().lerp(model.position, i / count).toArray(), [0, .1, 0], 0xb7bbaf, .13, .7, .22);
+        rocket.trailPosition.copy(model.position);
         this.spawnParticle(model.position.x, model.position.y, model.position.z, 0, 0, 0, .07, .12, 0xffc17d, 0);
       }
       if (rocket.fuse <= 0) this.stopProjectile(rocket.id);
@@ -614,6 +661,7 @@ export class Effects {
     materials.forEach(m => m.dispose());
     maps.forEach(t => t.dispose());
     this.blastTexture.dispose();
+    this.dustTexture.dispose();
   }
 }
 
@@ -627,6 +675,19 @@ function blastTexture() {
     gradient.addColorStop(0, 'rgba(255,247,196,.9)'); gradient.addColorStop(.3, 'rgba(246,183,99,.72)');
     gradient.addColorStop(.65, 'rgba(116,76,42,.45)'); gradient.addColorStop(1, 'rgba(46,43,34,0)');
     context.fillStyle = gradient; context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
+  const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace; return map;
+}
+
+function dustTexture() {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
+  const context = canvas.getContext('2d');
+  for (let i = 0; i < 39; i++) {
+    const a = i * 2.399, r = 12 + i % 7 * 2, d = Math.sqrt(i / 39) * 36;
+    const x = 64 + Math.cos(a) * d, y = 64 + Math.sin(a) * d;
+    const gradient = context.createRadialGradient(x, y, 0, x, y, r);
+    gradient.addColorStop(0, '#ffffff85'); gradient.addColorStop(.42, '#dddddd55'); gradient.addColorStop(1, '#aaaaaa00');
+    context.fillStyle = gradient; context.fillRect(x - r, y - r, r * 2, r * 2);
   }
   const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace; return map;
 }

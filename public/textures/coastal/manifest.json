@@ -1,0 +1,175 @@
+{
+  "license": "CC0-1.0",
+  "licenseUrl": "https://polyhaven.com/license",
+  "maps": [
+    {
+      "file": "plaster-albedo.webp",
+      "asset": "blue_plaster_weathered",
+      "page": "https://polyhaven.com/a/blue_plaster_weathered",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_plaster_weathered/blue_plaster_weathered_diff_1k.jpg",
+      "sourceSha256": "76a149dc21c5e53db9a61e7d65e9398fbaa217f9e75b4206695e32a05dc1e2d3",
+      "sha256": "fe21b933a9d40a2044e7bf312c61c6077a4e1629ebad84a91cec59371ddfc727",
+      "bytes": 124572,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels; blue plaster saturation reduced to 28% for salt-grey facade palette"
+    },
+    {
+      "file": "plaster-normal.webp",
+      "asset": "blue_plaster_weathered",
+      "page": "https://polyhaven.com/a/blue_plaster_weathered",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_plaster_weathered/blue_plaster_weathered_nor_gl_1k.jpg",
+      "sourceSha256": "f329329b56dfeefee707cf04602148ba799ea4a97f32e3c38edf9f60185471f8",
+      "sha256": "cf3d0fbe4c1882d69784bd683f1da7edb913a86fd28cd6f60dd084e980cf72f0",
+      "bytes": 169652,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "plaster-roughness.webp",
+      "asset": "blue_plaster_weathered",
+      "page": "https://polyhaven.com/a/blue_plaster_weathered",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_plaster_weathered/blue_plaster_weathered_rough_1k.jpg",
+      "sourceSha256": "ad0f8b5305de367b5c9848c3e28a7954f74ca7ee1f718f78c151d77a30aca411",
+      "sha256": "8438f595feed9553932fcd8d9782df864101f8bb0446b4745ab275c30d2d48cb",
+      "bytes": 22696,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "concrete-albedo.webp",
+      "asset": "concrete_layers",
+      "page": "https://polyhaven.com/a/concrete_layers",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_layers/concrete_layers_diff_1k.jpg",
+      "sourceSha256": "f9674124394533b6e8284facdfaef396ac3ba7b648a72da0aa2304d46037ff2b",
+      "sha256": "1000a917e90e06ccb83873e1d51e0ad6bc49def9c21dc88e00db2781c974751e",
+      "bytes": 184594,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "concrete-normal.webp",
+      "asset": "concrete_layers",
+      "page": "https://polyhaven.com/a/concrete_layers",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_layers/concrete_layers_nor_gl_1k.jpg",
+      "sourceSha256": "3bdfb66b071c5a27eb561ae85359ad5cf6839c49f51082c4e13bb2aca000e82d",
+      "sha256": "8efeace0f92452ee7fbea455f0c9ebca650fe1a8df4c607d838e47afb6b04700",
+      "bytes": 331892,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "concrete-roughness.webp",
+      "asset": "concrete_layers",
+      "page": "https://polyhaven.com/a/concrete_layers",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_layers/concrete_layers_rough_1k.jpg",
+      "sourceSha256": "89ef4ff1ec63bd416a5e58569833b5e4f56669f7fc9dd5ee7bec3ae4a249011a",
+      "sha256": "d2868469624586cf498f51c95f69d37300439b5a511461de79e14ba294edab64",
+      "bytes": 27958,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "asphalt-albedo.webp",
+      "asset": "asphalt_02",
+      "page": "https://polyhaven.com/a/asphalt_02",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/asphalt_02/asphalt_02_diff_1k.jpg",
+      "sourceSha256": "1aa5ce99f58a625c71d48cfc3e68b65ca85ccb00f39e045c0a928608a0ea25ed",
+      "sha256": "ed86c9167c024e5966cd4865d01bd001d328cc4b83d16569df54eb49bc412c79",
+      "bytes": 455162,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "asphalt-normal.webp",
+      "asset": "asphalt_02",
+      "page": "https://polyhaven.com/a/asphalt_02",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/asphalt_02/asphalt_02_nor_gl_1k.jpg",
+      "sourceSha256": "42a1c381b53204e83a982db2864479a30bc127bbdeebb1006f8ee51bff099df3",
+      "sha256": "40070429551c3d76bc9109d4f9e66ae3b63726d049e1e76f082e641dff7477a4",
+      "bytes": 539388,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "asphalt-roughness.webp",
+      "asset": "asphalt_02",
+      "page": "https://polyhaven.com/a/asphalt_02",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/asphalt_02/asphalt_02_rough_1k.jpg",
+      "sourceSha256": "70ba3edc65525eb4dc366cf010ca7ae0bd34e0251ff0225c2dad627a873d0712",
+      "sha256": "17530b69d8758f1a03f2146a705aa7ba38c592513a4d99fc712ea125de5d40b6",
+      "bytes": 424984,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "brick-albedo.webp",
+      "asset": "brick_wall_001",
+      "page": "https://polyhaven.com/a/brick_wall_001",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brick_wall_001/brick_wall_001_diffuse_1k.jpg",
+      "sourceSha256": "6a1233ec0186703de830354d89f122991e61e67fb67e0846c7eaf6c5aefea902",
+      "sha256": "a3b98c2c9827229f3073768073279b75ec4662f3fc0d081f9b22a8098428f0c2",
+      "bytes": 252084,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "brick-normal.webp",
+      "asset": "brick_wall_001",
+      "page": "https://polyhaven.com/a/brick_wall_001",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brick_wall_001/brick_wall_001_nor_gl_1k.jpg",
+      "sourceSha256": "8afbe3919308b168a6b7235fe7b930f670cfffa1a34de39ee790d55c9d7bda09",
+      "sha256": "36e29ea0c9258dfd0a779b71cdf128942ee55bd427d85ce80ab6bc9e8c048926",
+      "bytes": 339716,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    },
+    {
+      "file": "brick-roughness.webp",
+      "asset": "brick_wall_001",
+      "page": "https://polyhaven.com/a/brick_wall_001",
+      "sourceUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brick_wall_001/brick_wall_001_rough_1k.jpg",
+      "sourceSha256": "a23342b02e6c5af106aaece16130aa9153a801cb1a84d5f3e0d06ce248677f38",
+      "sha256": "5f00212869bd9a455812a9520073492025bbda6b814b2cbb6161cb4dbd0f833b",
+      "bytes": 90946,
+      "size": [
+        1024,
+        1024
+      ],
+      "transform": "1K RGB WebP; original map channels"
+    }
+  ],
+  "totalBytes": 2963644
+}

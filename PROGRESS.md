@@ -1,14 +1,24 @@
 # FRONTLINE / BLACKSHORE — progress
 
-Updated2026-11-04. Active goal: a cohesive, playable design foundation with
+Updated 2026-11-04. Active goal: a cohesive, playable design foundation with
 player-journey evidence. Expanded release acceptance is still open.
 
-Combined-arms continuation: protocol7 RPG/kits, sampled audio, sniper handling
-and articulated death/respawn presentation implemented. Latest checked source:
-131/131 unit tests and10/10 combined-arms browser checks; actual pass2 frames
-reviewed. Live multiplayer, full new-arsenal recording and combined load/stress
-acceptance are in progress. See `qa/reports/COMBINED-ARMS.md` for current evidence;
-the tables below preserve the earlier foundation checkpoint pending reconciliation.
+Combined-arms milestone **88d554d**: protocol7 RPG/kits, sampled audio and
+articulated death/respawn presentation. Its131/131 unit tests and10/10 browser
+checks predate the current art work.
+
+**Owner steering: focus on design/animation/audio; defer automated tests.**
+Current work adds original collider-sized field equipment,12 photographed coastal
+surface maps, road/verge dressing, operator proportions/contact shadows,
+precision-rifle mechanics/optic falloff, front-loaded rockets, brass, backblast,
+dust, dropped weapons and death/uplink transitions. All nine images in both art
+passes 2 and 3 were directly inspected. Pass 3 shows a connected front-load/seat
+pose and exposed-surface dust; scope-edge clipping prompted a final refinement.
+Production build passes: 980.35 kB JS / 280.12 kB gzip; CSS 22.79 kB.
+
+See `qa/reports/COMBINED-ARMS.md` for current scope. Earlier tables below retain
+their historical foundation evidence; final multiplayer/load/stress/WAN gates
+are deferred rather than claimed complete.
 
 ## Integrated
 
@@ -33,11 +43,11 @@ the tables below preserve the earlier foundation checkpoint pending reconciliati
   eye height, shared grenade visual motion, smoke-aware bot vision/nameplates,
   independent shotgun tracers and expired-tracer GPU updates.
 
-## Observed checks
+## Historical observed checks (predate this art pass)
 
 | Scope | Evidence |
 |---|---|
-| Current controller source | `npm test`: **120/120**; production build passes,907.02kB JS /256.28kB gzip |
+| Earlier controller source | `npm test`: **120/120**; production build passed,907.02kB JS /256.28kB gzip |
 | Network branch |77 tests; five real-NetClient impairment profiles; zero missing baselines/ACKs in no-loss runs |
 |32-client network load |60s,32/32 joined,60Hz input/client,0 drops/skips/resets; raw tick mean0.769ms, last600 p99=2.654ms, lifetime max13.419ms |
 | Simulation branch at9a71664 |108,000ticks /30sim minutes /32players,0 recorded player/vehicle invariant violations; p99=2.1322ms, one43.626ms startup tick |
@@ -62,14 +72,13 @@ will be rerun after the remaining integration work.
 
 ## Active work
 
-1. Recapture/inspect refined arsenal, vehicles, deployment and settings.
-2. Complete browser journey ledger and scene matrix: BR/TDM, movement/stances,
-   interiors/forest/water, combat/reload/healing/loot, smoke/destruction, death/
-   respawn/spectate/end/restart, chat/settings, responsive menus and reconnect.
-3. Record and inspect an actual gameplay clip with source/frame/time metadata.
-4. Run combined browser/multiplayer/stress/latency/load checks; refresh README,
-   PLAN, RESEARCH, REFERENCE, DECISIONS, GAP-ANALYSIS and integration evidence.
-5. Commit verified milestones and keep master buildable/playable.
+1. Finish the focused launcher/scope/death frame review and commit the art slice.
+2. Record current sniper/RPG/death motion with honest frame/time metadata; review
+   sampled effects and the mix without substituting decoding for listening.
+3. Further improve authored world/character detail while preserving collision and
+   simulation ownership. Owner-provided LANDR/Pixabay clips need licence evidence.
+4. Automated journeys, real-network projectile regression, multiplayer/stress/
+   latency/load and full-release gates remain deferred until authorized again.
 
 ## Explicitly open
 

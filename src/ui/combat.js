@@ -23,10 +23,13 @@ export class CombatFeedback {
     this.panel.animate([{ opacity: 0, transform: 'translate(-50%, 16px)' }, { opacity: 1, transform: 'translate(-50%, 0)' }], { duration: 320, easing: 'cubic-bezier(.2,.8,.2,1)' });
   }
 
-  update(player, state) {
+  update(player, state, spectator) {
     if (player.alive) {
       this.dead = false; this.panel.classList.add('hidden'); this.vignette.classList.remove('active'); return;
     }
+    this.dead = true;
+    this.vignette.classList.toggle('active', !spectator);
+    this.panel.classList.toggle('spectating', !!spectator);
     this.panel.classList.toggle('hidden', state?.matchState === 3);
     const text = this.panel.querySelector('.death-status');
     text.textContent = state?.mode === 'tdm' ? `REDEPLOYING IN ${Math.ceil(player.respawnIn || 0)}s` : 'OBSERVING THE BATTLEFIELD  /  Q NEXT OPERATOR';
@@ -47,10 +50,14 @@ export class CombatFeedback {
   }
 
   transition(label = 'DEPLOYING', duration = 600) {
-    this.animation?.cancel(); this.curtain.textContent = label;
+    this.animation?.cancel();
+    const overline = document.createElement('span'); overline.textContent = 'FRONTLINE / OPERATOR UPLINK';
+    const title = document.createElement('b'); title.textContent = label;
+    const line = document.createElement('i');
+    this.curtain.replaceChildren(overline, title, line);
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.animation = this.curtain.animate([
-      { opacity: .95 }, { opacity: .8, offset: .22 }, { opacity: 0 },
+      { opacity: 1 }, { opacity: .92, offset: .22 }, { opacity: 0 },
     ], { duration: reduced ? 100 : duration, easing: 'cubic-bezier(.2,.7,.2,1)' });
   }
 

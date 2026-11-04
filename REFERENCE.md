@@ -42,7 +42,9 @@ This is the quality bar used to judge *Frontline*. It is written from public tec
 - **PUBG:** distance-filtered gunshots, surface footsteps, ambient bed, directional cues.
 - **Battlefield:** layered weapon tails, reverb by space, occlusion, vehicle audio.
 - **The Finals:** punchy close-range shots, destruction impacts, clear UI audio.
-- **Bar for us:** spatially readable synthesis, distance filtering, surface footsteps, vehicle feedback and controlled levels. The current implementation uses stereo panning; HRTF, geometric audio occlusion and room reverb remain gaps.
+- **Bar for us:** identifiable recorded firearms, spatial direction and distance,
+  surface Foley, vehicle feedback and controlled levels. HRTF and geometric
+  occlusion now ship in the combined-arms implementation; room reverb remains open.
 
 ## 8. UI/UX
 - **PUBG:** inventory, minimap/zone, kill feed, damage direction, compass, team frames.
@@ -109,3 +111,22 @@ sheets. It shows magazine motion, ADS, movement and steering hands, and exposed
 an initial overlapping-spawn defect. Its2.06 measured render FPS on SwiftShader
 is a severe environment limitation, not temporal-quality or hardware-performance
 proof. See the clip metadata and GAP-ANALYSIS.md.
+
+## Current art direction pass
+
+`coastal-art-pass1` contains nine directly inspected engine frames: the deployment
+composition, RPG/front-load, sniper/optic/bolt, operator/fallen pose and blast.
+The original coast now has photographed masonry/asphalt, weathered cargo and
+field-cover silhouettes, large district serials and more tactical equipment detail.
+Image review identified coplanar roof trim and an optic turret intruding into its
+opening; the next refinement offsets the trim and moves the turret/mount outside
+the sight picture. Further frame review accompanies the art work while automated
+acceptance testing is deferred by owner steering.
+
+All nine frames in `coastal-art-pass2` and `coastal-art-pass3` were read directly.
+Pass 3 improves the floating launcher round with a bore-aligned insertion and
+seated pose, reduces rifle/sight proportions, makes exposed-surface dust visible
+and reduces death-camera roll. Its ADS image still revealed mount/dial clipping
+at the upper aperture; the final refinement reshapes the scope tube and keeps
+its hardware outside the projected eyepiece. These remain posed previews, not
+evidence of smooth real-time animation or a reviewed audio mix.

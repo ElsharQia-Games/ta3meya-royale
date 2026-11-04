@@ -82,6 +82,38 @@ reacts to impact, then folds the articulated body, then settles against terrain;
 the local camera briefly remains with the fall before spectator/respawn handoff.
 All gameplay-changing state remains server-owned.
 
+### Coastal equipment / motion pass
+
+- Field cover now reads as actual equipment: corrugated intermodal containers,
+  reinforced supply crates, stacked fabric sandbags, shaped Jersey barriers,
+  industrial drums and burned-out utility vehicles. `FieldAssets` builds to the
+  shared box dimensions; static geometry joins spatial/material batches and
+  breakable equipment retains its removable box-ID group.
+- Photographed salt-weathered plaster, concrete, brick and asphalt use local 1K
+  albedo/normal/roughness sets. Building colours, door frames, roof caps, service
+  panels and large district serials give the coast a recognizable identity.
+  Painted roads and gravel shoulders connect its combat spaces visually.
+- Operator heads/helmets, carriers, gloves, boots and clothing are contoured, with
+  restrained woven/camouflage detail. Ground contact shadows anchor the silhouettes.
+- The precision rifle has a cylindrical action, short magazine, open stock,
+  mil-marked optic, ocular falloff and a separate unlock/pull/push/lock cycle.
+  The camera and hands ease out of the optic during the bolt cycle.
+- Scope profiles own the eyepiece radius/depth used by both geometry and the
+  projected ocular overlay. Smaller housings and connected adjustment dials keep
+  the rifle readable at hip without obscuring the central ray at rest.
+- The launcher presents its round outside the muzzle, aligns it with the bore,
+  then slides it tail-first into the tube. The support hand follows the round and
+  returns to the front grip before seating; only the tip remains proud at rest.
+  The muzzle anchor is at the tube mouth, not beyond it. Backblast,
+  exhaust, a brief hot impact, outward dust and longer-lived smoke have separate
+  motion/opacity envelopes. Small casing physics stay cosmetic and pooled.
+- Death releases the weapon, folds the rig and settles into an asymmetric pose.
+  The local weapon drops out of view with the camera. Short uplink-style curtains
+  bridge deployment and respawn; spectator information becomes a compact card.
+  Camera roll settles at .22 radians; alive/respawn state still owns the handoff.
+- Recorded gunshots and Foley are local assets. Reload and bolt sounds follow
+  mechanical phase crossings; material impact sounds are timed to impact travel.
+
 ### Equipment and vehicle integration
 
 - `weapon-model.js` builds the shared original equipment. `poseWeaponMechanics`

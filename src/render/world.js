@@ -13,6 +13,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { createWeaponModel } from './weapon-model.js';
 import { mergeSpatialGeometry, splitGridGeometry } from './geometry.js';
 import { addCoastalDetails } from './coastal-details.js';
+import { FieldAssets } from './field-assets.js';
+import { loadCoastalSurfaces } from './surfaces.js';
 
 const _v = new THREE.Vector3();
 
@@ -77,6 +79,10 @@ export class WorldRenderer {
     this.ownedTextures = [];
     this.disposed = false;
     this.mats = makeMaterials(renderer);
+    this.facadeMaterials = [0xb8c4b6, 0x7f9694, 0xc6bc9e, 0x89937d, 0xb5aea0].map(color =>
+      renderer.registerMaterial(new THREE.MeshStandardMaterial({ color, map: texture('plaster'), roughness: .9 })));
+    this.buildingStyles = new Map(world.buildings.map((building, index) => [building, index % this.facadeMaterials.length]));
+    this.fieldAssets = new FieldAssets(renderer, this.mats);
     this.dynamicMeshes = new Map();
     this.staticMeshes = [];
     this.treeMeshes = [];
@@ -97,7 +103,7 @@ export class WorldRenderer {
     this.groundCover = new GroundCover(renderer, world);
     this.scene.add(this.groundCover.mesh);
     this.nature = new NatureDetail(this);
-    this.assetsReady = Promise.all([this.assetsReady, this.nature.ready]).catch(error => {
+    this.assetsReady = Promise.all([this.assetsReady, this.nature.ready, loadCoastalSurfaces(this)]).catch(error => {
       this.assetError = String(error); console.error('World asset load failed', error);
     }).then(() => { this.assetsLoaded = true; });
   }
@@ -137,7 +143,7 @@ export class WorldRenderer {
       if (w.nearTown(x, z, 1.0)) c.lerp(new THREE.Color(0x7e7a62), 0.35);
       // The photographed albedo supplies the fine colour detail; vertex colour
       // is a gentle macro tint, not a second dark albedo multiplied over it.
-      c.lerp(new THREE.Color(0xffffff), .72);
+      c.lerp(new THREE.Color(0xffffff), .43);
       colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -177,6 +183,7 @@ export class WorldRenderer {
   // -------------------------------------------------------------------------
   _buildRoads() {
     const positions = [], uvs = [], indices = [];
+    const edgePositions = [], edgeUvs = [], edgeIndices = [];
     let vOff = 0;
     for (const road of this.world.roads) {
       const pts = road.points, half = road.width / 2;
@@ -192,6 +199,7 @@ export class WorldRenderer {
         }
       }
       path.push(pts[pts.length - 1]);
+      const edgeStart = edgePositions.length / 3;
       let along = 0;
       for (let i = 0; i < path.length; i++) {
         const [x, z] = path[i];
@@ -205,11 +213,20 @@ export class WorldRenderer {
           const px = x + nx * half * side, pz = z + nz * half * side;
           const py = this.world.terrainHeight(px, pz) + 0.06;
           positions.push(px, py, pz);
-          uvs.push(side * 0.5 + 0.5, along / 8);
+          uvs.push((side * .5 + .5) * road.width / 3, along / 3);
+          for (const distance of [half - .02, half + .78]) {
+            const ex = x + nx * distance * side, ez = z + nz * distance * side;
+            edgePositions.push(ex, this.world.terrainHeight(ex, ez) + .046, ez);
+            edgeUvs.push(distance < half ? 0 : 1, along / 4);
+          }
         }
         if (i > 0) {
           const a = vOff + (i - 1) * 2, b = a + 1, c2 = a + 2, d = a + 3;
-          indices.push(a, c2, b, b, c2, d);
+          indices.push(a, b, c2, b, d, c2);
+          for (const side of [0, 2]) {
+            const a = edgeStart + (i - 1) * 4 + side, c = a + 4;
+            edgeIndices.push(a, a + 1, c, a + 1, c + 1, c);
+          }
         }
       }
       vOff += path.length * 2;
@@ -225,10 +242,18 @@ export class WorldRenderer {
       map, color: 0x6a6d70, roughness: 0.96, metalness: 0.02,
       polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
     }));
+    this.roadMaterial = mat;
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     mesh.name = 'roads';
     this.scene.add(mesh);
+    const edge = new THREE.BufferGeometry();
+    edge.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3));
+    edge.setAttribute('uv', new THREE.Float32BufferAttribute(edgeUvs, 2)); edge.setIndex(edgeIndices); edge.computeVertexNormals();
+    const shoulder = new THREE.Mesh(edge, this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
+      map: texture('verge'), color: 0xd4d0b6, roughness: 1, transparent: true, depthWrite: false,
+      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 })));
+    shoulder.name = 'road_gravel_verges'; shoulder.receiveShadow = true; this.scene.add(shoulder);
   }
 
   // -------------------------------------------------------------------------
@@ -236,26 +261,46 @@ export class WorldRenderer {
   // -------------------------------------------------------------------------
   _buildBoxes() {
     const byMat = new Map();
+    const collect = (material, geometry) => {
+      const list = byMat.get(material) || []; list.push(geometry); byMat.set(material, list);
+    };
     for (const b of this.world.boxes) {
       if (!b.render || b.destroyed) continue;
+      const model = this.fieldAssets.create(b);
       if (b.dynamic) {
-        const mesh = new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+        const mesh = model || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
         mesh.castShadow = true; mesh.receiveShadow = true;
         mesh.name = `dyn_${b.id}`;
         this.scene.add(mesh);
         this.dynamicMeshes.set(b.id, mesh);
         continue;
       }
-      const geo = boxGeometry(b);
-      let arr = byMat.get(b.mat);
-      if (!arr) { arr = []; byMat.set(b.mat, arr); }
-      arr.push(geo);
+      if (model) {
+        model.updateMatrixWorld(true);
+        model.traverse(part => {
+          if (!part.isMesh) return;
+          const geometry = part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone();
+          geometry.applyMatrix4(part.matrixWorld); collect(part.material, geometry); part.geometry.dispose();
+        });
+      } else {
+        const original = boxGeometry(b);
+        collect(this.facadeMaterial(b), original.toNonIndexed()); original.dispose();
+      }
     }
     for (const [mat, geos] of byMat) {
-      const meshes = mergeSpatialGeometry(geos, this.mats[mat], `static_${mat}`);
-      for (const mesh of meshes) mesh.castShadow = true;
+      const meshes = mergeSpatialGeometry(geos, mat, `static_${mat.id}`);
+      for (const mesh of meshes) mesh.castShadow = !mat.userData.noShadow;
       this.scene.add(...meshes); this.staticMeshes.push(...meshes);
     }
+  }
+
+  facadeMaterial(box) {
+    if (box.tag !== 'wall' || !['plaster', 'brick'].includes(box.mat)) return this.mats[box.mat];
+    const x = (box.min[0] + box.max[0]) / 2, z = (box.min[2] + box.max[2]) / 2;
+    const building = this.world.buildings.find(b => Math.abs(x - b.x) < b.w / 2 + .25 && Math.abs(z - b.z) < b.d / 2 + .25);
+    if (!building) return this.mats[box.mat];
+    if (box.mat === 'brick' && building.type === 'urban') return this.mats.brick;
+    return this.facadeMaterials[this.buildingStyles.get(building)];
   }
 
   removeBox(id) {
@@ -264,7 +309,7 @@ export class WorldRenderer {
     const mesh = this.dynamicMeshes.get(id);
     if (!mesh) return;
     this.scene.remove(mesh);
-    mesh.geometry.dispose();
+    mesh.traverse(part => part.geometry?.dispose());
     this.dynamicMeshes.delete(id);
   }
 
@@ -277,7 +322,7 @@ export class WorldRenderer {
       if (gone) this.removeBox(b.id);
       else if (!this.dynamicMeshes.has(b.id)) {
         b.hp = b.maxHp;
-        const mesh = new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+        const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
         mesh.castShadow = true; mesh.receiveShadow = true;
         mesh.name = `dyn_${b.id}`;
         this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
@@ -320,8 +365,8 @@ export class WorldRenderer {
     this.world.buildings.forEach((b, i) => {
       const top = b.y0 + b.floors * b.floorH;
       for (const side of [-1, 1]) {
-        add(trim, b.x, top - .12, b.z + side * b.d / 2, b.w + .16, .13, .3);
-        add(trim, b.x + side * b.w / 2, top - .12, b.z, .3, .13, b.d + .16);
+        add(trim, b.x, top - .12, b.z + side * b.d / 2, b.w + .34, .13, .34);
+        add(trim, b.x + side * b.w / 2, top - .12, b.z, .34, .13, b.d + .34);
         for (const end of [-1, 1]) {
           add(trim, b.x + side * (b.w / 2 - .08), b.y0 + (top - b.y0) / 2, b.z + end * b.d / 2, .13, top - b.y0, .27);
         }

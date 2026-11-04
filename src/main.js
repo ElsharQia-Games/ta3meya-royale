@@ -19,6 +19,7 @@ import { WorldRenderer } from './render/world.js';
 import { Effects } from './render/effects.js';
 import { CharacterView, VehicleView } from './render/entities.js';
 import { ViewModel } from './render/viewmodel.js';
+import { boltMotion } from './render/animation.js';
 import { Input } from './input.js';
 import { loadSettings, saveSettings } from './settings.js';
 import { HUD } from './ui/hud.js';
@@ -165,7 +166,7 @@ class App {
       saveSettings(this.settings);
     };
     for (const button of document.querySelectorAll('.kit-option')) {
-      button.addEventListener('click', () => selectKit(button.dataset.kit));
+      button.addEventListener('click', () => { this.audio.init(); this.audio.ui('select'); selectKit(button.dataset.kit); });
       button.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
         event.preventDefault();
@@ -205,9 +206,13 @@ class App {
     this.buildSession(CFG.MAP.SEED);
     this.previewSoldier = new CharacterView(this.renderer.scene, -7, this.world, this.renderer);
     this.renderer.registerObject(this.previewSoldier.model.root);
+    const building = this.world.buildings.reduce((best, b) => Math.hypot(b.x - 80, b.z + 240) < Math.hypot(best.x - 80, best.z + 240) ? b : best);
+    this.backdrop = { x: building.x + 8, z: building.z + 17, yaw: .16 };
+    const px = this.backdrop.x - Math.sin(.16) * 4.4 + Math.cos(.16) * .9;
+    const pz = this.backdrop.z - Math.cos(.16) * 4.4 - Math.sin(.16) * .9;
     this.previewState = {
-      x: 20.85, y: this.world.terrainHeight(20.85, -164.3), z: -164.3,
-      yaw: Math.PI + .72, pitch: -.17, stance: STANCE.STAND,
+      x: px, y: this.world.terrainHeight(px, pz), z: pz,
+      yaw: Math.PI + .72 + .16, pitch: -.17, stance: STANCE.STAND,
       alive: true, hp: 100, name: '', team: 0,
       weapon: CFG.KITS[this.selectedKit].weapons[0],
     };
@@ -219,8 +224,9 @@ class App {
     if (!this.world) return;
     const camera = this.renderer.camera;
     const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
-    camera.position.set(20 + (motion ? Math.sin(this.time * 0.07) * 0.12 : 0), this.world.terrainHeight(20, -160) + 1.65, -160);
-    camera.rotation.set(-0.025, motion ? Math.sin(this.time * 0.055) * 0.012 : 0, 0);
+    const b = this.backdrop || { x: 88, z: -223, yaw: .16 };
+    camera.position.set(b.x + (motion ? Math.sin(this.time * .07) * .1 : 0), this.world.terrainHeight(b.x, b.z) + 1.65, b.z);
+    camera.rotation.set(-.025, b.yaw + (motion ? Math.sin(this.time * .055) * .009 : 0), 0);
     if (camera.fov !== 56) { camera.fov = 56; camera.updateProjectionMatrix(); }
     if (this.previewSoldier) {
       this.previewSoldier.update(dt, camera.position.toArray());
@@ -667,6 +673,7 @@ class App {
 
   localShot(wkey, W) {
     if (!this.viewmodel) return;
+    this.viewmodel.build(wkey);
     this.viewmodel.fire(W.pellets > 1 ? 1.35 : 1);
     const adsScale = this.adsF > 0.5 ? 0.72 : 1;
     this.recoilPitch = Math.min(0.5, this.recoilPitch + W.recoilPitch * adsScale);
@@ -674,6 +681,7 @@ class App {
     this.shake = Math.min(1, this.shake + (W.cls === 'sniper' ? 0.9 : 0.35));
     const cam = this.renderer.camera;
     this.audio.shot(wkey, cam.position.x, cam.position.y, cam.position.z);
+    this.effects?.casings.eject(this.viewmodel.model, wkey === 'sniper' ? .44 : .015);
     if (this.effects && this.viewmodel) {
       const m = this.viewmodel.muzzleWorld();
       const d = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
@@ -773,9 +781,9 @@ class App {
         case 'respawn':
           this.deathEvents.delete(ev.id);
           if (ev.id === selfId) {
-            this.localDeath = null; this.localWeapons = ev.weapons?.slice() || this.localWeapons;
-            this.pendingShots.length = 0; this.hud.combat.reset(); this.hud.combat.transition('BACK IN THE FIGHT', 450);
-            this.audio.ui('deploy');
+            if (this.localDeath) this.localDeath.pendingRespawn = true;
+            this.localWeapons = ev.weapons?.slice() || this.localWeapons;
+            this.pendingShots.length = 0;
           }
           break;
         case 'zone':
@@ -800,6 +808,7 @@ class App {
     if (!isSelf) {
       const character = this.characters.get(ev.id);
       character?.fire();
+      this.effects?.casings.eject(character?.model.weapon, ev.w === 'sniper' ? .44 : .015);
       const anchor = character?.model.weapon.muzzle;
       const origin = anchor?.getWorldPosition(new THREE.Vector3()).toArray() || ev.o;
       this.effects?.shot({ ...ev, o: origin }, weapon, anchor);
@@ -820,6 +829,7 @@ class App {
         this.effects.impact({
           p: im.p, n: im.n || [0, 1, 0], tag: im.tag, mat: im.mat, bid: im.bid,
         }, im.at || 0);
+        this.audio.impact(im.mat, im.p, im.at || 0);
       }
     }
   }
@@ -851,7 +861,8 @@ class App {
   // -------------------------------------------------------------------------
   syncState(state) {
     if (!state) return;
-    for (const death of state.deaths || []) this.deathEvents.set(death.id, death);
+    if (Array.isArray(state.deaths)) this.deathEvents = new Map(state.deaths.map(death => [death.id, death]));
+    if (Array.isArray(state.projectiles)) this.effects?.syncProjectiles(state.projectiles);
     this.worldView?.syncDestruction(state.destroyed || []);
     this.syncVehicles(state.vehicles || []);
     this.effects?.syncSmoke(state.smokes || []);
@@ -997,9 +1008,15 @@ class App {
     if (!this.active) { this.updateBackdrop(dt); this.renderer.render(dt); return; }
     const camera = this.renderer.camera;
     const lp = this.active ? this.getLocalPlayer() : null;
-    if (lp && !lp.alive && !this.localDeath) this.startDeath({ kname: 'UNKNOWN', w: '?', pos: [lp.x, lp.y, lp.z] });
+    if (lp && !lp.alive && !this.localDeath) {
+      const death = this.deathEvents.get(this.localId);
+      this.startDeath({ kname: this.names.get(death?.killerId) || 'UNKNOWN', w: death?.weapon || '?',
+        pos: death?.pos || [lp.x, lp.y, lp.z], death });
+    }
     if (lp && !lp.alive && this.localDeath) this.localDeath.seenDead = true;
-    if (lp?.alive && this.localDeath?.seenDead) { this.localDeath = null; this.hud.combat.reset(); this.hud.combat.transition('REDEPLOYED', 450); }
+    if (lp?.alive && (this.localDeath?.seenDead || this.localDeath?.pendingRespawn)) {
+      this.localDeath = null; this.hud.combat.reset(); this.hud.combat.transition('BACK IN THE FIGHT', 450); this.audio.ui('deploy');
+    }
     if (this.localDeath) this.localDeath.age += dt;
     const camLp = this.spectateCamera(lp);
     // Camera and chassis use the same rendered vehicle pose. A separately
@@ -1021,9 +1038,10 @@ class App {
     if (this.localDeath && !lp?.alive && (this.localDeath.age < 1.1 || this.state?.mode === 'tdm')) this.updateDeathCamera(camera);
 
     // Local first-person weapon.
-    this.audio.updateActions(lp);
+    this.audio.updateActions(lp, this.viewmodel?.shotT);
     if (this.viewmodel) {
-      const hide = !lp || !lp.alive || !lp.weapon || (lp.inVehicle && lp.seat === 0) || this.spectateId !== null;
+      const falling = lp && !lp.alive && this.localDeath?.age < .6;
+      const hide = !lp || (!lp.alive && !falling) || !lp.weapon || (lp.inVehicle && lp.seat === 0) || this.spectateId !== null;
       const lookDX = (this.aimYaw - this.prevAimYaw) * 1000;
       const lookDY = (this.aimPitch - this.prevAimPitch) * 1000;
       const speed = lp ? Math.hypot(lp.vx || 0, lp.vz || 0) : 0;
@@ -1039,18 +1057,19 @@ class App {
         switchT: lp?.switchT ?? 0,
         healT: lp?.healT ?? 0,
         hide: hide || this.uiBlocked(),
+        deathAge: lp && !lp.alive ? this.localDeath?.age : null,
       });
       if (lp?.inVehicle && lp.seat === 0 && !this.uiBlocked() && lp.alive) {
         const vehicle = this.vehicleViews.get(lp.inVehicle);
         if (vehicle) this.viewmodel.drive(vehicle);
       }
     }
+    this.hud.optic.update(this.viewmodel, camera, lp, this.uiBlocked());
 
     // Remote characters.
     if (this.mode === 'online' && this.net) {
-      const sample = this.net.buffer.sample(
-        remoteRenderTime(this.net.buffer, this.net.rtt, this.net.jitter),
-      );
+      const sampleTime = remoteRenderTime(this.net.buffer, this.net.rtt, this.net.jitter);
+      const sample = this.net.buffer.sample(sampleTime);
       const seen = new Set();
       const camPos = [camera.position.x, camera.position.y, camera.position.z];
       for (const [id, p] of sample) {
@@ -1071,6 +1090,7 @@ class App {
           stance: p.stance,
           weapon: weaponKey(p.w),
           death: this.deathEvents.get(id),
+          deathAge: this.deathEvents.has(id) ? Math.max(0, sampleTime - this.deathEvents.get(id).at) : undefined,
         });
         view.visible = id !== this.spectateId;
         view.smokes = this.state?.smokes || [];
@@ -1107,6 +1127,7 @@ class App {
           mag: p.inv[p.curWeapon()]?.mag || 0,
           ads: !!p.adsing,
           death: p.death,
+          deathAge: p.death ? this.offlineGame.time - p.death.at : undefined,
         });
         view.visible = p.id !== this.spectateId;
         view.smokes = this.state?.smokes || [];
@@ -1157,7 +1178,8 @@ class App {
   }
 
   updateCamera(dt, lp, camera) {
-    const targetAds = lp.ads && !(lp.inVehicle && lp.seat === 0) && lp.reloadT <= 0 && lp.healT <= 0 ? 1 : 0;
+    const bolt = lp.weapon === 'sniper' ? boltMotion(this.viewmodel?.shotT ?? Infinity).hand : 0;
+    const targetAds = lp.ads && lp.alive && !(lp.inVehicle && lp.seat === 0) && lp.reloadT <= 0 && lp.healT <= 0 ? 1 - bolt * .85 : 0;
     this.adsF = damp(this.adsF, targetAds, 14, dt);
     const W = lp.weapon ? CFG.WEAPONS[lp.weapon] : null;
     const zoom = W ? 1 + (W.adsZoom - 1) * this.adsF : 1;
@@ -1374,7 +1396,7 @@ class App {
     const ground = this.world.terrainHeight(death.feet[0], death.feet[2]);
     camera.position.copy(death.position);
     camera.position.y += (Math.max(ground + .3, death.feet[1] + .28) - death.position.y) * ease;
-    camera.rotation.set(death.pitch * (1 - ease) + .08 * ease, death.yaw, death.side * .38 * ease);
+    camera.rotation.set(death.pitch * (1 - ease) + .08 * ease, death.yaw, death.side * .22 * ease);
     this.audio.setListener(camera.position.toArray(), death.yaw);
   }
 

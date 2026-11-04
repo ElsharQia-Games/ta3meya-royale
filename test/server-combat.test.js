@@ -1,0 +1,60 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CFG } from '../shared/config.js';
+import { WEAPON_KEYS } from '../shared/weapons.js';
+import { startCombatServer, combatPeer } from './helpers/live-server.js';
+
+test('live RPG packets advance, seed a late join and clear after expiry', { timeout: 20000 }, async t => {
+  const server = await startCombatServer(), peers = [];
+  t.after(async () => { for (const peer of peers) peer.net.disconnect(); await server.close(); });
+  const connect = async options => { const p = combatPeer(server.url, options); peers.push(p); return p.connect(); };
+  const heavy = await connect({ name: 'NetHeavy', kit: 'heavy' });
+  await server.fixture('NetHeavy', 'stage');
+  await heavy.wait(p => p.net.cache.get(p.net.playerId)?.w === WEAPON_KEYS.indexOf('rpg') + 1, 'launcher equipped');
+  heavy.input({ shoot: true, ads: true, pitch: 1.05 });
+  await heavy.wait(p => p.projectiles.some(pr => pr.type === 'rocket'), 'rocket snapshot');
+  const first = heavy.projectiles[0];
+  await heavy.wait(p => p.projectiles.some(pr => pr.id === first.id && pr.fuse < first.fuse - .04), 'advancing rocket');
+  assert.ok(Math.hypot(...heavy.projectiles[0].pos.map((value, i) => value - first.pos[i])) > 2);
+  const observer = await connect({ name: 'LateObserver', kit: 'recon' });
+  const initial = observer.states[0].projectiles.find(pr => pr.id === first.id);
+  assert.ok(initial, 'join state carries the currently flying rocket');
+  assert.ok(Array.isArray(initial.pos) && initial.pos.every(Number.isFinite), 'initial projectile uses the live position contract');
+  assert.ok(Array.isArray(initial.vel) && initial.vel.every(Number.isFinite), 'initial velocity supports immediate visual integration');
+  assert.equal(initial.weapon, 'rpg');
+  await observer.wait(p => p.events.some(e => e.k === 'projectileend' && e.projectileId === first.id) && p.projectiles.length === 0, 'spent rocket removed');
+  assert.equal(heavy.events.filter(e => e.k === 'launch').length, 1);
+  assert.equal(heavy.net.cache.get(heavy.net.playerId).mag, 0);
+});
+
+test('online rocket kill, death state, reconnect and kit respawn use server authority', { timeout: 20000 }, async t => {
+  const server = await startCombatServer(), peers = [];
+  t.after(async () => { for (const peer of peers) peer.net.disconnect(); await server.close(); });
+  const connect = async options => { const p = combatPeer(server.url, options); peers.push(p); return p.connect(); };
+  const heavy = await connect({ name: 'NetHeavy', kit: 'heavy' });
+  const recon = await connect({ name: 'NetRecon', kit: 'recon' });
+  const setup = await server.fixture('NetHeavy', 'stage');
+  const shooter = setup.players.find(p => p.id === heavy.net.playerId), target = setup.players.find(p => p.id === recon.net.playerId);
+  await heavy.wait(p => p.net.cache.get(p.net.playerId)?.w === WEAPON_KEYS.indexOf('rpg') + 1, 'launcher equipped');
+  const dx = target.pos[0] - shooter.pos[0], dz = target.pos[2] - shooter.pos[2];
+  heavy.input({ shoot: true, ads: true, yaw: Math.atan2(-dx, -dz),
+    pitch: Math.atan2(target.pos[1] + 1 - shooter.pos[1] - CFG.PLAYER.EYE, Math.hypot(dx, dz)) });
+  await recon.wait(p => p.net.cache.get(p.net.playerId)?.alive === false, 'authoritative rocket death');
+  const kill = recon.events.find(e => e.k === 'kill' && e.victim === recon.net.playerId);
+  assert.equal(kill?.w, 'rpg'); assert.equal(kill.killer, heavy.net.playerId);
+  const observer = await connect({ name: 'LateObserver' });
+  const death = observer.states[0].deaths.find(d => d.id === recon.net.playerId);
+  assert.equal(death?.weapon, 'rpg'); assert.equal(death.killerId, heavy.net.playerId);
+  assert.ok(death.direction.every(Number.isFinite));
+  const id = heavy.net.playerId;
+  heavy.net.disconnect(); heavy.net.kit = 'assault'; await heavy.connect();
+  assert.equal(heavy.net.playerId, id);
+  assert.equal(heavy.welcome.kit, 'heavy', 'a reconnect cannot replace an active kit');
+  assert.deepEqual(heavy.welcome.weapons, ['lmg', 'rpg']);
+  await recon.wait(p => p.net.cache.get(p.net.playerId)?.alive === true, 'normal timed respawn');
+  const respawn = recon.net.cache.get(recon.net.playerId);
+  assert.equal(respawn.w, WEAPON_KEYS.indexOf('sniper') + 1);
+  assert.equal(respawn.mag, CFG.WEAPONS.sniper.mag);
+  assert.equal(respawn.hp, 100);
+  assert.equal(recon.events.filter(e => e.k === 'kill' && e.victim === recon.net.playerId).length, 1);
+});

@@ -7,6 +7,20 @@ animation fidelity and release-scale performance have not been matched.
 
 ## Evidence scope
 
+**Current focus:** the owner has deferred automated tests in favour of design,
+sound, sniper/RPG and animation work. Combined-arms implementation was committed
+at `88d554d`; the subsequent coastal art pass is newer than the historical results
+below. Current appearance is documented in `qa/reports/COMBINED-ARMS.md` and the
+posed `coastal-art-*` images. The earlier131-test/10-browser-check milestone is
+not a passing-test claim for the later art revision.
+
+The latest build succeeds (980.35 kB JS / 280.12 kB gzip; CSS 22.79 kB).
+`coastal-art-pass3` supplies nine directly inspected 1920×1080 posed frames,
+with no reported browser/asset errors: front-load/seating, rifle/optic/bolt,
+exposed-surface blast/dust and local death. Scope-edge clipping found there
+prompted another geometry refinement. No current motion/mixed-audio recording,
+hardware performance result or passing real-network regression is claimed.
+
 Code checkpoints: design `54487f8`, network `e8e368a`, simulation `9a71664`,
 combined presentation `3adbd7d`, followed by input/deployment QA corrections.
 Raw commands/results are in `qa/reports/`, `qa/shots/*/manifest.json` and
@@ -89,20 +103,26 @@ glass, giant nearby nameplates and CSM/material ownership problems. The world
 still looks stylized: repeated building forms, sparse bespoke props, simple
 interior furnishings and primitive-based characters remain evident.
 
+Coastal art pass 3 also increases render cost: the staged launcher-hip frame
+reports 2,085 calls / 1,905,831 triangles, versus 1,023 / 583,112 in the earlier
+combined-arms fixture. These include the renderer's passes and are not a
+controlled like-for-like benchmark. Denser dressing still needs measured
+hardware profiling and draw-cost work; build success does not establish 60fps.
+
 ## Per-system limits
 
 | System | Present | Remaining gap |
 |---|---|---|
 | Movement |Fixed-step capsule, slopes/steps/ceilings, jump/coyote, stances, immersion, fall damage|No vault/mantle/lean; the movement collider is simpler than the articulated body |
 | Hit detection |Head/torso/legs, yaw-oriented prone segments, point-blank hits, server rewind|Solved ballistic paths schedule damage; targets are not continuously tested during flight |
-| Weapons |Seven classes, ammo/reload/cadence, drop/drag/penetration, shared visual anchors|No attachments, breath control or authored recoil patterns |
+| Weapons |Eight classes, validated TDM kits, live RPG rockets, scoped bolt-action sniper, ammo/reload and shared anchors|No attachments or breath control |
 | Vehicles |Car/truck hulls, suspension, reverse/steering/brakes, seats/exits, damage, cockpit/steering hands|Constrained arcade dynamics; no general rigid-body rollover/deformation, aircraft or boats |
 | Destruction |Cover HP, collision/visual state recovery, blast, debris|No structural collapse or persistent fractured debris physics |
 | Bots |Indoor/outdoor navigation, LOS/smoke, reaction/aim error, loot and healing|No squad tactics or human-quality play/difficulty assessment |
-| Animation |Articulated poses, two-bone arms, magazine/pump/bolt/feed-cover, steering hands|No skinned/mocap production character pipeline or physical ragdolls |
+| Animation |Articulated death/settle and dropped weapons, camera fall, front-loaded rockets, bolt/pump/feed-cover, arm IK and steering hands|No skinned/mocap production character pipeline or physical ragdolls |
 | UI/UX |Blackshore deployment/manual/HUD, combat/vehicle/heal states, focus, chat/settings, end/spectate/reconnect|No inventory grid, key rebinding, localization, squads/revive or touchscreen controls |
-| Audio |Procedural gun/footstep/explosion/engine cues, stereo spatial attenuation/filtering, limiter|No HRTF/convolution spatial engine, authored audio library or voice chat |
-| Networking |Protocol6 exact ACK/reset, delta recovery, prediction, interpolation, authoritative validation|WebSocket HOL, movement-focused prediction, no player-state interest culling or full WAN match |
+| Audio |36 local CC0 clips, HRTF, LOS/distance filters, phase-driven Foley, procedural layers and limiter|Subjective mix/listening review, room convolution and voice chat remain open |
+| Networking |Protocol7 exact ACK/reset, delta recovery, live rocket replication, prediction, interpolation, authoritative validation|WebSocket HOL, movement-focused prediction, no player-state interest culling or full WAN match |
 | Operations |Single Node host, room codes, health/stats, documented user-started HTTPS tunnel|No account/matchmaking/persistence service, deployment-scale benchmark or multi-hour soak |
 
 ## Open release gates

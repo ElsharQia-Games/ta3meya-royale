@@ -31,5 +31,6 @@ export function packProjectile(projectile) {
   return { id: projectile.id, type: projectile.type, weapon: projectile.weapon,
     owner: projectile.owner, team: projectile.team, pos: projectile.pos.map(n => +n.toFixed(3)),
     vel: projectile.vel.map(n => +n.toFixed(3)), fuse: +projectile.fuse.toFixed(3),
-    distance: +(projectile.distance || 0).toFixed(2), bounces: projectile.bounces || 0 };
+    distance: +(projectile.distance || 0).toFixed(2), bounces: projectile.bounces || 0,
+    deployed: !!projectile.deployed };
 }

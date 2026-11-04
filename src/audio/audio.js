@@ -34,6 +34,8 @@ export class AudioEngine {
     this.reloadCues = new ReloadCues();
     this.variant = 0;
     this.world = null;
+    this.lastActionWeapon = null;
+    this.lastShotAge = Infinity;
   }
 
   init() {
@@ -112,7 +114,11 @@ export class AudioEngine {
     const panner = position ? this.ctx.createPanner() : this.ctx.createStereoPanner();
     if (position) {
       panner.panningModel = 'HRTF'; panner.distanceModel = 'inverse'; panner.refDistance = 3; panner.maxDistance = 600; panner.rolloffFactor = .65;
-      panner.positionX.value = position[0]; panner.positionY.value = position[1]; panner.positionZ.value = position[2];
+      if (panner.positionX && panner.positionY && panner.positionZ) {
+        panner.positionX.value = position[0]; panner.positionY.value = position[1]; panner.positionZ.value = position[2];
+      } else {
+        panner.setPosition(...position);
+      }
     }
     source.connect(filter).connect(level).connect(panner).connect(this.master);
     const voice = { group, stop: () => { this.voices.delete(voice); try { source.stop(); } catch {} } };
@@ -124,13 +130,22 @@ export class AudioEngine {
 
   cancelGroup(group) { for (const voice of this.voices) if (voice.group === group) voice.stop(); }
 
-  updateActions(player) {
+  updateActions(player, shotAge = Infinity) {
     const active = !!player?.alive && player.reloadT > 0;
-    if (!active) this.cancelGroup('reload');
+    if (!active || this.lastActionWeapon !== player?.weapon) this.cancelGroup('reload');
     const W = CFG.WEAPONS[player?.weapon];
     for (const cue of this.reloadCues.step(player?.weapon, player?.reloadT || 0, W?.reload || 1, !!player?.alive)) {
       if (!this.playSample(cue, { gain: .42, group: 'reload' })) this._noiseBurst(.055, .1, 'bandpass', 2100, 1.2);
     }
+    if (shotAge < this.lastShotAge || this.lastActionWeapon !== player?.weapon) this.lastShotAge = -1;
+    if (player?.alive && !active) {
+      const phases = player.weapon === 'sniper' ? [[.23, .22, .9], [.76, .14, 1.13], [.98, .18, 1.03]]
+        : player.weapon === 'shotgun' ? [[.14, .2, .8], [.34, .22, 1.12]] : [];
+      for (const [at, gain, rate] of phases) if (this.lastShotAge < at && shotAge >= at && Number.isFinite(shotAge)) {
+        this.playSample('bolt', { gain, rate, group: 'mechanism' });
+      }
+    } else this.cancelGroup('mechanism');
+    this.lastShotAge = shotAge; this.lastActionWeapon = player?.weapon;
   }
 
   // Time-domain levels after the limiter. QA uses this to prove no clipping.
@@ -266,7 +281,8 @@ export class AudioEngine {
     const sample = w === 'rpg' ? 'rocket-launch' : `${s.dist > 65 ? 'rifle-distant' : w}-${++this.variant % 2 + 1}`;
     if (this.playSample(sample, { gain: loud * (occluded ? .48 : .85), rate: .98 + Math.random() * .04,
       position: s.dist < 2 ? null : [x, y, z], delay: s.dist < 2 ? 0 : s.delay, cutoff: occluded ? 1000 : lp })) {
-      if (near && ['rpg', 'sniper', 'shotgun'].includes(w)) this._tone(w === 'rpg' ? 52 : 80, .17, .16, 'sine', 0, 0, 32);
+      if (near && ['rpg', 'sniper', 'shotgun'].includes(w)) this._tone(w === 'rpg' ? 52 : 80, .17, .16, 'sine', s.delay, s.pan, 32);
+      if (w === 'rpg') this.playSample('shotgun-1', { gain: .34, rate: .72, position: s.dist < 2 ? null : [x, y, z], delay: s.delay, cutoff: 2200 });
       return;
     }
     this._noiseBurst(0.22 * loud, 0.55 * s.gain * loud, 'lowpass', lp, 0.9, s.delay, s.pan);
@@ -318,10 +334,21 @@ export class AudioEngine {
     if (s.dist > 600) return;
     if (this.playSample('blast-1', { gain: 1.1, position: [x, y, z], delay: s.delay, cutoff: s.dist > 80 ? 2000 : 9000 })) {
       this.playSample('blast-2', { gain: .64, position: [x, y, z], delay: s.delay, rate: .9 });
+      this._tone(57, .65, .28 * s.gain, 'sine', s.delay, s.pan, 27);
       return;
     }
     this._noiseBurst(0.9, 0.8 * s.gain, 'lowpass', s.dist > 80 ? 320 : 900, 0.8, s.delay, s.pan);
     this._tone(62, 0.8, 0.5 * s.gain, 'sine', s.delay, s.pan, 28);
+  }
+
+  impact(material, position, flight = 0) {
+    if (!this.enabled || !position) return;
+    const spatial = this.spatial(...position);
+    if (spatial.dist > 85) return;
+    const key = material === 'metal' ? 'impact-metal' : material === 'glass' ? 'impact-glass'
+      : material === 'wood' ? 'impact-wood' : 'body-fall';
+    this.playSample(key, { gain: material === 'metal' ? .5 : .31, rate: .85 + Math.random() * .22,
+      position, delay: flight + spatial.delay, cutoff: material === 'metal' ? 6500 : 2100 });
   }
 
   // Local footsteps pass no position (centred); remote footsteps pass a world
@@ -389,14 +416,25 @@ export class AudioEngine {
     this.listenerYaw = yaw;
     if (this.ctx) {
       const listener = this.ctx.listener;
-      listener.positionX.value = pos[0]; listener.positionY.value = pos[1]; listener.positionZ.value = pos[2];
-      listener.forwardX.value = -Math.sin(yaw); listener.forwardY.value = 0; listener.forwardZ.value = -Math.cos(yaw);
-      listener.upX.value = 0; listener.upY.value = 1; listener.upZ.value = 0;
+      // Firefox exposes the method-only listener API. Check capabilities rather
+      // than browser names: audio must not abort the camera/render frame.
+      if (listener.positionX && listener.positionY && listener.positionZ) {
+        listener.positionX.value = pos[0]; listener.positionY.value = pos[1]; listener.positionZ.value = pos[2];
+      } else {
+        listener.setPosition(...pos);
+      }
+      if (listener.forwardX && listener.forwardY && listener.forwardZ && listener.upX && listener.upY && listener.upZ) {
+        listener.forwardX.value = -Math.sin(yaw); listener.forwardY.value = 0; listener.forwardZ.value = -Math.cos(yaw);
+        listener.upX.value = 0; listener.upY.value = 1; listener.upZ.value = 0;
+      } else {
+        listener.setOrientation(-Math.sin(yaw), 0, -Math.cos(yaw), 0, 1, 0);
+      }
     }
   }
 
   death() {
     this.cancelGroup('reload'); this.reloadCues.active = false;
+    this.cancelGroup('mechanism');
     this.playSample('body-fall', { gain: .5 });
     if (this.enabled) this._tone(66, .65, .12, 'sine', 0, 0, 28);
   }

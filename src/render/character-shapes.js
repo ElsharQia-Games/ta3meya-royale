@@ -28,3 +28,22 @@ export function carrierPlate() {
   return new THREE.ExtrudeGeometry(shape, { depth: .038, bevelEnabled: true,
     bevelThickness: .009, bevelSize: .012, bevelSegments: 2, steps: 1 });
 }
+
+export function headGeometry() {
+  const rings = [[-.14, .056, .065, -.025], [-.105, .086, .087, -.012],
+    [-.035, .105, .101, 0], [.045, .11, .105, .006], [.105, .087, .092, .008], [.14, .028, .036, .005]];
+  const positions = [], uv = [], indices = [], segments = 24;
+  for (const [y, rx, rz, z] of rings) for (let i = 0; i <= segments; i++) {
+    const a = i / segments * Math.PI * 2;
+    positions.push(Math.cos(a) * rx, y, z + Math.sin(a) * rz);
+    uv.push(i / segments, (y + .14) / .28);
+  }
+  for (let row = 0; row < rings.length - 1; row++) for (let i = 0; i < segments; i++) {
+    const a = row * (segments + 1) + i, b = a + segments + 1;
+    indices.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geometry.setIndex(indices); geometry.computeVertexNormals(); return geometry;
+}

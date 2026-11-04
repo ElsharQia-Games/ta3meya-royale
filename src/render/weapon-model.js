@@ -6,16 +6,16 @@ import { batchStaticParts } from './geometry.js';
 import { texture, stencil } from './textures.js';
 import { CFG } from '../../shared/config.js';
 import { clamp } from '../../shared/math.js';
-import { reloadMotion } from './animation.js';
+import { reloadMotion, boltMotion } from './animation.js';
 import { createLauncherModel } from './launcher-model.js';
 
 export const WEAPON_VISUALS = {
   pistol: { receiver: .19, barrel: .02, stock: 0, optic: 'iron', sightY: .051, tint: 0x747d6e, marking: 'P92 / 9MM' },
   smg: { receiver: .24, barrel: .16, stock: .15, optic: 'reflex', sightY: .123, tint: 0x596354, marking: 'VEX / 9MM' },
   ar: { receiver: .28, barrel: .34, stock: .24, optic: 'reflex', sightY: .133, tint: 0x65725c, marking: 'K4 / 5.56' },
-  dmr: { receiver: .3, barrel: .42, stock: .26, optic: 'scope', sightY: .143, tint: 0x76725d, marking: 'SABLE / 7.62' },
+  dmr: { receiver: .3, barrel: .42, stock: .26, optic: 'scope', sightY: .143, ocularRadius: .022, ocularZ: .08, objectiveRadius: .032, tint: 0x76725d, marking: 'SABLE / 7.62' },
   shotgun: { receiver: .26, barrel: .4, stock: .25, optic: 'iron', sightY: .068, tint: 0x7b6145, marking: 'M12 / 12GA' },
-  sniper: { receiver: .34, barrel: .52, stock: .29, optic: 'scope', sightY: .15, tint: 0x64765e, marking: 'AX / .308' },
+  sniper: { receiver: .34, barrel: .52, stock: .29, optic: 'scope', sightY: .15, ocularRadius: .022, ocularZ: .08, objectiveRadius: .034, tint: 0x64765e, marking: 'AX / .308' },
   lmg: { receiver: .32, barrel: .4, stock: .23, optic: 'reflex', sightY: .14, tint: 0x596448, marking: '249 / 5.56' },
 };
 
@@ -40,7 +40,7 @@ export function createWeaponModel(key = 'ar', detailed = true) {
     parent.add(m); return m;
   };
   const box = (w, h, d, x, y, z, mat = 'receiver', parent = root, radius = .003) =>
-    mesh(detailed ? new RoundedBoxGeometry(w, h, d, 1, radius) : new THREE.BoxGeometry(w, h, d), mat, [x, y, z], parent);
+    mesh(new RoundedBoxGeometry(w, h, d, 1, Math.min(radius, w / 3, h / 3, d / 3)), mat, [x, y, z], parent);
   const cylinder = (r, length, x, y, z, mat = 'steel', open = false) => {
     const m = mesh(new THREE.CylinderGeometry(r, r, length, detailed ? 16 : 8, 1, open), mat, [x, y, z]);
     m.rotation.x = Math.PI / 2; return m;
@@ -58,7 +58,8 @@ export function createWeaponModel(key = 'ar', detailed = true) {
   let pump = null, bolt = null, feedCover = null, shell = null;
 
   // Receiver, separated upper/lower, chamber and pistol grip.
-  const slide = box(receiverWidth, pistol ? .045 : .093, length, 0, .015, 0);
+  const slide = key === 'sniper' ? cylinder(.026, length, 0, .016, 0, 'steel')
+    : box(receiverWidth, pistol ? .045 : .093, length, 0, .015, 0);
   slide.name = pistol ? 'slide' : 'upper_receiver';
   slide.userData.articulated = pistol;
   box(pistol ? .033 : .049, .045, length * .79, 0, -.049, .008, 'polymer');
@@ -85,7 +86,7 @@ export function createWeaponModel(key = 'ar', detailed = true) {
       if (detailed) for (let i = 0; i < 7; i++) box(.072, .067, .006, 0, -.017, -.07 + i * .024, 'polymer', pump, .002);
       magazine.visible = false;
     } else {
-      box(.052, .085, handguardLength, 0, .007, -length * .5 - handguardLength * .49, 'receiver');
+      box(.052, key === 'sniper' ? .058 : .085, handguardLength, 0, key === 'sniper' ? -.005 : .007, -length * .5 - handguardLength * .49, 'receiver');
       cylinder(.013, profile.barrel, 0, .011, -length * .5 - profile.barrel / 2);
       box(.03, .012, handguardLength * .94, 0, .058, -length * .5 - handguardLength * .48, 'steel');
       if (detailed) {
@@ -105,14 +106,20 @@ export function createWeaponModel(key = 'ar', detailed = true) {
           round.rotation.z = Math.PI / 2;
         }
       } else {
-        const mag = box(.032, key === 'smg' ? .19 : .165, .067, 0, -.034, -.006, 'polymer', magazine);
+        const mag = box(.032, key === 'smg' ? .19 : key === 'sniper' ? .075 : .165, .067, 0, -.034, -.006, 'polymer', magazine);
         mag.rotation.x = -.13;
-        if (detailed) for (let i = 0; i < 3; i++) box(.035, .005, .069, 0, -.08 + i * .045, -.006, 'steel', magazine, .001);
+        if (key === 'sniper') magazine.position.y = -.085;
+        if (detailed && key !== 'sniper') for (let i = 0; i < 3; i++) box(.035, .005, .069, 0, -.08 + i * .045, -.006, 'steel', magazine, .001);
       }
     }
     // Buffer tube and a stock with a distinct butt pad and cheek rest.
     cylinder(.019, profile.stock, 0, -.003, length * .5 + profile.stock * .4, 'steel');
-    box(.05, .097, profile.stock * .8, 0, -.024, length * .5 + profile.stock * .45, 'polymer');
+    if (key === 'sniper') {
+      const brace = box(.026, .019, profile.stock * .82, 0, -.06, length * .5 + profile.stock * .42, 'receiver');
+      brace.rotation.x = -.32;
+      box(.059, .032, profile.stock * .6, 0, .019, length * .5 + profile.stock * .48, 'polymer');
+      for (const side of [-1, 1]) cylinder(.006, .24, side * .035, -.065, -.43, 'steel');
+    } else box(.05, .097, profile.stock * .8, 0, -.024, length * .5 + profile.stock * .45, 'polymer');
     box(.048, .02, profile.stock * .64, 0, .035, length * .5 + profile.stock * .46, 'receiver');
     box(.064, .135, .024, 0, -.045, length * .5 + profile.stock * .9, 'rubber');
   }
@@ -143,16 +150,26 @@ export function createWeaponModel(key = 'ar', detailed = true) {
     box(.065, .008, .046, 0, profile.sightY + .026, -.05, 'steel');
     box(.065, .008, .046, 0, profile.sightY - .026, -.05, 'steel');
   } else if (profile.optic === 'scope') {
-    box(.043, .05, .19, 0, profile.sightY - .0635, -.015, 'steel');
+    box(.043, .017, .19, 0, profile.sightY - .061, -.015, 'steel');
+    for (const z of [-.1, .053]) for (const side of [-1, 1]) box(.006, .044, .027, side * (z < 0 ? .028 : .022), profile.sightY - .051, z, 'steel');
     // The visible inner lining closes the annulus between eyepiece/objective.
     // A front-face-only tube looked like two disconnected floating rings.
     const tubeMat = materials.polymer.clone(); tubeMat.side = THREE.DoubleSide; tubeMat.roughness = .91;
     ownMaterials.add(tubeMat);
-    const tube = mesh(new THREE.CylinderGeometry(.029, .048, .22, detailed ? 32 : 12, 1, true), tubeMat, [0, profile.sightY, -.03]);
+    // A narrower eyepiece opens into the main tube. Adjustment hardware sits
+    // on that tube, entirely outside the projected rear aperture.
+    const tube = mesh(new THREE.LatheGeometry([
+      new THREE.Vector2(profile.objectiveRadius, -.14), new THREE.Vector2(.03, -.115),
+      new THREE.Vector2(.03, .055), new THREE.Vector2(profile.ocularRadius, profile.ocularZ),
+    ], detailed ? 32 : 12), tubeMat, [0, profile.sightY, 0]);
     tube.rotation.x = Math.PI / 2;
-    for (const [z, radius] of [[-.14, .048], [.08, .029]]) mesh(new THREE.TorusGeometry(radius, .003, 6, detailed ? 32 : 12), 'steel', [0, profile.sightY, z]);
-    box(.025, .019, .032, 0, profile.sightY + .042, -.025, 'steel');
-    box(.02, .026, .028, .042, profile.sightY, -.025, 'steel');
+    for (const [z, radius] of [[-.14, profile.objectiveRadius], [profile.ocularZ, profile.ocularRadius]]) mesh(new THREE.TorusGeometry(radius, .0025, 6, detailed ? 32 : 12), 'steel', [0, profile.sightY, z]);
+    const turret = mesh(new THREE.CylinderGeometry(.014, .016, .02, 20), 'steel', [0, profile.sightY + .04, .035]);
+    const dial = mesh(new THREE.CylinderGeometry(.014, .014, .016, 20), 'steel', [.038, profile.sightY, .035]); dial.rotation.z = Math.PI / 2;
+    for (let i = 0; i < 16; i++) {
+      const angle = i / 16 * Math.PI * 2;
+      box(.0015, .0006, .003, Math.cos(angle) * .012, turret.position.y + .0104, .035 + Math.sin(angle) * .012, 'accent', root, .0001);
+    }
   } else {
     // Rear notch and fine front blade, not a solid fake scope.
     box(.008, .019, .018, -.014, profile.sightY - .0095, length * .36, 'steel');
@@ -168,6 +185,12 @@ export function createWeaponModel(key = 'ar', detailed = true) {
       for (const side of [-1, 1]) {
         box(.018, .00035, .0002, side * .015, 0, 0, reticleMat, reticle, .0001);
         box(.00035, .018, .0002, 0, side * .015, 0, reticleMat, reticle, .0001);
+      }
+      for (let i = 1; i <= 5; i++) {
+        for (const side of [-1, 1]) {
+          box(.0028, .00032, .0002, 0, side * i * .0036, 0, reticleMat, reticle, .0001);
+          box(.00032, .0028, .0002, side * i * .0036, 0, 0, reticleMat, reticle, .0001);
+        }
       }
     }
   }
@@ -201,12 +224,13 @@ export function createWeaponModel(key = 'ar', detailed = true) {
     const cap = mesh(new THREE.CylinderGeometry(.011, .011, .008, 10), 'brass', [0, 0, .026], shell); cap.rotation.x = Math.PI / 2;
   }
   const muzzle = anchor('muzzle', 0, .013, muzzleZ);
+  const eject = anchor('ejection_port', receiverWidth / 2 + .012, .015, .01);
   const leftGrip = anchor('support_grip', pistol ? -.028 : -.018, pistol ? -.115 : -.067, pistol ? .035 : -length * .5 - Math.min(.14, profile.barrel * .4));
   const rightGrip = anchor('trigger_grip', .027, -.116, length * .3);
   const magRest = magazine.position.clone();
 
   batchStaticParts(root);
-  return { key, root, magazine, magRest, muzzle, sight, leftGrip, rightGrip, gripRest: leftGrip.position.clone(), reticle, slide, profile,
+  return { key, root, magazine, magRest, muzzle, eject, sight, leftGrip, rightGrip, gripRest: leftGrip.position.clone(), reticle, slide, profile,
     pump, pumpRestZ: pump?.position.z || 0, bolt, boltRestZ: bolt?.position.z || 0, feedCover, shell,
     dispose() { root.traverse(o => o.geometry?.dispose()); ownMaterials.forEach(m => m.dispose()); root.removeFromParent(); } };
 }
@@ -222,12 +246,20 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
     model.magazine.position.copy(model.magRest); model.magazine.rotation.set(0, 0, 0);
     model.magazine.visible = ammo > 0;
     if (motion.active) {
-      const insert = clamp((motion.progress - .3) / .45, 0, 1);
+      // Align outside the muzzle before sliding tail-first into the bore. The
+      // hand shifts along the round and releases before it would enter the tube.
+      const p = motion.progress;
+      const align = clamp((p - .12) / .2, 0, 1);
+      const aligned = align * align * (3 - 2 * align);
+      const insert = clamp((p - .34) / .44, 0, 1);
       const eased = insert * insert * (3 - 2 * insert);
-      model.magazine.visible = motion.progress > .23;
-      model.magazine.position.set(-.10 * (1 - eased), -.17 * (1 - eased), model.magRest.z + .38 * (1 - eased));
-      model.magazine.rotation.x = -.75 * (1 - eased);
-      support.lerp(new THREE.Vector3(-.038, -.085, -.32).lerp(model.gripRest, eased), motion.grasp);
+      const hold = clamp((p - .04) / .12, 0, 1) * (1 - clamp((p - .6) / .13, 0, 1));
+      model.magazine.visible = p > .1;
+      model.magazine.position.set(-.07 * (1 - aligned), -.15 * (1 - aligned), model.magRest.z - .6 * (1 - eased));
+      model.magazine.rotation.x = .24 * (1 - aligned);
+      const roundGrip = new THREE.Vector3(-.031, -.025, .14 - eased * .28).applyEuler(model.magazine.rotation).add(model.magazine.position);
+      support.lerp(roundGrip, hold);
+      motion.stage = p < .12 ? 'grasp' : p < .34 ? 'align' : p < .78 ? 'insert' : 'settle';
     }
     return { motion, support, trigger };
   }
@@ -243,12 +275,11 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
     support.z += pump;
   }
   if (model.bolt) {
-    const cycle = Math.sin(Math.PI * clamp((shotT - .13) / .47, 0, 1));
-    model.bolt.position.z = model.boltRestZ + Math.max(cycle, motion.rack) * .065;
-    model.bolt.rotation.z = -Math.max(cycle, motion.rack) * .9;
+    const cycle = boltMotion(shotT);
+    model.bolt.position.z = model.boltRestZ + Math.max(cycle.travel, motion.rack) * .09;
+    model.bolt.rotation.z = -Math.max(cycle.lift, motion.rack) * .95;
     if (model.key === 'sniper' && !motion.active) {
-      const reach = Math.sin(Math.PI * clamp((shotT - .1) / .64, 0, 1));
-      trigger.lerp(model.bolt.position.clone().add(new THREE.Vector3(.033, -.03, 0)), Math.pow(reach, .45));
+      trigger.lerp(model.bolt.position.clone().add(new THREE.Vector3(.033, -.03, 0)), cycle.hand);
     }
   }
   if (model.shell) model.shell.visible = false;
