@@ -4,10 +4,12 @@ import { CFG, STANCE, TEAMS } from '../../shared/config.js';
 import { lerpAngle, clamp, damp } from '../../shared/math.js';
 import { stanceHeight } from '../../shared/physics.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { createWeaponModel } from './weapon-model.js';
+import { createWeaponModel, poseWeaponMechanics } from './weapon-model.js';
 import { solveTwoBone } from './animation.js';
 import { texture } from './textures.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { batchStaticParts } from './geometry.js';
+import { createVehicleModel } from './vehicle-model.js';
+import { smokeObscures } from '../../shared/visibility.js';
 
 const SKIN = [0xc99a72, 0x9c6b4a, 0x6f4a32, 0xe0b48c, 0x8a5a3c];
 const UNIFORM = [0x737961, 0x80765d, 0x60746c, 0x807763];
@@ -18,30 +20,6 @@ function part(geo, mat, x, y, z) {
   m.castShadow = true;
   m.receiveShadow = true;
   return m;
-}
-
-function batchStaticParts(group) {
-  for (const child of [...group.children]) if (child.isGroup) batchStaticParts(child);
-  if (group.userData.articulated) return;
-  const byMaterial = new Map();
-  for (const child of group.children) {
-    if (!child.isMesh) continue;
-    const list = byMaterial.get(child.material) || [];
-    list.push(child); byMaterial.set(child.material, list);
-  }
-  for (const [material, parts] of byMaterial) {
-    if (parts.length < 2) continue;
-    const geometries = parts.map(p => {
-      p.updateMatrix();
-      const g = p.geometry.index ? p.geometry.toNonIndexed() : p.geometry.clone();
-      return g.applyMatrix4(p.matrix);
-    });
-    const merged = mergeGeometries(geometries, false);
-    geometries.forEach(g => g.dispose());
-    parts.forEach(p => { p.removeFromParent(); p.geometry.dispose(); });
-    const result = part(merged, material, 0, 0, 0);
-    result.name = 'batched_kit'; group.add(result);
-  }
 }
 
 function makeCharacter(color, skin) {
@@ -89,11 +67,11 @@ function makeCharacter(color, skin) {
   torso.add(rounded(.06, .06, .11, teamMat, .266, .38, 0, .009));
 
   const head = new THREE.Group();
-  head.position.y = 0.62;
+  head.position.y = .69;
   torso.add(head);
   const face = part(new THREE.SphereGeometry(.143, 14, 10), skinMat, 0, 0, 0);
   face.scale.set(.91, 1.03, .96); head.add(face);
-  const helmet = part(new THREE.SphereGeometry(0.19, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), helmetMat, 0, 0.02, 0);
+  const helmet = part(new THREE.SphereGeometry(.164, 16, 10, 0, Math.PI * 2, 0, Math.PI * .55), helmetMat, 0, .032, 0);
   head.add(helmet);
   head.add(rounded(.28, .037, .1, helmetMat, 0, .075, -.14, .01));
   head.add(rounded(.264, .079, .067, bootMat, 0, .005, -.14, .02));
@@ -201,9 +179,10 @@ class Nameplate {
 }
 
 export class CharacterView {
-  constructor(scene, id, world = null) {
+  constructor(scene, id, world = null, renderer = null) {
     this.scene = scene;
     this.world = world;
+    this.renderer = renderer;
     this.id = id;
     this.team = 0;
     const style = Math.abs(id | 0);
@@ -221,6 +200,8 @@ export class CharacterView {
     this.teamColor = new THREE.Color(TEAMS[0].color);
     this.setTeam(0);
     this.visible = true;
+    this.weaponKey = 'ar'; this.reloadT = 0; this.shotT = Infinity;
+    this.inVehicle = 0; this.seat = -1; this.vehicle = null;
   }
 
   setTeam(team) {
@@ -240,16 +221,43 @@ export class CharacterView {
     this.name = p.name || this.name;
     if (p.team !== undefined && p.team !== this.team) this.setTeam(p.team);
     this.hp = p.hp;
+    this.reloadT = p.reloadT ?? p.reload ?? 0;
+    this.ads = !!(p.ads ?? p.adsing);
+    this.ammo = p.mag || 0;
+    this.inVehicle = p.inVehicle || p.vehicle || 0;
+    this.seat = p.seat ?? -1;
+    if (p.weapon && p.weapon !== this.weaponKey) {
+      const previous = this.model.gun;
+      const weapon = createWeaponModel(p.weapon, false);
+      weapon.root.position.copy(previous.position); weapon.root.quaternion.copy(previous.quaternion);
+      this.model.weapon.dispose();
+      this.model.weapon = weapon; this.model.gun = weapon.root;
+      this.model.torso.add(weapon.root);
+      this.renderer?.registerObject(weapon.root);
+      this.weaponKey = p.weapon;
+    }
   }
+
+  fire() { this.shotT = 0; }
 
   update(dt, cameraPos) {
     const m = this.model;
     const r = m.root;
-    const prone = this.stance === STANCE.PRONE;
-    const crouch = this.stance === STANCE.CROUCH;
+    const seated = !!this.inVehicle;
+    const prone = !seated && this.stance === STANCE.PRONE;
+    const crouch = !seated && this.stance === STANCE.CROUCH;
+    this.shotT += dt;
 
     r.position.set(this.pos[0], this.pos[1], this.pos[2]);
     r.rotation.y = this.yaw;
+    r.visible = this.visible;
+    if (seated && this.vehicle) {
+      const forward = this.seat < 2 ? (this.vehicle.model.group.name === 'vehicle_truck' ? 1.05 : .15) : -.8;
+      const offset = new THREE.Vector3(this.seat % 2 === 0 ? .43 : -.43, .15, -forward);
+      this.vehicle.group.updateWorldMatrix(true, false);
+      r.position.copy(this.vehicle.group.localToWorld(offset));
+      r.rotation.y = this.vehicle.yaw;
+    }
     const plateY = prone ? .75 : crouch ? 1.42 : 2.0;
     this.plateY = damp(this.plateY ?? plateY, plateY, 12, dt);
     this.plate.sprite.position.set(this.pos[0], this.pos[1] + this.plateY, this.pos[2]);
@@ -279,26 +287,29 @@ export class CharacterView {
     this.deathT = 0;
     r.rotation.x = 0;
     r.rotation.z = 0;
-    m.gun.visible = true;
+    m.gun.visible = !(seated && this.seat === 0);
     this.plate.sprite.visible = true;
 
     // Stance: lower the hips and fold the knees so the boots stay on the
     // ground; prone folds the whole body down and extends the legs behind it.
-    const targetHip = prone ? .34 : crouch ? .54 : .94;
+    const targetHip = seated ? .31 : prone ? .34 : crouch ? .54 : .94;
     m.hips.position.y = damp(m.hips.position.y, targetHip, 12, dt);
-    m.torso.position.y = damp(m.torso.position.y, prone ? -.15 : crouch ? -.18 : 0, 12, dt);
+    m.hips.position.z = damp(m.hips.position.z, prone ? .66 : 0, 12, dt);
+    m.torso.position.y = damp(m.torso.position.y, seated ? -.2 : prone ? -.15 : crouch ? -.18 : 0, 12, dt);
     m.torso.rotation.x = damp(m.torso.rotation.x,
-      prone ? -1.28 : crouch ? .32 : clamp(this.pitch * .2, -.2, .2), 10, dt);
+      seated ? 0 : prone ? -1.28 : crouch ? .32 : clamp(this.pitch * .2, -.2, .2), 10, dt);
     m.torso.rotation.z = 0;
 
     // Walk cycle from horizontal velocity estimate.
-    const speed = Math.hypot(this.vx || 0, this.vz || 0);
+    const speed = seated ? 0 : Math.hypot(this.vx || 0, this.vz || 0);
     this.walk += dt * (2.2 + speed * 1.35);
     const swing = Math.min(1, speed / 5) * 0.62;
     let thighL = Math.sin(this.walk) * swing;
     let thighR = -Math.sin(this.walk) * swing;
     let shin = 0;
-    if (crouch) {
+    if (seated) {
+      thighL = thighR = 1.34; shin = -1.2;
+    } else if (crouch) {
       // Thigh forward to horizontal, shin back down to vertical: the knee
       // folds instead of the boots being driven through the ground.
       thighL = 1.45 + thighL * 0.12;
@@ -312,15 +323,19 @@ export class CharacterView {
     m.legR.rotation.x = damp(m.legR.rotation.x, thighR, 12, dt);
     m.kneeL.rotation.x = damp(m.kneeL.rotation.x, shin, 12, dt);
     m.kneeR.rotation.x = damp(m.kneeR.rotation.x, shin, 12, dt);
-    m.head.rotation.x = damp(m.head.rotation.x, prone ? 0.9 : -this.pitch * 0.55, 10, dt);
+    m.head.rotation.x = damp(m.head.rotation.x, clamp(this.pitch - m.torso.rotation.x, -.85, 1.25), 10, dt);
+    m.head.rotation.y = seated && this.vehicle ? clamp(Math.atan2(Math.sin(this.yaw - this.vehicle.yaw), Math.cos(this.yaw - this.vehicle.yaw)), -.8, .8) : 0;
     // Keep the rifle level in prone: the torso is pitched ~73 degrees forward,
     // so an unrotated gun would point its muzzle into the terrain.
-    m.gun.rotation.x = damp(m.gun.rotation.x, prone ? 1.28 : 0, 10, dt);
-    m.gun.position.y = .31 + Math.sin(this.walk * .7) * .003;
+    const { motion, support } = poseWeaponMechanics(m.weapon, this.reloadT, this.shotT, this.ammo);
+    m.gun.rotation.x = damp(m.gun.rotation.x, this.pitch - m.torso.rotation.x + motion.lift * .14, 10, dt);
+    m.gun.rotation.z = motion.lift * .3;
+    m.gun.position.y = damp(m.gun.position.y, (this.ads && !motion.active ? .47 : .31) + (prone ? .23 : 0) + Math.sin(this.walk * .7) * .003 + motion.lift * .07, 14, dt);
+    m.gun.position.z = damp(m.gun.position.z, prone ? -.18 : -.19, 14, dt);
     m.gun.updateMatrix();
     for (const arm of m.arms) {
-      const anchor = arm.side < 0 ? m.weapon.leftGrip : m.weapon.rightGrip;
-      const target = anchor.position.clone().applyMatrix4(m.gun.matrix);
+      const target = seated && this.seat === 0 ? new THREE.Vector3(arm.side * .155, .5, -.27)
+        : (arm.side < 0 ? support.clone() : m.weapon.rightGrip.position.clone()).applyMatrix4(m.gun.matrix);
       const shoulder = [arm.side * .245, .405, 0];
       const pose = solveTwoBone(shoulder, target.toArray(), [arm.side * .5, .02, .03], .29, .3);
       const a = new THREE.Vector3(...shoulder), b = new THREE.Vector3(...pose.elbow), c = new THREE.Vector3(...pose.hand);
@@ -332,7 +347,7 @@ export class CharacterView {
       };
       place(arm.upper, a, b); place(arm.lower, b, c);
       arm.elbow.position.copy(b); arm.hand.position.copy(c);
-      arm.hand.rotation.x = prone ? 1.28 : 0;
+      arm.hand.quaternion.copy(m.gun.quaternion);
     }
 
     // Hide our own body and nameplate from the first-person camera by distance.
@@ -347,8 +362,8 @@ export class CharacterView {
     // and cap the growth to avoid giant plates in the far field.
     const plateHeight = clamp(d3 * .032, .15, 1.45);
     this.plate.sprite.scale.set(plateHeight * 4, plateHeight, 1);
-    r.visible = d > 0.9;
-    this.plate.sprite.visible = this.alive && d3 > 1.6;
+    this.plate.sprite.visible = this.alive && this.visible && !seated && d3 > 1.6 &&
+      (!cameraPos || !smokeObscures(this.smokes, cameraPos, [r.position.x, r.position.y + this.plateY - .3, r.position.z]));
   }
 
   dispose() {
@@ -363,55 +378,16 @@ export class CharacterView {
 // ---------------------------------------------------------------------------
 // Vehicles
 // ---------------------------------------------------------------------------
-function makeVehicle(type) {
-  const g = new THREE.Group();
-  const paint = new THREE.MeshStandardMaterial({
-    color: type === 'truck' ? 0x4e5a4a : 0x6b4a3a, roughness: 0.55, metalness: 0.45,
-  });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x24272a, roughness: 0.8, metalness: 0.3 });
-  const glass = new THREE.MeshStandardMaterial({ color: 0x9fc3d6, roughness: 0.1, metalness: 0.2, transparent: true, opacity: 0.5 });
-  const wheels = [];
-
-  if (type === 'truck') {
-    g.add(part(new THREE.BoxGeometry(2.2, 1.1, 5.6), paint, 0, 0.95, 0));
-    g.add(part(new THREE.BoxGeometry(2.15, 1.5, 1.8), paint, 0, 1.6, -1.75));
-    g.add(part(new THREE.BoxGeometry(1.9, 0.6, 0.06), glass, 0, 1.85, -2.66));
-    g.add(part(new THREE.BoxGeometry(2.3, 1.6, 3.2), dark, 0, 1.55, 0.9));
-  } else {
-    g.add(part(new THREE.BoxGeometry(1.9, 0.72, 4.2), paint, 0, 0.72, 0));
-    g.add(part(new THREE.BoxGeometry(1.75, 0.66, 1.9), paint, 0, 1.28, 0.1));
-    g.add(part(new THREE.BoxGeometry(1.6, 0.5, 0.06), glass, 0, 1.34, -0.85));
-    g.add(part(new THREE.BoxGeometry(1.6, 0.5, 0.06), glass, 0, 1.34, 1.06));
-    g.add(part(new THREE.BoxGeometry(0.06, 0.44, 1.4), glass, -0.88, 1.32, 0.1));
-    g.add(part(new THREE.BoxGeometry(0.06, 0.44, 1.4), glass, 0.88, 1.32, 0.1));
-  }
-  // headlights
-  const lightMat = new THREE.MeshStandardMaterial({ color: 0xfff2c4, emissive: 0xffe6a0, emissiveIntensity: 1.2 });
-  const front = type === 'truck' ? -2.75 : -2.08;
-  g.add(part(new THREE.BoxGeometry(0.34, 0.2, 0.06), lightMat, -0.7, 0.9, front));
-  g.add(part(new THREE.BoxGeometry(0.34, 0.2, 0.06), lightMat, 0.7, 0.9, front));
-
-  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 12);
-  wheelGeo.rotateZ(Math.PI / 2);
-  const positions = type === 'truck'
-    ? [[-1.05, 0.42, -1.7], [1.05, 0.42, -1.7], [-1.05, 0.42, 1.8], [1.05, 0.42, 1.8]]
-    : [[-0.92, 0.42, -1.35], [0.92, 0.42, -1.35], [-0.92, 0.42, 1.35], [0.92, 0.42, 1.35]];
-  for (const p of positions) {
-    const w = part(wheelGeo, dark, p[0], p[1], p[2]);
-    wheels.push(w);
-    g.add(w);
-  }
-  return { group: g, wheels };
-}
-
 export class VehicleView {
-  constructor(scene, id, type) {
+  constructor(scene, id, type, renderer = null) {
     this.scene = scene;
     this.id = id;
-    const { group, wheels } = makeVehicle(type);
+    this.model = createVehicleModel(type);
+    const { group, wheels } = this.model;
     this.group = group;
     this.wheels = wheels;
     scene.add(group);
+    renderer?.registerObject(group);
     this.pos = [0, 0, 0];
     this.target = [0, 0, 0];
     this.yaw = 0; this.targetYaw = 0;
@@ -426,8 +402,14 @@ export class VehicleView {
     this.targetYaw = v.yaw;
     this.pitch = v.pitch || 0;
     this.roll = v.roll || 0;
-    this.speed = v.speed || 0;
+    this.speed = v.forwardSpeed ?? v.speed ?? 0;
+    this.steer = v.steer || 0;
+    this.wheelComp = v.wheelComp || [0, 0, 0, 0];
+    this.braking = !!v.braking;
     this.health = v.health ?? 100;
+    if (!this.initialized || Math.hypot(...this.pos.map((n, i) => n - this.target[i])) > 12) {
+      this.pos = this.target.slice(); this.yaw = this.targetYaw; this.initialized = true;
+    }
   }
 
   update(dt) {
@@ -437,12 +419,22 @@ export class VehicleView {
     this.pos[2] += (this.target[2] - this.pos[2]) * k;
     this.yaw = lerpAngle(this.yaw, this.targetYaw, k);
     this.group.position.set(this.pos[0], this.pos[1], this.pos[2]);
-    this.group.rotation.set(this.pitch, this.yaw, this.roll, 'YXZ');
+    this.group.rotation.set(0, this.yaw, 0, 'YXZ');
+    this.model.chassis.rotation.set(this.pitch, 0, this.roll);
     this.wheelSpin += this.speed * dt / 0.42;
-    for (const w of this.wheels) w.rotation.x = this.wheelSpin;
+    for (const wheel of this.wheels) {
+      wheel.pivot.position.y = CFG.VEHICLE.wheelMountHeight - CFG.VEHICLE.suspensionRest + this.wheelComp[wheel.contact];
+      wheel.pivot.rotation.y = wheel.front ? this.steer * CFG.VEHICLE.steerMax : 0;
+      wheel.spin.rotation.x = -this.wheelSpin;
+    }
+    this.model.steering.rotation.z = -this.steer * 1.7;
+    this.model.mats.rearLamp.emissiveIntensity = this.braking ? 1.4 : .15;
+    const wreck = this.health <= 0;
+    this.model.mats.paint.color.setHex(wreck ? 0x343b33 : this.model.group.name === 'vehicle_truck' ? 0x606d53 : 0x7b8062);
+    this.model.mats.lamp.emissiveIntensity = wreck ? 0 : .22;
   }
 
   dispose() {
-    this.scene.remove(this.group);
+    this.model.dispose();
   }
 }

@@ -6,7 +6,7 @@ import { CFG, STANCE, MATCH_STATE, TEAMS } from './config.js';
 import { RNG, clamp, yawTo, TAU, lerp } from './math.js';
 import { World } from './world.js';
 import { movePlayer, stanceHeight, stanceEye, supportHeight, capsuleBlocked } from './physics.js';
-import { vehicleShape, vehicleRideHeight, vehicleAxes, vehicleFootprint, vehicleBoxContact, vehiclePairContact, vehiclePlayerContact, packVehicle } from './vehicle.js';
+import { vehicleShape, vehicleRideHeight, vehicleAxes, vehicleFootprint, vehicleBoxContact, vehiclePairContact, vehiclePlayerContact, packVehicle, vehicleInReach } from './vehicle.js';
 import {
   tryFire, tryReload, finishReload, switchWeapon, throwGrenade, stepProjectiles,
   tryInteract, spawnWorldLoot, dropInventory, hitboxesFor, applyDamage, explode,
@@ -72,8 +72,8 @@ export class Player {
     this.spectate = null;
     this.zoneT = 0;
   }
-  height() { return this.inVehicle ? CFG.PLAYER.CROUCH_HEIGHT : stanceHeight(this.stance); }
-  eyeHeight() { return this.inVehicle ? .95 : stanceEye(this.stance); }
+  height() { return this.inVehicle ? CFG.VEHICLE.occupantHeight : stanceHeight(this.stance); }
+  eyeHeight() { return this.inVehicle ? CFG.VEHICLE.eyeHeight : stanceEye(this.stance); }
   curWeapon() { return this.weapons[this.curSlot]; }
   hasWeapon() { return !!this.curWeapon(); }
   giveLoadout(loadout) {
@@ -535,10 +535,7 @@ export class Game {
     if (!p.alive || p.inVehicle || v.health <= 0 || v.submerged) return false;
     const seat = v.occupants.findIndex(o => o === null);
     if (seat < 0) return false;
-    if (Math.hypot(v.pos[0] - p.pos[0], v.pos[2] - p.pos[2]) > CFG.VEHICLE.enterRange || Math.abs(v.pos[1] - p.pos[1]) > 2) return false;
-    const from = [p.pos[0], p.pos[1] + .8, p.pos[2]], to = [v.pos[0], v.pos[1] + .4, v.pos[2]];
-    const delta = to.map((value, i) => value - from[i]), distance = Math.hypot(...delta);
-    if (distance > .1 && this.world.raycast(from, delta.map(value => value / distance), distance - .1, { ignoreVehicle: v.id })) return false;
+    if (!vehicleInReach(this.world, p.pos, p.eyeHeight(), v)) return false;
     v.occupants[seat] = p.id;
     p.inVehicle = v.id; p.seat = seat;
     p.vel = [0, 0, 0];
@@ -820,7 +817,7 @@ export class Game {
   stepSmokes(dt) {
     this.smokes.length = 0;
     for (const pr of this.projectiles) {
-      if (pr.type === 'smoke' && pr.fuse <= 0) this.smokes.push({ x: pr.pos[0], y: pr.pos[1], z: pr.pos[2], r: CFG.SMOKE.radius });
+      if (pr.type === 'smoke' && pr.fuse <= 0) this.smokes.push({ id: pr.id, x: pr.pos[0], y: pr.pos[1], z: pr.pos[2], r: CFG.SMOKE.radius });
     }
   }
 
@@ -832,7 +829,8 @@ export class Game {
     for (const p of this.players.values()) {
       if (!p.alive) continue;
       const h = p.height();
-      out.push({ id: p.id, pos: p.pos, height: h, stance: p.stance, alive: p.alive, team: p.team, hitboxes: hitboxesFor(p.pos, h, p.stance) });
+      const stance = p.inVehicle ? STANCE.CROUCH : p.stance;
+      out.push({ id: p.id, pos: p.pos, height: h, stance, yaw: p.yaw, alive: p.alive, team: p.team, hitboxes: hitboxesFor(p.pos, h, stance, p.yaw) });
     }
     return out;
   }
@@ -842,7 +840,7 @@ export class Game {
     for (const p of this.players.values()) {
       if (!p.alive) continue;
       const h = p.height();
-      out.set(p.id, { id: p.id, pos: p.pos.slice(), height: h, stance: p.stance, alive: true, team: p.team });
+      out.set(p.id, { id: p.id, pos: p.pos.slice(), height: h, stance: p.inVehicle ? STANCE.CROUCH : p.stance, yaw: p.yaw, alive: true, team: p.team });
     }
     return out;
   }
@@ -850,7 +848,7 @@ export class Game {
   static targetsFromHistory(hist) {
     const out = [];
     for (const t of hist.values()) {
-      out.push({ ...t, hitboxes: hitboxesFor(t.pos, t.height, t.stance) });
+      out.push({ ...t, hitboxes: hitboxesFor(t.pos, t.height, t.stance, t.yaw || 0) });
     }
     return out;
   }

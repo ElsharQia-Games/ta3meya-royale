@@ -1,0 +1,70 @@
+{
+  "source": "https://quaternius.itch.io/stylized-nature-megakit",
+  "edition": "free Standard",
+  "license": "CC0-1.0",
+  "archiveSha256": "298f6732b872e4cf7b30e6e7abf9641c7f6dc6b326df37ac089533ed7e3d58c9",
+  "textureSize": 512,
+  "webpQuality": 90,
+  "leafPalette": {
+    "Leaf_Pine_C.png": [
+      99,
+      120,
+      78
+    ],
+    "Leaves_NormalTree_C.png": [
+      120,
+      137,
+      93
+    ],
+    "Leaves_TwistedTree_C.png": [
+      107,
+      125,
+      81
+    ]
+  },
+  "assets": [
+    {
+      "file": "Pine_1.gltf",
+      "sourceSha256": "adc85a72e6f46f71317ca5f7630876bfb207f687427bc9e37cd97ec4af5f2cbc",
+      "leavesOnly": true,
+      "triangles": 770
+    },
+    {
+      "file": "Pine_3.gltf",
+      "sourceSha256": "54c72a4d614f053dd4b3d4404076a361de6085ec6a34560e42a76d7e79d89830",
+      "leavesOnly": true,
+      "triangles": 462
+    },
+    {
+      "file": "CommonTree_1.gltf",
+      "sourceSha256": "b51cdea6545edb51d102dd6c27caafe62aa75e3c328ac8f9039f4e7bfd690bfa",
+      "leavesOnly": true,
+      "triangles": 1920
+    },
+    {
+      "file": "CommonTree_3.gltf",
+      "sourceSha256": "17c6537aa8042bb7255fbb501bf7aeb2b6db87c16766f794f9c37be3ce70c976",
+      "leavesOnly": true,
+      "triangles": 1800
+    },
+    {
+      "file": "Bush_Common.gltf",
+      "sourceSha256": "77811fca92610cb254713d3d49d5029ab6cf13050c3afb61aa942786a7b2ca90",
+      "leavesOnly": false,
+      "triangles": 900
+    },
+    {
+      "file": "Fern_1.gltf",
+      "sourceSha256": "d41915cffe9dbbde1ae88be381eb9c60f7caa2274511436cc78fe4de627468ab",
+      "leavesOnly": false,
+      "triangles": 288
+    },
+    {
+      "file": "Rock_Medium_1.gltf",
+      "sourceSha256": "5d1ab1fa03218f4a908728ed0eabe6486344a7e4f510b0d3d6f837fd1d011bd8",
+      "leavesOnly": false,
+      "triangles": 342
+    }
+  ],
+  "shippedBytes": 1706538
+}

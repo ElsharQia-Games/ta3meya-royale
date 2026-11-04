@@ -18,6 +18,15 @@ export function vehicleAxes(yaw) {
   return { right: [Math.cos(yaw), -Math.sin(yaw)], forward: [-Math.sin(yaw), -Math.cos(yaw)] };
 }
 
+export function vehicleInReach(world, feet, eyeHeight, vehicle) {
+  if (vehicle.health <= 0 || vehicle.submerged || !vehicle.occupants.includes(null)) return false;
+  const pos = vehicle.pos || [vehicle.x, vehicle.y, vehicle.z];
+  if (Math.hypot(pos[0] - feet[0], pos[2] - feet[2]) > CFG.VEHICLE.enterRange || Math.abs(pos[1] - feet[1]) > 2) return false;
+  const from = [feet[0], feet[1] + eyeHeight, feet[2]], to = [pos[0], pos[1] + .4, pos[2]];
+  const delta = to.map((n, i) => n - from[i]), distance = Math.hypot(...delta);
+  return distance <= .1 || !world.raycast(from, delta.map(n => n / distance), distance - .1, { ignoreVehicle: vehicle.id });
+}
+
 export function vehicleFootprint(v) {
   const s = vehicleShape(v.type), c = Math.abs(Math.cos(v.yaw)), n = Math.abs(Math.sin(v.yaw));
   return { x: c * s.width / 2 + n * s.length / 2, z: n * s.width / 2 + c * s.length / 2 };

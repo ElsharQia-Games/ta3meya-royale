@@ -20,7 +20,10 @@
     "qa:online": "node qa/screens.js",
     "qa:multiplayer": "node qa/multiplayer.mjs",
     "qa:offline": "node qa/screens.js --offline",
-    "qa:visual": "node qa/visual.mjs"
+    "qa:visual": "node qa/visual.mjs",
+    "qa:design": "node qa/design.mjs",
+    "qa:arsenal": "node qa/arsenal.mjs",
+    "qa:vehicle": "node qa/vehicle.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",

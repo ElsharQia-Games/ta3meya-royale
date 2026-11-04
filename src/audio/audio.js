@@ -178,7 +178,9 @@ export class AudioEngine {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.004);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f).connect(g).connect(this._panner(pan));
+    const panner = this._panner(pan);
+    src.connect(f).connect(g).connect(panner);
+    src.onended = () => { src.disconnect(); f.disconnect(); g.disconnect(); panner.disconnect(); };
     src.start(t);
     src.stop(t + dur + 0.05);
   }
@@ -193,7 +195,9 @@ export class AudioEngine {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.006);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(this._panner(pan));
+    const panner = this._panner(pan);
+    o.connect(g).connect(panner);
+    o.onended = () => { o.disconnect(); g.disconnect(); panner.disconnect(); };
     o.start(t); o.stop(t + dur + 0.05);
   }
 
@@ -330,5 +334,31 @@ export class AudioEngine {
   setListener(pos, yaw) {
     this.listenerPos = pos;
     this.listenerYaw = yaw;
+  }
+
+  vehicleLoop(vehicle) {
+    if (!this.enabled) return;
+    if (!this._engine && vehicle) {
+      const gain = this.ctx.createGain(); gain.gain.value = 0;
+      const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 500;
+      const pan = this._panner(0);
+      const fundamental = this.ctx.createOscillator(); fundamental.type = 'triangle';
+      const exhaust = this.ctx.createOscillator(); exhaust.type = 'sawtooth';
+      const exhaustGain = this.ctx.createGain(); exhaustGain.gain.value = .22;
+      fundamental.connect(filter); exhaust.connect(exhaustGain).connect(filter);
+      filter.connect(gain).connect(pan);
+      fundamental.start(); exhaust.start();
+      this._engine = { gain, filter, pan, fundamental, exhaust };
+    }
+    if (!this._engine) return;
+    const loop = this._engine, now = this.ctx.currentTime;
+    const spatial = vehicle ? this.spatial(vehicle.x, vehicle.y, vehicle.z) : { gain: 0, pan: 0, dist: Infinity };
+    const active = vehicle && vehicle.health > 0 && !vehicle.submerged && spatial.dist < 90;
+    const speed = vehicle?.speed || 0;
+    loop.gain.gain.setTargetAtTime(active ? .12 * spatial.gain : 0, now, .15);
+    loop.fundamental.frequency.setTargetAtTime(55 + speed * 6, now, .1);
+    loop.exhaust.frequency.setTargetAtTime(27.5 + speed * 3, now, .1);
+    loop.filter.frequency.setTargetAtTime(450 + speed * 20, now, .15);
+    loop.pan.pan.setTargetAtTime(spatial.pan, now, .08);
   }
 }

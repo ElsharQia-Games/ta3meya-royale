@@ -62,6 +62,7 @@ export class NetClient {
     this.onEvents = null;
     this.onLoot = null;
     this.onState = null;
+    this.onVehicles = null;
     this.onChat = null;
     this.onStatus = null;
     this.onError = null;
@@ -236,6 +237,9 @@ export class NetClient {
           break;
         case 'state':
           if (this.onState) this.onState(msg);
+          break;
+        case 'vehicles':
+          if (this.onVehicles) this.onVehicles(msg);
           break;
         case 'chat':
           if (this.onChat) this.onChat(msg);

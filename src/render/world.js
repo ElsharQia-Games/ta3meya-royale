@@ -8,6 +8,9 @@ import { texture, TILE } from './textures.js';
 import { clamp, smoothstep } from '../../shared/math.js';
 import { BLACKSHORE } from './style.js';
 import { pineGeometry, GroundCover } from './foliage.js';
+import { NatureDetail } from './nature.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { createWeaponModel } from './weapon-model.js';
 
 const _v = new THREE.Vector3();
 
@@ -66,7 +69,11 @@ export class WorldRenderer {
   constructor(renderer, world) {
     this.renderer = renderer;
     this.world = world;
-    this.scene = renderer.scene;
+    this.scene = new THREE.Group();
+    this.scene.name = 'blackshore_world';
+    renderer.scene.add(this.scene);
+    this.ownedTextures = [];
+    this.disposed = false;
     this.mats = makeMaterials(renderer);
     this.dynamicMeshes = new Map();
     this.staticMeshes = [];
@@ -85,6 +92,11 @@ export class WorldRenderer {
     this._buildWater();
     this._buildBoundaryFog();
     this.groundCover = new GroundCover(renderer, world);
+    this.scene.add(this.groundCover.mesh);
+    this.nature = new NatureDetail(this);
+    this.assetsReady = Promise.all([this.assetsReady, this.nature.ready]).catch(error => {
+      this.assetError = String(error); console.error('World asset load failed', error);
+    }).then(() => { this.assetsLoaded = true; });
   }
 
   // -------------------------------------------------------------------------
@@ -142,17 +154,18 @@ export class WorldRenderer {
     const load = (file, colour) => loader.loadAsync(`/textures/${file}.webp`).then(tex => {
       tex.colorSpace = colour ? THREE.SRGBColorSpace : THREE.NoColorSpace;
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(150, 150);
+      tex.repeat.set(w.size / 2.5, w.size / 2.5);
       tex.anisotropy = Math.min(8, this.renderer.renderer.capabilities.getMaxAnisotropy());
       return tex;
     });
     this.assetsReady = Promise.all([
       load('grass-albedo', true), load('grass-normal', false), load('grass-roughness', false),
     ]).then(([albedo, normal, roughness]) => {
+      if (this.disposed) { for (const map of [albedo, normal, roughness]) map.dispose(); return; }
+      this.ownedTextures.push(albedo, normal, roughness);
       mat.map = albedo; mat.normalMap = normal; mat.normalScale.set(.5, .5);
       mat.bumpMap = null; mat.roughnessMap = roughness; mat.needsUpdate = true;
-      this.assetsLoaded = true;
-    }).catch(error => { this.assetError = String(error); this.assetsLoaded = true; console.error('Terrain texture load failed', error); });
+    }).catch(error => { this.assetError = String(error); console.error('Terrain texture load failed', error); });
   }
 
   // -------------------------------------------------------------------------
@@ -247,11 +260,44 @@ export class WorldRenderer {
   }
 
   removeBox(id) {
+    const box = this.world.boxes[id];
+    if (box?.dynamic) box.destroyed = true;
     const mesh = this.dynamicMeshes.get(id);
     if (!mesh) return;
     this.scene.remove(mesh);
     mesh.geometry.dispose();
     this.dynamicMeshes.delete(id);
+  }
+
+  syncDestruction(ids) {
+    const destroyed = new Set(ids);
+    for (const b of this.world.boxes) {
+      if (!b.dynamic || !b.render) continue;
+      const gone = destroyed.has(b.id);
+      b.destroyed = gone;
+      if (gone) this.removeBox(b.id);
+      else if (!this.dynamicMeshes.has(b.id)) {
+        b.hp = b.maxHp;
+        const mesh = new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.name = `dyn_${b.id}`;
+        this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
+      }
+    }
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.nature?.dispose();
+    this.scene.removeFromParent();
+    const geometries = new Set(), materials = new Set(Object.values(this.mats));
+    this.scene.traverse(o => {
+      if (o.geometry) geometries.add(o.geometry);
+      if (o.material) for (const m of Array.isArray(o.material) ? o.material : [o.material]) materials.add(m);
+    });
+    geometries.forEach(g => g.dispose());
+    materials.forEach(m => m.dispose());
+    this.ownedTextures.forEach(t => t.dispose());
   }
 
   _buildArchitecture() {
@@ -297,6 +343,7 @@ export class WorldRenderer {
       }
     });
     const atlas = new THREE.CanvasTexture(labels); atlas.colorSpace = THREE.SRGBColorSpace;
+    this.ownedTextures.push(atlas);
     for (const [geometries, material, name] of [
       [trim, new THREE.MeshStandardMaterial({ color: 0xada98b, roughness: .9 }), 'architecture_trim'],
       [bands, new THREE.MeshStandardMaterial({ color: 0x667366, roughness: .93 }), 'painted_plinths'],
@@ -432,11 +479,12 @@ export class WorldRenderer {
   // -------------------------------------------------------------------------
   _buildWater() {
     const lake = this.world.lake;
-    const geo = new THREE.CircleGeometry(lake.r * 1.36, 72);
+    const geo = new THREE.CircleGeometry(lake.r * 1.45, 128);
     geo.rotateX(-Math.PI / 2);
     const mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
+      side: THREE.DoubleSide,
       uniforms: {
         uTime: { value: 0 },
         uSun: { value: new THREE.Vector3(...BLACKSHORE.sunDirection).normalize() },
@@ -494,24 +542,28 @@ export class WorldRenderer {
   }
 
   _buildBoundaryFog() {
-    // Distant landforms and sea occupy the scenery outside the playable bounds.
-    // A height-varying silhouette replaces the old flat cylindrical fog wall.
-    for (let ring = 0; ring < 2; ring++) {
-      const vertices = [], count = 112;
-      const ridge = i => {
-        const a = i / count * Math.PI * 2;
-        const radius = 710 + ring * 250 + Math.sin(a * 7) * 42;
-        const height = 35 + ring * 24 + Math.pow(Math.sin(a * 3.5 + ring), 2) * 90 + Math.pow(Math.cos(a * 8.5), 6) * 55;
-        return [[Math.cos(a) * radius, -14, Math.sin(a) * radius], [Math.cos(a) * (radius + 80), height, Math.sin(a) * (radius + 80)]];
-      };
-      for (let i = 0; i < count; i++) {
-        const [a, b] = ridge(i), [c, d] = ridge(i + 1);
-        vertices.push(...a, ...b, ...c, ...c, ...b, ...d);
+    // Three-dimensional, lit distant land instead of a flat opaque skyline.
+    // The innermost radius clears even the square terrain's farthest corner.
+    const vertices = [], colors = [], indices = [], count = 144, bands = 5;
+    const low = new THREE.Color(0x677c66), high = new THREE.Color(0x9caa96), color = new THREE.Color();
+    for (let band = 0; band < bands; band++) for (let i = 0; i < count; i++) {
+      const a = i / count * Math.PI * 2;
+      const radius = 790 + band * 145 + Math.sin(a * 5 + band * .4) * 34;
+      const ridge = 70 + Math.sin(a * 3.0) ** 2 * 65 + Math.cos(a * 7) ** 4 * 25;
+      const height = Math.sin(band / (bands - 1) * Math.PI) * ridge - 12;
+      vertices.push(Math.cos(a) * radius, height, Math.sin(a) * radius);
+      color.copy(low).lerp(high, Math.max(0, height) / 120);
+      colors.push(color.r, color.g, color.b);
+      if (band < bands - 1) {
+        const k = band * count + i, next = band * count + (i + 1) % count;
+        indices.push(k, k + count, next, next, k + count, next + count);
       }
-      const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geo.computeVertexNormals();
-      const mat = new THREE.MeshBasicMaterial({ color: ring ? 0x8e9f98 : 0x73897f, side: THREE.DoubleSide, fog: true });
-      const mesh = new THREE.Mesh(geo, mat); mesh.name = `distant_ridge_${ring}`; this.scene.add(mesh);
     }
+    const land = new THREE.BufferGeometry();
+    land.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    land.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); land.setIndex(indices); land.computeVertexNormals();
+    const material = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide }));
+    const hills = new THREE.Mesh(land, material); hills.name = 'distant_coastal_land'; this.scene.add(hills);
     const sea = new THREE.Shape(); sea.moveTo(-2200, -2200); sea.lineTo(2200, -2200); sea.lineTo(2200, 2200); sea.lineTo(-2200, 2200); sea.closePath();
     const island = new THREE.Path(); island.moveTo(-500, -500); island.lineTo(-500, 500); island.lineTo(500, 500); island.lineTo(500, -500); island.closePath(); sea.holes.push(island);
     const geo = new THREE.ShapeGeometry(sea); geo.rotateX(-Math.PI / 2);
@@ -522,12 +574,14 @@ export class WorldRenderer {
   update(dt, time) {
     if (this.water) this.water.material.uniforms.uTime.value = time;
     this.groundCover?.update(this.renderer.camera);
+    this.nature?.update(this.renderer.camera);
   }
 
   // Loot rendering is driven by the server's interest-filtered list.
   syncLoot(list) {
     const seen = new Set();
     for (const item of list) {
+      if (Math.hypot(item.x - this.renderer.camera.position.x, item.z - this.renderer.camera.position.z) > 65) continue;
       seen.add(item.id);
       let mesh = this._lootMeshes?.get(item.id);
       if (!mesh) {
@@ -543,7 +597,9 @@ export class WorldRenderer {
       for (const [id, mesh] of this._lootMeshes) {
         if (seen.has(id)) continue;
         this.lootGroup.remove(mesh);
-        mesh.geometry?.dispose();
+        const geometries = new Set(), materials = new Set();
+        mesh.traverse(o => { if (o.geometry) geometries.add(o.geometry); if (o.material) materials.add(o.material); });
+        geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose());
         this._lootMeshes.delete(id);
       }
     }
@@ -551,31 +607,38 @@ export class WorldRenderer {
 
   _makeLootMesh(item) {
     const g = new THREE.Group();
-    let geo, color;
+    let color;
+    const material = (colour, metalness = .05) => new THREE.MeshStandardMaterial({ color: colour, roughness: .8, metalness });
+    const add = (geometry, mat, x, y, z) => { const mesh = new THREE.Mesh(geometry, mat); mesh.position.set(x, y, z); g.add(mesh); return mesh; };
     if (item.type === 'weapon') {
-      geo = new THREE.BoxGeometry(0.72, 0.16, 0.2);
-      color = 0xffc861;
+      const weapon = createWeaponModel(item.weapon, false);
+      weapon.root.rotation.z = Math.PI / 2; weapon.root.position.y = .08;
+      g.add(weapon.root); color = 0xd9b975;
     } else if (item.type === 'armor') {
-      geo = new THREE.BoxGeometry(0.42, 0.46, 0.2);
-      color = 0x6fa8ff;
-    } else if (item.type === 'heal') {
-      geo = new THREE.BoxGeometry(0.34, 0.3, 0.24);
-      color = 0xff6f7a;
+      const cloth = material(0x65705b);
+      add(new RoundedBoxGeometry(.31, .1, .38, 1, .025), cloth, 0, .08, 0);
+      for (const side of [-1, 1]) add(new THREE.BoxGeometry(.03, .035, .4), material(0x353f32), side * .1, .135, 0);
+      color = 0x89b9bc;
+    } else if (item.type === 'med' || item.type === 'heal') {
+      add(new RoundedBoxGeometry(.27, .16, .22, 1, .025), material(0x727659), 0, .11, 0);
+      const marking = material(0xe3dfc7);
+      add(new THREE.BoxGeometry(.035, .007, .105), marking, 0, .195, 0);
+      add(new THREE.BoxGeometry(.105, .007, .035), marking, 0, .195, 0);
+      color = 0xd2deb1;
+    } else if (item.type === 'grenade') {
+      const smoke = item.sub === 'smoke';
+      add(smoke ? new THREE.CylinderGeometry(.05, .05, .15, 12) : new THREE.IcosahedronGeometry(.073, 1), material(0x506347, .3), 0, .1, 0);
+      add(new THREE.BoxGeometry(.025, .04, .06), material(0x969889, .7), 0, .18, 0);
+      color = smoke ? 0xaac4bf : 0xd4b47a;
     } else {
-      geo = new THREE.BoxGeometry(0.32, 0.24, 0.24);
-      color = 0xd9d2b4;
+      add(new RoundedBoxGeometry(.21, .12, .17, 1, .01), material(0x94866c), 0, .09, 0);
+      add(new THREE.BoxGeometry(.22, .014, .18), material(0x424b39), 0, .158, 0);
+      color = 0xc8c9ac;
     }
-    const mat = new THREE.MeshStandardMaterial({
-      color, emissive: new THREE.Color(color).multiplyScalar(0.35),
-      roughness: 0.55, metalness: 0.2,
-    });
-    const body = new THREE.Mesh(geo, mat);
-    body.position.y = 0.18;
-    g.add(body);
-    const glowGeo = new THREE.PlaneGeometry(0.9, 0.9);
+    this.renderer.registerObject(g);
+    const glowGeo = new THREE.RingGeometry(.17, .19, 24);
     const glowMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.16, depthWrite: false,
-      blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      color, transparent: true, opacity: .65, depthWrite: false, side: THREE.DoubleSide,
     });
     const glow = new THREE.Mesh(glowGeo, glowMat);
     glow.rotation.x = -Math.PI / 2;

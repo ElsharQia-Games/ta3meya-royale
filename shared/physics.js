@@ -146,7 +146,6 @@ export function movePlayer(world, p, input, dt) {
       p.stance = want;
     }
   }
-  const height = p.height();
   p.stanceT = Math.min(1, (p.stanceT || 0) + dt / P.STANCE_TIME);
 
   // ---- environment ----
@@ -154,6 +153,8 @@ export function movePlayer(world, p, input, dt) {
   const waterDepth = world.waterDepth(p.pos[0], p.pos[2]);
   p.inWater = waterDepth > 0.25;
   p.swimming = waterDepth > 1.25 && p.pos[1] < world.lake.level - 0.1;
+  if (p.swimming) p.stance = 0;
+  const height = p.height();
 
   // ---- wish direction ----
   const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
@@ -199,8 +200,9 @@ export function movePlayer(world, p, input, dt) {
     p.vel[0] += ax * Math.min(1, 6 * dt);
     p.vel[2] += az * Math.min(1, 6 * dt);
     // Buoyancy toward the surface.
-    const surface = world.lake.level - 0.15;
-    if (p.pos[1] < surface) p.vel[1] += (surface - p.pos[1]) * 12 * dt;
+    // Feet are submerged; the eye, not the feet, floats near the surface.
+    const surface = world.lake.level - p.eyeHeight() + .16;
+    p.vel[1] += (surface - p.pos[1]) * 12 * dt;
     if (input.jump) p.vel[1] = Math.max(p.vel[1], 3.0);
     p.vel[1] *= Math.pow(0.15, dt);
     p.grounded = false;
@@ -328,6 +330,8 @@ export function rayCapsuleSegment(o, d, a, b, radius) {
   const ab2 = abx * abx + aby * aby + abz * abz;
   const abd = abx * d[0] + aby * d[1] + abz * d[2];
   const abao = abx * aox + aby * aoy + abz * aoz;
+  const closest = ab2 > 1e-10 ? clamp(abao / ab2, 0, 1) : 0;
+  if ((aox - abx * closest) ** 2 + (aoy - aby * closest) ** 2 + (aoz - abz * closest) ** 2 <= radius ** 2) return 0;
   const dao = d[0] * aox + d[1] * aoy + d[2] * aoz;
   const A = ab2 - abd * abd;
   const B = ab2 * dao - abao * abd;
@@ -355,6 +359,7 @@ export function raySphere(o, d, c, r) {
   const ox = o[0] - c[0], oy = o[1] - c[1], oz = o[2] - c[2];
   const b = ox * d[0] + oy * d[1] + oz * d[2];
   const cc = ox * ox + oy * oy + oz * oz - r * r;
+  if (cc <= 0) return 0;
   const disc = b * b - cc;
   if (disc < 0) return null;
   const t = -b - Math.sqrt(disc);

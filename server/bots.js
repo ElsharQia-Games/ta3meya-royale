@@ -9,6 +9,7 @@
 import { CFG, STANCE, MATCH_STATE } from '../shared/config.js';
 import { clamp, yawTo, TAU } from '../shared/math.js';
 import { lootInReach } from '../shared/weapons.js';
+import { smokeObscures } from '../shared/visibility.js';
 
 const navCache = new WeakMap();
 const NAV_DIRS = [
@@ -498,6 +499,7 @@ export class BotBrain {
       if (requireLos) {
         const a = this.eye(), b = this.chest(q);
         if (!this.game.world.lineOfSight(a, b, 0.1)) continue;
+        if (smokeObscures(this.game.smokes, a, b)) continue;
       }
       const score = d + (q.inVehicle ? 25 : 0);
       if (score < bestScore) { bestScore = score; best = q; }

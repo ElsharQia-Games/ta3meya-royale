@@ -12,6 +12,8 @@ import { Game } from '../shared/sim.js';
 import { spawnBots, stepBots } from '../server/bots.js';
 import { clamp, damp, lerpAngle } from '../shared/math.js';
 import { stanceEye } from '../shared/physics.js';
+import { packVehicle, vehicleInReach } from '../shared/vehicle.js';
+import { lootInReach, canPickupLoot } from '../shared/weapons.js';
 import { GameRenderer } from './render/renderer.js';
 import { WorldRenderer } from './render/world.js';
 import { Effects } from './render/effects.js';
@@ -72,6 +74,7 @@ class App {
     this.seq = 0;
     this.localFireT = 0;
     this.prevShoot = false;
+    this.pendingShots = [];
     this.adsF = 0;
 
     this.offlineGame = null;
@@ -95,7 +98,10 @@ class App {
 
     this.hud.world = null;
     this.hud.playerId = null;
-    this.hud.onChat = (text) => { this.net?.sendChat(text); };
+    this.hud.onChat = (text) => {
+      if (this.net) this.net.sendChat(text);
+      else if (this.mode === 'offline') this.hud.addChat(this.settings.name, text, this.offlinePlayer?.team || 0);
+    };
     this.hud.onSettings = (s) => this.applySettings(s);
     this.hud.onLeave = () => this.leave();
     this.hud.onRestart = () => this.restart();
@@ -169,11 +175,11 @@ class App {
   initBackdrop() {
     if (this.active || this.world) return;
     this.buildSession(CFG.MAP.SEED);
-    this.previewSoldier = new CharacterView(this.renderer.scene, -7, this.world);
+    this.previewSoldier = new CharacterView(this.renderer.scene, -7, this.world, this.renderer);
     this.renderer.registerObject(this.previewSoldier.model.root);
     this.previewSoldier.applyState({
       x: 20.85, y: this.world.terrainHeight(20.85, -164.3), z: -164.3,
-      yaw: Math.PI + 0.3, pitch: -0.08, stance: STANCE.STAND,
+      yaw: Math.PI + .72, pitch: -.17, stance: STANCE.STAND,
       alive: true, hp: 100, name: '', team: 0,
     });
     this.previewReady = true;
@@ -218,9 +224,11 @@ class App {
   }
 
   copyLink() {
-    const { room } = this.readLobby();
-    const url = `${location.origin}${location.pathname}?room=${encodeURIComponent(room)}`;
-    navigator.clipboard?.writeText(url).then(
+    const { room, mode } = this.readLobby();
+    const url = `${location.origin}${location.pathname}?room=${encodeURIComponent(room)}&mode=${mode}`;
+    const copied = navigator.clipboard?.writeText(url);
+    if (!copied) { this.setLobbyStatus(url); return; }
+    copied.then(
       () => this.setLobbyStatus(`Invite link copied: ${url}`),
       () => this.setLobbyStatus(url),
     );
@@ -247,6 +255,11 @@ class App {
         if (this.active) this.hud.showReconnect('CONNECTION LOST — RECONNECTING · P TO RETRY');
       } else if (state === 'joined-pending') this.setLobbyStatus('Joining room…');
       else if (state === 'disconnected') this.setLobbyStatus('Disconnected.', true);
+      else if (state === 'error' && !this.active) {
+        net.disconnect();
+        if (this.net === net) this.net = null;
+        $('join').disabled = false;
+      }
       else if (state === 'closed') { /* intentional */ }
     };
     net.onError = (msg) => {
@@ -259,11 +272,22 @@ class App {
     net.onEvents = (events) => this.handleEvents(events, net.playerId);
     net.onLoot = (loot) => { this.loot = loot; };
     net.onState = (state) => { this.state = state; this.syncState(state); };
+    net.onVehicles = ({ vehicles }) => {
+      if (!this.state) return;
+      const combined = new Map((this.state.vehicles || []).map(v => [v.id, v]));
+      for (const v of vehicles) combined.set(v.id, v);
+      this.state.vehicles = [...combined.values()];
+      this.syncVehicles(this.state.vehicles);
+    };
     net.onChat = (msg) => this.hud.addChat(msg.name, msg.text, msg.team);
     net.connect();
   }
 
   onWelcome(msg) {
+    this.localSnap = null;
+    this.pendingShots.length = 0;
+    this.localWeapons = msg.weapons?.slice(0, 2) || (msg.mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null]);
+    this.input.clearHeld();
     this.localId = msg.playerId;
     this.hud.playerId = msg.playerId;
     this.mode = 'online';
@@ -276,9 +300,9 @@ class App {
       setTimeout(() => {
         this.buildSession(msg.mapSeed ?? CFG.MAP.SEED);
         this.finishBackdrop();
-        this.localWeapons = msg.mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
         this.active = true;
         this.input.enabled = true;
+        document.activeElement?.blur();
         this.hud.setLobbyVisible(false);
         this.hud.notify('Deployed. Click the game to capture the mouse.');
         $('join').disabled = false;
@@ -314,6 +338,9 @@ class App {
       this.aimPitch = local.pitch ?? 0;
     }
     this.localSnap = local;
+    if (snap.ackInput !== null && snap.ackInput !== undefined) {
+      this.pendingShots = this.pendingShots.filter(shot => shot.seq > snap.ackInput);
+    }
     if (local.w && local.slot !== undefined) {
       const key = weaponKey(local.w);
       if (key) this.localWeapons[local.slot] = key;
@@ -325,7 +352,8 @@ class App {
   // Offline session
   // -------------------------------------------------------------------------
   joinOffline() {
-    if (this.active || this.preparing || this.net) return;
+    if (this.active || this.preparing) return;
+    this.net?.disconnect(); this.net = null;
     this.preparing = true;
     const { name, mode } = this.readLobby();
     this.audio.init();
@@ -347,6 +375,8 @@ class App {
       this.mode = 'offline';
       this.active = true;
       this.preparing = false;
+      this.input.clearHeld();
+      document.activeElement?.blur();
       this.input.enabled = true;
       this.localWeapons = mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
       this.hud.setLobbyVisible(false);
@@ -359,14 +389,21 @@ class App {
   // -------------------------------------------------------------------------
   buildSession(seed) {
     if (this.world && this.world.seed === seed) return;
+    this.worldView?.dispose();
+    this.effects?.dispose();
+    this.viewmodel?.dispose();
+    for (const view of this.characters.values()) view.dispose();
+    for (const view of this.vehicleViews.values()) view.dispose();
+    this.characters.clear(); this.vehicleViews.clear();
     this.world = new World(seed);
     this.worldView = new WorldRenderer(this.renderer, this.world);
-    this.effects = new Effects(this.renderer, this.renderer.camera);
+    this.effects = new Effects(this.renderer, this.renderer.camera, this.world);
     this.viewmodel = new ViewModel(this.renderer.camera, this.renderer.scene, this.renderer);
     this.prediction = new Prediction(this.world);
     this.hud.world = this.world;
     // Frame the camera somewhere sensible while the first snapshot lands.
     this.renderer.camera.position.set(0, 40, 0);
+    if (this.state) this.syncState(this.state);
   }
 
   applySettings(s) {
@@ -565,17 +602,25 @@ class App {
       const w = this.offlinePlayer.curWeapon();
       return w ? (this.offlinePlayer.inv[w]?.mag ?? 0) : 0;
     }
-    return this.localSnap?.mag ?? 0;
+    const pending = this.pendingShots.filter(shot => shot.weapon === this.currentWeaponKey()).length;
+    return Math.max(0, (this.localSnap?.mag ?? 0) - pending);
   }
 
   detectLocalShot(input, blocked) {
     const wkey = this.currentWeaponKey();
     const W = wkey ? CFG.WEAPONS[wkey] : null;
-    const wantFire = !blocked && input.shoot && W;
+    const player = this.getLocalPlayer();
+    const wantFire = !blocked && input.shoot && W && player?.alive &&
+      !input.reload && !input.grenade && !input.smoke && !input.heal && !input.cycle && input.slot < 0 &&
+      this.state?.matchState === MATCH_STATE.LIVE && player.reloadT <= 0 && player.switchT <= 0 &&
+      !(player.inVehicle && player.seat === 0);
     if (wantFire && this.localFireT <= 0 && (W.auto || !this.prevShoot)) {
       const mag = this.currentMag();
       this.localFireT = 60 / W.rpm;
-      if (mag > 0) this.localShot(wkey, W);
+      if (mag > 0) {
+        this.localShot(wkey, W);
+        if (this.mode === 'online') this.pendingShots.push({ seq: input.seq, weapon: wkey });
+      }
       else if (!this.prevShoot) this.audio.dryFire();
     }
     this.prevShoot = !!input.shoot;
@@ -593,7 +638,7 @@ class App {
     if (this.effects && this.viewmodel) {
       const m = this.viewmodel.muzzleWorld();
       const d = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
-      this.effects.muzzle([m.x, m.y, m.z], [d.x, d.y, d.z], W.pellets > 1 ? 0.9 : 1.2);
+      this.effects.muzzle([m.x, m.y, m.z], [d.x, d.y, d.z], W.pellets > 1 ? 1.2 : .9, this.viewmodel.model.muzzle);
     }
   }
 
@@ -625,6 +670,20 @@ class App {
         case 'throw':
           this.effects?.projectile(ev);
           break;
+        case 'smokestart':
+          if (ev.projectileId) this.effects?.stopProjectile(ev.projectileId);
+          if (this.state) {
+            this.state.smokes = [...(this.state.smokes || []).filter(s => s.id !== ev.projectileId),
+              { id: ev.projectileId, x: ev.x, y: ev.y, z: ev.z, r: CFG.SMOKE.radius }];
+            this.effects?.syncSmoke(this.state.smokes);
+          }
+          break;
+        case 'smokeend':
+          if (this.state) {
+            this.state.smokes = (this.state.smokes || []).filter(s => s.id !== ev.projectileId);
+            this.effects?.syncSmoke(this.state.smokes);
+          }
+          break;
         case 'reload':
           if (ev.id === selfId) this.audio.reload(ev.dur);
           break;
@@ -635,16 +694,18 @@ class App {
           if (ev.id === selfId) this.audio.dryFire();
           break;
         case 'pickup':
+          if (ev.lootId !== undefined) this.loot = this.loot.filter(item => item.id !== ev.lootId);
           if (ev.id === selfId) {
             this.audio.pickup();
-            if (ev.item === 'weapon' && ev.sub) {
+            if (ev.weapons) this.localWeapons = ev.weapons.slice(0, 2);
+            else if (ev.item === 'weapon' && ev.sub && !this.localWeapons.includes(ev.sub)) {
               const empty = this.localWeapons.indexOf(null);
               if (empty >= 0) this.localWeapons[empty] = ev.sub;
             }
           }
           break;
         case 'healstart':
-          if (ev.id === selfId) this.audio.heal();
+          if (ev.id === selfId) { this.localHealItem = ev.item; this.audio.heal(); }
           break;
         case 'healed':
           if (ev.id === selfId) this.hud.notify(`Healed to ${ev.hp}`);
@@ -664,6 +725,9 @@ class App {
         case 'enterVehicle':
           if (ev.id === selfId) this.audio.pickup();
           break;
+        case 'vehicleblocked':
+          if (ev.id === selfId) this.hud.notify('EXIT BLOCKED — move the vehicle to clear space');
+          break;
         case 'matchend':
           break;
         default: break;
@@ -675,7 +739,11 @@ class App {
     const weapon = CFG.WEAPONS[ev.w];
     const isSelf = ev.id === selfId;
     if (!isSelf) {
-      this.effects?.shot(ev, weapon);
+      const character = this.characters.get(ev.id);
+      character?.fire();
+      const anchor = character?.model.weapon.muzzle;
+      const origin = anchor?.getWorldPosition(new THREE.Vector3()).toArray() || ev.o;
+      this.effects?.shot({ ...ev, o: origin }, weapon, anchor);
       this.audio.shot(ev.w, ev.o[0], ev.o[1], ev.o[2]);
       // Crack of a round passing near the local player.
       const lp = this.getLocalPlayer();
@@ -683,12 +751,16 @@ class App {
         const d = Math.hypot(ev.o[0] - lp.x, ev.o[2] - lp.z);
         if (d < 45) this.audio.whiz(0);
       }
+    } else if (this.effects && this.viewmodel) {
+      const origin = this.viewmodel.muzzleWorld().toArray();
+      for (let i = 0; i < (ev.e?.length || 0); i++) this.effects.tracer(origin, ev.e[i], weapon?.tracer, weapon?.pellets > 1 ? .009 : .014, ev.flight?.[i], weapon?.grav);
     }
     if (ev.imps && this.effects) {
       for (const im of ev.imps) {
+        if (im.tid) continue;
         this.effects.impact({
-          p: im.p, n: im.n || [0, 1, 0], tag: im.tag, mat: im.mat,
-        });
+          p: im.p, n: im.n || [0, 1, 0], tag: im.tag, mat: im.mat, bid: im.bid,
+        }, im.at || 0);
       }
     }
   }
@@ -719,6 +791,7 @@ class App {
   // -------------------------------------------------------------------------
   syncState(state) {
     if (!state) return;
+    this.worldView?.syncDestruction(state.destroyed || []);
     this.syncVehicles(state.vehicles || []);
     this.effects?.syncSmoke(state.smokes || []);
   }
@@ -730,7 +803,7 @@ class App {
       seen.add(v.id);
       let view = this.vehicleViews.get(v.id);
       if (!view) {
-        view = new VehicleView(this.renderer.scene, v.id, v.type || 'car');
+        view = new VehicleView(this.renderer.scene, v.id, v.type || 'car', this.renderer);
         this.vehicleViews.set(v.id, view);
       }
       view.applyState(v);
@@ -740,6 +813,7 @@ class App {
       view.dispose();
       this.vehicleViews.delete(id);
     }
+    this.world.vehicles = list.map(v => ({ ...v, pos: [v.x, v.y, v.z], vel: [v.vx || 0, v.vy || 0, v.vz || 0] }));
   }
 
   buildOfflineState() {
@@ -748,19 +822,15 @@ class App {
     this.state = {
       type: 'state', mode: g.mode, matchState: g.matchState, countdown: g.countdown,
       roundTime: g.roundTime, score: g.score.slice(),
+      destroyed: [...g.destroyedBoxes],
       winner: g.winner ? { id: g.winner.id ?? null, team: g.winner.team ?? null, name: g.winner.name } : null,
       zone: {
         cx: +g.zone.cx.toFixed(1), cz: +g.zone.cz.toFixed(1), r: +g.zone.r.toFixed(1),
         phase: g.zone.phase, shrinking: g.zone.shrinking, dps: g.zone.dps,
         active: g.zone.active, phaseT: +g.zone.phaseT.toFixed(1),
       },
-      vehicles: g.vehicles.map(v => ({
-        id: v.id, x: +v.pos[0].toFixed(2), y: +v.pos[1].toFixed(2), z: +v.pos[2].toFixed(2),
-        yaw: +v.yaw.toFixed(3), pitch: +v.pitch.toFixed(3), roll: +v.roll.toFixed(3),
-        speed: +Math.hypot(v.vel[0], v.vel[2]).toFixed(2), type: v.type,
-        occupants: v.occupants.slice(), health: v.health,
-      })),
-      smokes: g.smokes.map(s => ({ x: +s.x.toFixed(1), y: +s.y.toFixed(1), z: +s.z.toFixed(1), r: s.r })),
+      vehicles: g.vehicles.map(packVehicle),
+      smokes: g.smokes.map(s => ({ id: s.id, x: +s.x.toFixed(1), y: +s.y.toFixed(1), z: +s.z.toFixed(1), r: s.r })),
     };
     this.syncState(this.state);
   }
@@ -790,12 +860,13 @@ class App {
         x: p.pos[0], y: p.pos[1], z: p.pos[2],
         vx: p.vel[0], vz: p.vel[2],
         yaw: p.yaw, pitch: p.pitch,
-        stance: p.stance, grounded: p.grounded, inWater: p.inWater,
+        stance: p.stance, grounded: p.grounded, inWater: p.inWater, swimming: !!p.swimming,
         alive: p.alive, hp: p.health, armor: p.armor,
         weapon: w, weapons: p.weapons.slice(), slot: p.curSlot,
         mag: inv ? inv.mag : 0, reserve: inv ? inv.reserve : 0,
         grenades: p.grenades, smokes: p.smokes, bandages: p.bandages, medkits: p.medkits,
-        ads: !!p.adsing, inVehicle: p.inVehicle || 0,
+        ads: !!p.adsing, inVehicle: p.inVehicle || 0, seat: p.seat,
+        healT: p.healT, healItem: p.healItem,
         reloadT: p.reloadT, switchT: p.switchT,
         respawnIn: !p.alive && p.respawnAt ? Math.max(0, p.respawnAt - this.offlineGame.time) : 0,
         spread: this.spreadFor(p, w),
@@ -812,13 +883,14 @@ class App {
       x: pos[0], y: pos[1], z: pos[2],
       vx: pred.vel[0], vz: pred.vel[2],
       yaw: pred.yaw, pitch: pred.pitch,
-      stance: pred.stance, grounded: pred.grounded, inWater: pred.inWater,
+      stance: pred.stance, grounded: pred.grounded, inWater: pred.inWater, swimming: !!pred.swimming,
       alive: snap.alive === undefined ? true : !!snap.alive, hp: snap.hp ?? 100, armor: snap.armor ?? 0,
       weapon: w, weapons: this.localWeapons.slice(), slot: snap.slot ?? 0,
-      mag: snap.mag ?? 0, reserve: snap.res ?? 0,
+      mag: this.currentMag(), reserve: snap.res ?? 0,
       grenades: snap.gren ?? 0, smokes: snap.smoke ?? 0,
       bandages: snap.band ?? 0, medkits: snap.med ?? 0,
-      ads: this.input.mouse.right, inVehicle: snap.vehicle || 0,
+      ads: this.input.mouse.right && pred.reloadT <= 0, inVehicle: snap.vehicle || 0, seat: snap.seat ?? -1,
+      healT: pred.healT, healItem: this.localHealItem || null,
       reloadT: pred.reloadT, switchT: snap.switchT || 0,
       respawnIn: this.respawnIn(snap, pred),
       spread,
@@ -865,6 +937,14 @@ class App {
     const camera = this.renderer.camera;
     const lp = this.active ? this.getLocalPlayer() : null;
     const camLp = this.spectateCamera(lp);
+    // Camera and chassis use the same rendered vehicle pose. A separately
+    // smoothed car otherwise trails its driver by metres at driving speed.
+    if (this.mode === 'offline') {
+      const vehicles = this.offlineGame.vehicles.map(packVehicle);
+      this.syncVehicles(vehicles);
+      if (this.state) this.state.vehicles = vehicles;
+    }
+    for (const view of this.vehicleViews.values()) view.update(dt);
 
     // Third-person fallback / lobby idle camera.
     if (!camLp) {
@@ -876,7 +956,7 @@ class App {
 
     // Local first-person weapon.
     if (this.viewmodel) {
-      const hide = !lp || !lp.alive || !!lp.inVehicle || this.spectateId !== null;
+      const hide = !lp || !lp.alive || !lp.weapon || (lp.inVehicle && lp.seat === 0) || this.spectateId !== null;
       const lookDX = (this.aimYaw - this.prevAimYaw) * 1000;
       const lookDY = (this.aimPitch - this.prevAimPitch) * 1000;
       const speed = lp ? Math.hypot(lp.vx || 0, lp.vz || 0) : 0;
@@ -887,9 +967,16 @@ class App {
         ads: lp?.ads ?? false,
         lookDX, lookDY,
         reloadT: lp?.reloadT ?? 0,
+        mag: lp?.mag ?? 0,
+        swimming: lp?.swimming ?? false,
         switchT: lp?.switchT ?? 0,
+        healT: lp?.healT ?? 0,
         hide: hide || this.uiBlocked(),
       });
+      if (lp?.inVehicle && lp.seat === 0 && !this.uiBlocked() && lp.alive) {
+        const vehicle = this.vehicleViews.get(lp.inVehicle);
+        if (vehicle) this.viewmodel.drive(vehicle);
+      }
     }
 
     // Remote characters.
@@ -904,7 +991,7 @@ class App {
         seen.add(id);
         let view = this.characters.get(id);
         if (!view) {
-          view = new CharacterView(this.renderer.scene, id, this.world);
+          view = new CharacterView(this.renderer.scene, id, this.world, this.renderer);
           this.renderer.registerObject(view.model.root);
           this.characters.set(id, view);
         }
@@ -915,7 +1002,11 @@ class App {
           hp: p.hp,
           alive: !!p.alive,
           stance: p.stance,
+          weapon: weaponKey(p.w),
         });
+        view.visible = id !== this.spectateId;
+        view.smokes = this.state?.smokes || [];
+        view.vehicle = this.vehicleViews.get(p.vehicle) || null;
         view.vx = p.vx; view.vz = p.vz;
         view.update(dt, camPos);
         const spd = Math.hypot(p.vx || 0, p.vz || 0);
@@ -936,7 +1027,7 @@ class App {
         seen.add(p.id);
         let view = this.characters.get(p.id);
         if (!view) {
-          view = new CharacterView(this.renderer.scene, p.id, this.world);
+          view = new CharacterView(this.renderer.scene, p.id, this.world, this.renderer);
           this.renderer.registerObject(view.model.root);
           this.characters.set(p.id, view);
         }
@@ -944,7 +1035,13 @@ class App {
           x: p.pos[0], y: p.pos[1], z: p.pos[2],
           yaw: p.yaw, pitch: p.pitch, stance: p.stance,
           hp: p.health, alive: p.alive, name: p.name, team: p.team,
+          weapon: p.curWeapon(), reloadT: p.reloadT, inVehicle: p.inVehicle, seat: p.seat,
+          mag: p.inv[p.curWeapon()]?.mag || 0,
+          ads: !!p.adsing,
         });
+        view.visible = p.id !== this.spectateId;
+        view.smokes = this.state?.smokes || [];
+        view.vehicle = this.vehicleViews.get(p.inVehicle) || null;
         view.vx = p.vel[0]; view.vz = p.vel[2];
         view.update(dt, camPos);
         const spd = Math.hypot(p.vel[0] || 0, p.vel[2] || 0);
@@ -959,12 +1056,9 @@ class App {
       }
     }
 
-    // Vehicles.
-    for (const view of this.vehicleViews.values()) view.update(dt);
-
     // World animation and effects.
     this.worldView?.update(dt, this.time);
-    if (this.worldView && this.loot.length) this.worldView.syncLoot(this.loot);
+    if (this.worldView) this.worldView.syncLoot(this.loot);
     this.effects?.update(dt);
 
     this.updateHud(dt, lp, camLp);
@@ -994,7 +1088,7 @@ class App {
   }
 
   updateCamera(dt, lp, camera) {
-    const targetAds = lp.ads ? 1 : 0;
+    const targetAds = lp.ads && !lp.inVehicle && lp.reloadT <= 0 && lp.healT <= 0 ? 1 : 0;
     this.adsF = damp(this.adsF, targetAds, 14, dt);
     const W = lp.weapon ? CFG.WEAPONS[lp.weapon] : null;
     const zoom = W ? 1 + (W.adsZoom - 1) * this.adsF : 1;
@@ -1013,17 +1107,40 @@ class App {
     const bobY = Math.sin(this.bobT * 2) * 0.018 * bobAmt;
     const bobX = Math.cos(this.bobT) * 0.014 * bobAmt;
 
-    const eye = lp.inVehicle ? 0.95 : stanceEye(lp.stance);
+    const eye = lp.inVehicle ? CFG.VEHICLE.eyeHeight : stanceEye(lp.stance);
     camera.position.set(
       lp.cameraPos[0] + bobX,
       lp.cameraPos[1] + eye + bobY,
       lp.cameraPos[2],
     );
+    const vehicleView = lp.inVehicle ? this.vehicleViews.get(lp.inVehicle) : null;
+    if (vehicleView) {
+      const packet = this.state?.vehicles?.find(v => v.id === lp.inVehicle);
+      const seat = lp.seat ?? 0;
+      const forward = seat < 2 ? (packet?.type === 'truck' ? 1.05 : .15) : -.8;
+      const side = seat % 2 === 0 ? .43 : -.43;
+      const offset = new THREE.Vector3(side, .15 + eye, -forward);
+      vehicleView.group.updateWorldMatrix(true, false);
+      camera.position.copy(vehicleView.group.localToWorld(offset));
+      if (this.spectateId === null) {
+        if (this.cameraVehicle !== lp.inVehicle) {
+          this.aimYaw = vehicleView.yaw; this.aimPitch = -.015;
+        } else {
+          this.aimYaw += Math.atan2(Math.sin(vehicleView.yaw - this.cameraVehicleYaw), Math.cos(vehicleView.yaw - this.cameraVehicleYaw));
+        }
+        this.cameraVehicle = lp.inVehicle; this.cameraVehicleYaw = vehicleView.yaw;
+        lp.yaw = this.aimYaw; lp.pitch = this.aimPitch;
+      }
+    } else this.cameraVehicle = null;
     const shakePitch = (Math.random() - 0.5) * 0.01 * this.shake;
     const shakeYaw = (Math.random() - 0.5) * 0.01 * this.shake;
-    camera.rotation.set(lp.pitch + shakePitch, lp.yaw + shakeYaw, 0);
+    camera.rotation.set(lp.pitch + shakePitch, lp.yaw + shakeYaw, vehicleView ? vehicleView.roll * .35 : 0);
 
     this.audio.setListener([camera.position.x, camera.position.y, camera.position.z], lp.yaw);
+    this.renderer.setUnderwater(this.world.waterDepth(camera.position.x, camera.position.z) > 0 && camera.position.y < this.world.lake.level - .025);
+    const closestVehicle = (this.state?.vehicles || []).filter(v => v.health > 0 && v.occupants?.[0] != null)
+      .sort((a, b) => Math.hypot(a.x - lp.x, a.z - lp.z) - Math.hypot(b.x - lp.x, b.z - lp.z))[0];
+    this.audio.vehicleLoop?.(closestVehicle);
   }
 
   updateHud(dt, lp, camLp = lp) {
@@ -1050,7 +1167,7 @@ class App {
 
     // Zone alarm follows the same authoritative zone data the HUD shows.
     const z = this.state?.zone;
-    const outside = !!z && lp.alive && Math.hypot(lp.x - z.cx, lp.z - z.cz) > z.r;
+    const outside = this.state?.mode === 'br' && !!z && lp.alive && Math.hypot(lp.x - z.cx, lp.z - z.cz) > z.r;
     this.audio.zoneAlarm(outside);
 
     const spectator = this.spectatorName();
@@ -1092,15 +1209,21 @@ class App {
 
   interactionPrompt(lp) {
     if (!lp.alive) return '';
-    if (lp.inVehicle) return 'E · EXIT VEHICLE';
+    if (lp.inVehicle) return '';
+    const feet = [lp.x, lp.y, lp.z], eye = stanceEye(lp.stance);
+    let nearVehicle = null, vehicleDistance = CFG.VEHICLE.enterRange;
+    for (const v of this.state?.vehicles || []) {
+      const distance = Math.hypot(v.x - lp.x, v.z - lp.z);
+      if (distance < vehicleDistance && vehicleInReach(this.world, feet, eye, v)) { nearVehicle = v; vehicleDistance = distance; }
+    }
     const loot = this.loot;
     if (loot) {
       let best = null, bd = CFG.LOOT.pickupRange;
       for (const it of loot) {
         const d = Math.hypot(it.x - lp.x, it.z - lp.z);
-        if (d < bd) { bd = d; best = it; }
+        if (d < bd && canPickupLoot(lp, it) && lootInReach(this.world, feet, eye, it)) { bd = d; best = it; }
       }
-      if (best) {
+      if (best && (!nearVehicle || bd <= vehicleDistance)) {
         const label = best.type === 'weapon' ? (WEAPON_LABEL[best.weapon] || 'WEAPON')
           : best.type === 'ammo' ? 'AMMO'
             : best.type === 'armor' ? 'ARMOUR'
@@ -1109,11 +1232,7 @@ class App {
         return `E · PICK UP ${label}`;
       }
     }
-    if (this.state?.vehicles) {
-      for (const v of this.state.vehicles) {
-        if (Math.hypot(v.x - lp.x, v.z - lp.z) < CFG.VEHICLE.enterRange) return 'E · ENTER VEHICLE';
-      }
-    }
+    if (nearVehicle) return `E · ENTER ${nearVehicle.type === 'truck' ? 'TRANSPORT' : 'UTILITY'}`;
     return '';
   }
 

@@ -2,6 +2,21 @@
 // reach constraints independently testable. Pole determines the elbow's side.
 import { clamp } from '../../shared/math.js';
 
+const smooth = value => { const x = clamp(value, 0, 1); return x * x * (3 - 2 * x); };
+
+export function reloadMotion(remaining, duration) {
+  const active = remaining > 0;
+  const progress = active ? 1 - clamp(remaining / duration, 0, 1) : 1;
+  return { active, progress,
+    lift: active ? Math.sin(progress * Math.PI) : 0,
+    grasp: smooth(progress / .14) * (1 - smooth((progress - .82) / .18)),
+    extract: smooth((progress - .15) / .22) * (1 - smooth((progress - .54) / .26)),
+    feed: smooth((progress - .08) / .2) * (1 - smooth((progress - .69) / .23)),
+    rack: Math.sin(Math.PI * clamp((progress - .82) / .16, 0, 1)),
+    stage: !active ? 'ready' : progress < .15 ? 'grasp' : progress < .42 ? 'remove' : progress < .58 ? 'exchange' : progress < .82 ? 'insert' : 'settle',
+  };
+}
+
 export function solveTwoBone(shoulder, target, pole, upper, lower) {
   const delta = target.map((v, i) => v - shoulder[i]);
   const raw = Math.hypot(...delta);

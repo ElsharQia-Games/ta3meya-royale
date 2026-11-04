@@ -3,14 +3,21 @@
 Updated 2026-11-04. Renderer/client groundwork merged into `master` at `a3ca041`;
 the Blackshore foundation follows that merge. Acceptance remains open.
 
+Current controller continuation: foundation `54487f8`; net `e8e368a` merged at
+`d93e2f7`; sim `9a71664` merged at `1d23b67`. All four resumed Big Pickle calls
+immediately hit quota again. The controller completed the net/sim corrections
+locally and is finishing presentation/journey QA. Current unit suite118/118 and
+production build pass. Prior findings below remain an audit history, not an
+assertion that the corrected defects are still present.
+
 ## Existing sessions and ownership
 
 | Session | Worktree / branch | Current handoff |
 |---|---|---|
-| `ses_e5bae678dffeRgNbTB4vQ8kXQT` | `.worktrees/net` / `agent/net` | Resumed original Big Pickle session for ACK/continuity/timer/protocol/metric corrections |
-| `ses_e5bae678cffdqo3wG66w3GOibU` | `.worktrees/sim` / `agent/sim` | Resumed with saved controller hybrid-nav changes; last route fixture 17/18 |
-| `ses_e5bae678cffen92zXaGvC4HMOR` | `.worktrees/render` / `agent/render` | Groundwork `b8a71e3` merged; next: scenery/asset/performance refinement |
-| `ses_e5bae678cffcwx4bTDiE2utGaU` | `.worktrees/client` / `agent/client` | Groundwork `f486a67` merged; next: full player-journey QA and UX corrections |
+| `ses_e5bae678dffeRgNbTB4vQ8kXQT` | `.worktrees/net` / `agent/net` | Quota blocked; controller correction e8e368a merged |
+| `ses_e5bae678cffdqo3wG66w3GOibU` | `.worktrees/sim` / `agent/sim` | Quota blocked; controller correction9a71664 merged,18/18 routes |
+| `ses_e5bae678cffen92zXaGvC4HMOR` | `.worktrees/render` / `agent/render` | b8a71e3 merged; quota blocked; controller owns subsequent art changes |
+| `ses_e5bae678cffcwx4bTDiE2utGaU` | `.worktrees/client` / `agent/client` | f486a67 merged; quota blocked; controller owns subsequent journey/UX work |
 
 No replacement agent sessions are needed. The controller continues local fixes
 in stopped worktrees and records them as controller work. Do not overwrite saved

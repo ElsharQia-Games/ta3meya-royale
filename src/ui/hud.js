@@ -97,6 +97,7 @@ export class HUD {
 
     // ---- ammo ----
     const ammo = el('div', 'ammo', root);
+    this.ammoRoot = ammo;
     this.weaponName = el('div', 'weapon-name', ammo, '—');
     const ammoRow = el('div', 'ammo-row', ammo);
     this.magText = el('span', 'mag', ammoRow, '0');
@@ -105,6 +106,23 @@ export class HUD {
     this.reloadTag = el('div', 'reload-tag', ammo, 'RELOADING');
     this.reloadTrack = el('div', 'reload-track', ammo);
     this.reloadFill = el('i', '', this.reloadTrack);
+
+    this.vehiclePanel = el('div', 'vehicle-panel hidden', root);
+    this.vehicleRole = el('div', 'vehicle-role', this.vehiclePanel, 'UTILITY / DRIVER');
+    const speed = el('div', 'vehicle-speed', this.vehiclePanel);
+    this.vehicleSpeed = el('b', '', speed, '0');
+    el('span', '', speed, 'KM/H');
+    this.vehicleCondition = el('div', 'vehicle-condition', this.vehiclePanel);
+    const condition = el('div', 'vehicle-health-track', this.vehiclePanel);
+    this.vehicleHealth = el('i', '', condition);
+    this.vehicleSeats = el('div', 'vehicle-seats', this.vehiclePanel);
+    this.vehicleDriveHelp = el('div', 'vehicle-controls', this.vehiclePanel);
+    this.vehicleExitHelp = el('div', 'vehicle-controls', this.vehiclePanel);
+
+    this.healPanel = el('div', 'heal-panel hidden', root);
+    this.healLabel = el('div', '', this.healPanel);
+    const healTrack = el('div', 'heal-track', this.healPanel);
+    this.healFill = el('i', '', healTrack);
 
     // ---- inventory ----
     this.inv = el('div', 'inventory', root);
@@ -387,7 +405,9 @@ export class HUD {
       this.arFill.style.width = `${ar}%`;
       this.arText.textContent = ar;
     }
-    const stance = player.stance === 2 ? 'PRONE' : player.stance === 1 ? 'CROUCHED' : 'STANDING';
+    const stance = player.inVehicle ? (player.seat === 0 ? 'DRIVING' : 'PASSENGER')
+      : player.swimming ? 'SWIMMING' : player.inWater ? 'WADING'
+        : player.stance === 2 ? 'PRONE' : player.stance === 1 ? 'CROUCHED' : 'STANDING';
     if (this._last.stance !== stance) {
       this._last.stance = stance;
       this.stanceText.textContent = stance;
@@ -413,6 +433,33 @@ export class HUD {
       this.reloadTrack.classList.toggle('show', reloading);
     }
     if (reloading) this.reloadFill.style.width = `${(1 - clamp(player.reloadT / (W?.reload || 1), 0, 1)) * 100}%`;
+
+    const vehicle = vehicles?.find(v => v.id === player.inVehicle);
+    const driving = !!vehicle && player.seat === 0;
+    this.vehiclePanel.classList.toggle('hidden', !vehicle || !player.alive);
+    this.vehiclePanel.classList.toggle('passenger', !!vehicle && !driving);
+    this.ammoRoot.classList.toggle('hidden', driving || !wkey);
+    if (vehicle) {
+      const reverse = vehicle.forwardSpeed < -.1;
+      this.vehicleRole.textContent = `${vehicle.type === 'truck' ? 'TRANSPORT' : 'UTILITY'} / ${driving ? 'DRIVER' : `SEAT ${player.seat + 1}`}`;
+      this.vehicleSpeed.textContent = `${reverse ? 'R ' : ''}${Math.round(vehicle.speed * 3.6)}`;
+      const condition = Math.round(clamp(vehicle.health / CFG.VEHICLE.health, 0, 1) * 100);
+      this.vehicleCondition.textContent = vehicle.health <= 0 ? 'VEHICLE DISABLED' : vehicle.submerged
+        ? 'WATER / ENGINE CUT' : vehicle.braking ? 'BRAKING' : `HULL INTEGRITY / ${condition}%`;
+      this.vehicleHealth.style.width = `${condition}%`;
+      this.vehiclePanel.classList.toggle('critical', condition < 25 || vehicle.submerged);
+      this.vehicleSeats.textContent = `OCCUPIED / ${vehicle.occupants.filter(id => id !== null).length} OF ${vehicle.occupants.length}`;
+      this.vehicleDriveHelp.textContent = driving ? 'W / S THROTTLE · A / D STEER' : 'LMB FIRE · RMB AIM';
+      this.vehicleExitHelp.textContent = driving ? 'SPACE BRAKE · E EXIT' : 'E EXIT VEHICLE';
+    }
+    const healing = player.alive && player.healT > 0;
+    this.healPanel.classList.toggle('hidden', !healing);
+    if (healing) {
+      const item = player.healItem || (player.healT > CFG.HEAL.bandage.time ? 'medkit' : 'bandage');
+      const duration = CFG.HEAL[item]?.time || 2;
+      this.healLabel.textContent = `APPLYING ${item.toUpperCase()} / ${player.healT.toFixed(1)}s`;
+      this.healFill.style.width = `${clamp(1 - player.healT / duration, 0, 1) * 100}%`;
+    }
 
     // inventory slots
     const weapons = player.weapons || [];
@@ -443,7 +490,8 @@ export class HUD {
     this.crossLines[2].style.transform = `translate(${-px}px, -50%)`;
     this.crossLines[3].style.transform = `translate(${px}px, -50%)`;
     this.cross.classList.toggle('ads', !!player.ads);
-    this.cross.style.opacity = player.ads ? 0.35 : 1;
+    this.cross.style.opacity = player.ads || driving || healing || !player.alive ? 0 : 1;
+    this.cross.classList.toggle('hidden', !!player.ads || driving || healing || !player.alive);
     this.cross.dataset.gap = px.toFixed(2);
 
     // compass
@@ -604,7 +652,7 @@ export class HUD {
     const toMap = (x, z) => [((x + 500) / 1000) * S, ((z + 500) / 1000) * S];
 
     // zone
-    if (state?.zone) {
+    if (state?.zone && state.mode === 'br') {
       const z = state.zone;
       const [cx, cy] = toMap(z.cx, z.cz);
       ctx.save();

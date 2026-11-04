@@ -31,6 +31,7 @@ export class Prediction {
 
   reset(snapshot) {
     const p = this.player;
+    this.acked = 0;
     p.pos = [snapshot.x, snapshot.y, snapshot.z];
     p.vel = [snapshot.vx || 0, 0, snapshot.vz || 0];
     if (snapshot.stance !== undefined) p.stance = snapshot.stance;

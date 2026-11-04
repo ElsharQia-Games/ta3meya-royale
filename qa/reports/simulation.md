@@ -76,9 +76,22 @@ claim is withdrawn. The updated harness separately records nav boot, raw tick
 times, over-budget tick indices, bot/game cost split, stricter0.08m live-player
 ground tolerance and vehicle finite/ground/boundary counters.
 
-The new108,000-tick run is pending at this code checkpoint. Its exact command,
-revision and counters will be appended after completion; historical figures are
-not treated as evidence for these vehicle/world changes.
+Controller run at `agent/sim` commit `9a71664` completed:
+
+```sh
+STRESS_REPORT=qa/reports/stress-controller.json node tools/stress.js
+```
+
+-108,000 ticks /30sim minutes /32 players;141.41s wall time.
+- Mean1.2975ms, p95=1.7733ms, p99=2.1322ms; max43.626ms.
+- Exactly one over-budget tick, **tick0**:35.264ms in bot work,8.383ms in the
+  game step. Nav construction was separately317.974ms before tick timing.
+  This localises the spike but does not prove a JIT/GC root cause.
+- Zero player NaN/OOB/ground penetration (0.08m tolerance)/teleport violations;
+  max observed step1.178m. Zero vehicle finite/boundary/ground violations.
+- Raw artifacts remain in `.worktrees/sim/qa/reports/stress-controller.{log,json}`.
+  Later master changes to presentation metadata/occupant dimensions are tracked
+  separately; a combined-candidate run follows the integration checkpoint.
 
 ## Remaining gates
 

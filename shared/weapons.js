@@ -6,7 +6,8 @@
 // ============================================================================
 import { CFG, MATERIALS, STANCE } from './config.js';
 import { clamp, spreadDirection, dirFromAngles, yawTo, TAU } from './math.js';
-import { rayCapsule, raySphere, stanceHeight, stanceEye } from './physics.js';
+import { rayCapsuleSegment, raySphere, stanceHeight, stanceEye } from './physics.js';
+import { vehicleInReach } from './vehicle.js';
 
 export const WEAPON_KEYS = Object.keys(CFG.WEAPONS);
 
@@ -20,12 +21,23 @@ export function makeWeaponState(key) {
 // The torso capsule is capped below the head sphere. Without that gap the
 // torso's top cap overlaps the head and steals headshots from rays aimed at
 // the face. Prone is inherently approximate in a vertical capsule model; the
-// head-priority rule in nearestPlayerHit keeps face shots registering.
-export function hitboxesFor(pos, height, stance) {
-  const headR = stance === STANCE.PRONE ? 0.12 : 0.13;
+// head-priority rule in nearestPlayerHit keeps face shots registering. Prone
+// uses horizontal, yaw-oriented body segments matching the presentation rig.
+export function hitboxesFor(pos, height, stance, yaw = 0) {
+  if (stance === STANCE.PRONE) {
+    // The controller/camera stays at the leading head position. The rendered
+    // torso/legs extend behind it; hits must follow those visible body parts.
+    const point = (back, y) => [pos[0] + Math.sin(yaw) * back, pos[1] + y, pos[2] + Math.cos(yaw) * back];
+    return {
+      head: { base: point(0, .26), r: .16, zone: 'head' },
+      torso: { a: point(.24, .25), b: point(.68, .25), r: .2, zone: 'torso' },
+      legs: { a: point(.83, .15), b: point(1.4, .15), r: .15, zone: 'legs' },
+    };
+  }
+  const headR = .13;
   const headCenter = pos[1] + height - headR - 0.03;
-  const torsoR = stance === STANCE.PRONE ? 0.27 : 0.25;
-  const pelvis = pos[1] + height * (stance === STANCE.PRONE ? 0.2 : 0.4);
+  const torsoR = .25;
+  const pelvis = pos[1] + height * .4;
   let chestTop = headCenter - headR - torsoR;
   if (chestTop < pelvis + 0.05) chestTop = pelvis + 0.05;
   return {
@@ -36,9 +48,9 @@ export function hitboxesFor(pos, height, stance) {
 }
 
 function rayCapsuleBox(o, d, a, b, r) {
-  // Capsule segment from a to b: shift the base down by r so the cap centres
-  // land exactly on a and b.
-  return rayCapsule(o, d, [a[0], a[1] - r, a[2]], r, Math.max(0.01, b[1] - a[1]) + r * 2);
+  // Use endpoint geometry directly; reconstructing a vertical capsule loses
+  // the prone body's horizontal length and orientation.
+  return rayCapsuleSegment(o, d, a, b, r);
 }
 
 const HEAD_PRIORITY = 0.3; // metres a head hit may sit behind a body hit
@@ -48,7 +60,7 @@ export function nearestPlayerHit(origin, dir, maxT, targets, shooterId, shooterT
   for (const t of targets) {
     if (!t.alive || t.id === shooterId) continue;
     if (mode === 'tdm' && t.team === shooterTeam) continue;
-    const hb = t.hitboxes || hitboxesFor(t.pos, t.height, t.stance || 0);
+    const hb = t.hitboxes || hitboxesFor(t.pos, t.height, t.stance || 0, t.yaw || 0);
     let tBest = Infinity, tZone = null;
     // Head first; body zones must be clearly closer to override it. This makes
     // shots aimed at the face register as headshots even where the torso cap
@@ -103,14 +115,14 @@ export function solveBallistic(world, origin, dir, W, targets, shooterId, shoote
       if (d > fs) mult = clamp(1 - (d - fs) / (fe - fs), fm, 1);
       const zoneMult = ph.zone === 'head' ? W.headshot : ph.zone === 'legs' ? 0.82 : 1;
       const damage = W.dmg * mult * damageMult * zoneMult;
-      impacts.push({ point, zone: ph.zone, targetId: ph.target.id, damage, dist: d, hit: true });
+      impacts.push({ point, zone: ph.zone, targetId: ph.target.id, damage, dist: d, hit: true, time: elapsed });
       segments.push(point);
       hit = { targetId: ph.target.id, zone: ph.zone, damage, point, dist: d };
       break;
     }
     if (wh) {
       const point = wh.point;
-      impacts.push({ point, zone: null, targetId: null, damage: 0, dist: dist + wh.t, tag: wh.tag, mat: wh.mat, normal: wh.normal, box: wh.box, vehicle: wh.vehicle });
+      impacts.push({ point, zone: null, targetId: null, damage: 0, dist: dist + wh.t, tag: wh.tag, mat: wh.mat, normal: wh.normal, box: wh.box, vehicle: wh.vehicle, time: elapsed });
       segments.push(point);
       // penetration: only thin boxes / glass / wood
       const thickness = (wh.tmax !== undefined && isFinite(wh.tmax) ? wh.tmax - wh.t : Infinity);
@@ -165,6 +177,7 @@ export function tryFire(game, p, input, targets, opts = {}) {
 
   const rng = opts.rng || game.rng;
   const tracerEnds = [];
+  const flightTimes = [];
   const allImpacts = [];
   let firstHit = null;
   for (let i = 0; i < W.pellets; i++) {
@@ -175,6 +188,7 @@ export function tryFire(game, p, input, targets, opts = {}) {
     // several KB per shotgun blast.
     const end = res.segments[res.segments.length - 1];
     tracerEnds.push([+end[0].toFixed(2), +end[1].toFixed(2), +end[2].toFixed(2)]);
+    flightTimes.push(+res.time.toFixed(3));
     for (const im of res.impacts) {
       if (im.vehicle) game.damageVehicle(im.vehicle, W.dmg * .85, p.id);
       // Destructible props take structural damage from bullet impacts.
@@ -200,6 +214,7 @@ export function tryFire(game, p, input, targets, opts = {}) {
         zone: im.zone || null, tag: im.tag || null, mat: im.mat || null,
         n: im.normal ? [+im.normal[0].toFixed(2), +im.normal[1].toFixed(2), +im.normal[2].toFixed(2)] : null,
         tid: im.targetId || null,
+        at: +im.time.toFixed(3), bid: im.box?.id ?? null,
       });
     }
     if (res.hit) {
@@ -215,7 +230,7 @@ export function tryFire(game, p, input, targets, opts = {}) {
   game.events.push({
     k: 'shot', id: p.id, w: key,
     o: [+origin[0].toFixed(2), +origin[1].toFixed(2), +origin[2].toFixed(2)],
-    e: tracerEnds, imps: allImpacts, hit: !!firstHit, team: p.team,
+    e: tracerEnds, flight: flightTimes, imps: allImpacts, hit: !!firstHit, team: p.team,
   });
   return true;
 }
@@ -288,14 +303,34 @@ export function throwGrenade(game, p, smoke = false) {
   const dir = dirFromAngles(p.yaw, p.pitch + 0.12);
   const speed = CFG.GRENADE.throwSpeed;
   const vel = [dir[0] * speed, dir[1] * speed + 2.4, dir[2] * speed];
+  const projectileId = `${p.id}:${game.tick}`;
   game.projectiles.push({
+    id: projectileId,
     type: smoke ? 'smoke' : 'grenade',
     pos: eye, vel,
     owner: p.id, fuse: smoke ? CFG.SMOKE.fuse : CFG.GRENADE.fuse, bounces: 0,
     life: smoke ? CFG.SMOKE.duration + CFG.SMOKE.fuse : 6,
   });
-  game.events.push({ k: 'throw', id: p.id, smoke, o: eye.map(v => +v.toFixed(2)), v: vel.map(v => +v.toFixed(2)) });
+  game.events.push({ k: 'throw', id: p.id, projectileId, smoke, o: eye.map(v => +v.toFixed(2)), v: vel.map(v => +v.toFixed(2)) });
   return true;
+}
+
+export function moveProjectile(world, pr, dt) {
+  const G = CFG.GRENADE;
+  pr.vel[1] -= 9.81 * G.gravity * dt;
+  pr.vel[0] *= 1 - G.drag * dt; pr.vel[2] *= 1 - G.drag * dt;
+  const prev = pr.pos.slice();
+  pr.pos[0] += pr.vel[0] * dt; pr.pos[1] += pr.vel[1] * dt; pr.pos[2] += pr.vel[2] * dt;
+  const delta = pr.pos.map((value, i) => value - prev[i]), distance = Math.hypot(...delta);
+  if (distance <= 1e-5) return;
+  const hit = world.raycast(prev, delta.map(value => value / distance), distance);
+  if (!hit) return;
+  pr.pos = hit.point.map((value, i) => value + hit.normal[i] * .04);
+  const vn = pr.vel[0] * hit.normal[0] + pr.vel[1] * hit.normal[1] + pr.vel[2] * hit.normal[2];
+  if (vn < 0) for (let i = 0; i < 3; i++) pr.vel[i] -= 1.55 * vn * hit.normal[i];
+  for (let i = 0; i < 3; i++) pr.vel[i] *= .55;
+  pr.bounces++;
+  if (pr.bounces > G.bounces) pr.fuse = Math.min(pr.fuse, .05);
 }
 
 export function stepProjectiles(game, dt) {
@@ -308,53 +343,31 @@ export function stepProjectiles(game, dt) {
     if (pr.deployed) {
       pr.life -= dt;
       if (pr.life <= 0) {
-        game.events.push({ k: 'smokeend', x: pr.pos[0], z: pr.pos[2] });
+        game.events.push({ k: 'smokeend', projectileId: pr.id, x: pr.pos[0], z: pr.pos[2] });
         game.projectiles.splice(i, 1);
       }
       continue;
     }
 
     // Both frag and smoke projectiles fly and bounce until their fuse expires.
-    pr.vel[1] -= 9.81 * G.gravity * dt;
-    const dragK = G.drag;
-    pr.vel[0] *= 1 - dragK * dt; pr.vel[2] *= 1 - dragK * dt;
-    const prev = pr.pos.slice();
-    pr.pos[0] += pr.vel[0] * dt; pr.pos[1] += pr.vel[1] * dt; pr.pos[2] += pr.vel[2] * dt;
-    const dx = pr.pos[0] - prev[0], dy = pr.pos[1] - prev[1], dz = pr.pos[2] - prev[2];
-    const len = Math.hypot(dx, dy, dz);
-    if (len > 1e-5) {
-      const dir = [dx / len, dy / len, dz / len];
-      const hit = game.world.raycast(prev, dir, len);
-      if (hit) {
-        pr.pos = [hit.point[0] + hit.normal[0] * 0.04, hit.point[1] + hit.normal[1] * 0.04, hit.point[2] + hit.normal[2] * 0.04];
-        const vn = pr.vel[0] * hit.normal[0] + pr.vel[1] * hit.normal[1] + pr.vel[2] * hit.normal[2];
-        if (vn < 0) {
-          pr.vel[0] -= 1.55 * vn * hit.normal[0];
-          pr.vel[1] -= 1.55 * vn * hit.normal[1];
-          pr.vel[2] -= 1.55 * vn * hit.normal[2];
-        }
-        pr.vel[0] *= 0.55; pr.vel[1] *= 0.55; pr.vel[2] *= 0.55;
-        pr.bounces++;
-        if (pr.bounces > G.bounces) pr.fuse = Math.min(pr.fuse, 0.05);
-      }
-    }
+    moveProjectile(game.world, pr, dt);
     if (pr.fuse <= 0) {
       if (pr.type === 'smoke') {
         pr.deployed = true;
         pr.vel = [0, 0, 0];
         pr.life = CFG.SMOKE.duration;
         pr.fuse = 0;
-        game.events.push({ k: 'smokestart', x: pr.pos[0], y: pr.pos[1], z: pr.pos[2] });
+        game.events.push({ k: 'smokestart', projectileId: pr.id, x: pr.pos[0], y: pr.pos[1], z: pr.pos[2] });
       } else {
-        explode(game, pr.pos, G.dmg, G.radius, pr.owner);
+        explode(game, pr.pos, G.dmg, G.radius, pr.owner, pr.id);
         game.projectiles.splice(i, 1);
       }
     }
   }
 }
 
-export function explode(game, pos, dmg, radius, owner) {
-  game.events.push({ k: 'boom', x: pos[0], y: pos[1], z: pos[2], r: radius });
+export function explode(game, pos, dmg, radius, owner, projectileId = null) {
+  game.events.push({ k: 'boom', projectileId, x: pos[0], y: pos[1], z: pos[2], r: radius });
   for (const v of game.vehicles || []) {
     const distance = Math.hypot(...pos.map((n, i) => n - v.pos[i]));
     if (distance < radius) game.damageVehicle(v, dmg * 1.5 * (1 - distance / radius), owner);
@@ -435,6 +448,15 @@ export function lootInReach(world, feet, eyeHeight, item) {
   return world.lineOfSight([feet[0], feet[1] + eyeHeight, feet[2]], [item.x, item.y + .18, item.z], .18);
 }
 
+export function canPickupLoot(player, item) {
+  if (item.type === 'weapon') return !!CFG.WEAPONS[item.weapon];
+  if (item.type === 'ammo') return player.weapons.includes(item.weapon);
+  if (item.type === 'armor') return player.armor < item.amount;
+  if (item.type === 'med') return (player.bandages || 0) + (player.medkits || 0) < 5;
+  if (item.type === 'grenade') return item.sub === 'smoke' ? player.smokes < 3 : player.grenades < 4;
+  return false;
+}
+
 export function tryInteract(game, p) {
   if (!p.alive) return false;
   if (p.inVehicle) return game.exitVehicle(p);
@@ -442,21 +464,21 @@ export function tryInteract(game, p) {
   let loot = null, lootD = CFG.LOOT.pickupRange;
   for (const it of game.loot) {
     const d = Math.hypot(it.x - p.pos[0], it.z - p.pos[2]);
-    if (d < lootD && lootInReach(game.world, p.pos, p.eyeHeight(), it)) { lootD = d; loot = it; }
+    if (d < lootD && canPickupLoot(p, it) && lootInReach(game.world, p.pos, p.eyeHeight(), it)) { lootD = d; loot = it; }
   }
   let vehicle = null, vehD = CFG.VEHICLE.enterRange;
   for (const v of game.vehicles) {
     const d = Math.hypot(v.pos[0] - p.pos[0], v.pos[2] - p.pos[2]);
-    if (d < vehD) { vehD = d; vehicle = v; }
+    if (d < vehD && vehicleInReach(game.world, p.pos, p.eyeHeight(), v)) { vehD = d; vehicle = v; }
   }
-  if (loot && (!vehicle || lootD <= vehD)) return pickupLoot(game, p, loot);
+  if (loot && (!vehicle || lootD <= vehD) && pickupLoot(game, p, loot)) return true;
   if (vehicle && game.enterVehicle(p, vehicle)) return true;
   if (loot) return pickupLoot(game, p, loot);
   return false;
 }
 
 export function pickupLoot(game, p, item) {
-  if (!p.alive || !game.loot.includes(item)) return false;
+  if (!p.alive || !game.loot.includes(item) || !canPickupLoot(p, item)) return false;
   if (item.type === 'weapon') {
     const W = CFG.WEAPONS[item.weapon];
     if (p.weapons.includes(item.weapon)) {
@@ -498,7 +520,8 @@ export function pickupLoot(game, p, item) {
   }
   const idx = game.loot.indexOf(item);
   if (idx >= 0) game.loot.splice(idx, 1);
-  game.events.push({ k: 'pickup', id: p.id, item: item.type, sub: item.sub || item.weapon || null, x: item.x, y: item.y, z: item.z });
+  game.events.push({ k: 'pickup', id: p.id, lootId: item.id, item: item.type, sub: item.sub || item.weapon || null,
+    weapons: p.weapons.slice(), slot: p.curSlot, x: item.x, y: item.y, z: item.z });
   return true;
 }
 

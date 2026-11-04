@@ -1,8 +1,10 @@
 // Visual effects: tracers, muzzle flashes, impact sparks, bullet-hole decals,
-// blood puffs, explosions, debris and smoke. Everything is pooled.
+// blood puffs, explosions, debris and smoke. Points/tracers/decals are pooled;
+// mesh effects have bounded lifetimes and explicit resource cleanup.
 import * as THREE from 'three';
 import { CFG, MATERIALS } from '../../shared/config.js';
 import { clamp } from '../../shared/math.js';
+import { moveProjectile } from '../../shared/weapons.js';
 
 const MAX_PARTICLES = 900;
 const MAX_TRACERS = 96;
@@ -17,8 +19,12 @@ const SPARK_COLORS = {
 };
 
 export class Effects {
-  constructor(renderer, camera) {
-    this.scene = renderer.scene;
+  constructor(renderer, camera, world = null) {
+    this.renderer = renderer;
+    this.world = world;
+    this.scene = new THREE.Group();
+    this.scene.name = 'combat_effects';
+    renderer.scene.add(this.scene);
     this.camera = camera;
     this.time = 0;
     this._initParticles();
@@ -30,6 +36,7 @@ export class Effects {
     this.debris = [];
     this.projectiles = [];
     this.flashes = [];
+    this.pendingImpacts = [];
   }
 
   // -------------------------------------------------------------------------
@@ -64,6 +71,8 @@ export class Effects {
           float a = smoothstep(0.5, 0.05, length(d));
           if (a < 0.02) discard;
           gl_FragColor = vec4(vColor, a);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
       vertexColors: true,
@@ -95,9 +104,8 @@ export class Effects {
     p.pos[0] = x; p.pos[1] = y; p.pos[2] = z;
     p.vel[0] = vx; p.vel[1] = vy; p.vel[2] = vz;
     p.life = life; p.max = life; p.size = size; p.grav = grav;
-    p.color[0] = (color >> 16 & 255) / 255;
-    p.color[1] = (color >> 8 & 255) / 255;
-    p.color[2] = (color & 255) / 255;
+    const linear = new THREE.Color(color);
+    p.color[0] = linear.r; p.color[1] = linear.g; p.color[2] = linear.b;
   }
 
   // -------------------------------------------------------------------------
@@ -107,7 +115,7 @@ export class Effects {
     const geo = new THREE.BoxGeometry(1, 1, 1);
     geo.translate(0, 0, 0.5);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffe6a8, transparent: true, opacity: 0.95,
+      color: 0xffffff, transparent: true, opacity: 0.95,
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.tracers = new THREE.InstancedMesh(geo, mat, MAX_TRACERS);
@@ -125,33 +133,43 @@ export class Effects {
     this._s = new THREE.Vector3();
   }
 
-  tracer(from, to, color = 0xffe6a8, width = 0.022) {
+  tracer(from, to, color = 0xffe6a8, width = 0.015, flight = null, gravity = .62) {
     const i = this.tracerNext;
     this.tracerNext = (this.tracerNext + 1) % MAX_TRACERS;
-    this.tracerData[i] = { from, to, life: 0.075, max: 0.075, width, color };
+    const distance = Math.hypot(...to.map((n, k) => n - from[k]));
+    flight = Math.max(.01, flight ?? distance / 880);
+    this.tracerData[i] = { from, to, age: 0, flight, max: flight + .055, width, color, distance, gravity, fresh: true };
+    this.tracers.setColorAt(i, new THREE.Color(color));
+    this.tracers.instanceColor.needsUpdate = true;
     this.tracers.count = Math.min(MAX_TRACERS, Math.max(this.tracers.count, i + 1));
   }
 
   _updateTracers(dt) {
     const m = this._m, q = this._q, p = this._p, s = this._s, dir = this._dir;
-    let any = false;
+    let any = false, dirty = false;
     for (let i = 0; i < MAX_TRACERS; i++) {
       const t = this.tracerData[i];
       if (!t) continue;
-      t.life -= dt;
-      if (t.life <= 0) { this.tracerData[i] = null; m.makeScale(0, 0, 0); this.tracers.setMatrixAt(i, m); continue; }
+      t.age += t.fresh ? Math.min(dt, t.flight) : dt; t.fresh = false;
+      dirty = true;
+      if (t.age >= t.max) { this.tracerData[i] = null; m.makeScale(0, 0, 0); this.tracers.setMatrixAt(i, m); continue; }
       any = true;
-      const f = t.life / t.max;
-      dir.set(t.to[0] - t.from[0], t.to[1] - t.from[1], t.to[2] - t.from[2]);
+      const f = clamp((t.max - t.age) / .055, 0, 1);
+      const end = clamp(t.age / t.flight, 0, 1), start = Math.max(0, end - Math.min(7, t.distance) / Math.max(.001, t.distance));
+      const point = u => t.from.map((n, k) => n + (t.to[k] - n) * u +
+        (k === 1 ? .5 * 9.81 * t.gravity * t.flight ** 2 * u * (1 - u) : 0));
+      const a = point(start), b = point(end);
+      dir.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
       const len = dir.length() || 0.001;
       dir.divideScalar(len);
       q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-      p.set(t.from[0], t.from[1], t.from[2]);
-      s.set(t.width * (0.4 + f), t.width * (0.4 + f), len * clamp(f * 1.6, 0, 1));
+      p.set(...a);
+      s.set(t.width * (.25 + f), t.width * (.25 + f), len);
       m.compose(p, q, s);
       this.tracers.setMatrixAt(i, m);
     }
-    if (any) this.tracers.instanceMatrix.needsUpdate = true;
+    if (dirty) this.tracers.instanceMatrix.needsUpdate = true;
+    this.tracers.visible = any;
   }
 
   // -------------------------------------------------------------------------
@@ -178,7 +196,7 @@ export class Effects {
     this._ds = new THREE.Vector3();
   }
 
-  decal(point, normal, size = 0.06) {
+  decal(point, normal, size = 0.06, boxId = null) {
     const i = this.decalNext;
     this.decalNext = (this.decalNext + 1) % MAX_DECALS;
     const n = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
@@ -186,6 +204,7 @@ export class Effects {
     const p = new THREE.Vector3(point[0] + n.x * 0.008, point[1] + n.y * 0.008, point[2] + n.z * 0.008);
     const m = new THREE.Matrix4().compose(p, q, new THREE.Vector3(size, size, size));
     this.decals.setMatrixAt(i, m);
+    this.decalData[i] = boxId;
     this.decals.count = Math.min(MAX_DECALS, Math.max(this.decals.count, i + 1));
     this.decals.instanceMatrix.needsUpdate = true;
   }
@@ -194,7 +213,7 @@ export class Effects {
   // Muzzle flash
   // -------------------------------------------------------------------------
   _initMuzzle() {
-    const geo = new THREE.PlaneGeometry(0.5, 0.5);
+    const geo = new THREE.PlaneGeometry(.2, .2);
     const mat = new THREE.MeshBasicMaterial({
       map: radialTexture(0xfff0c0), transparent: true, opacity: 1,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
@@ -208,7 +227,7 @@ export class Effects {
     this.muzzleT = 0;
   }
 
-  muzzle(pos, dir, scale = 1) {
+  muzzle(pos, dir, scale = 1, anchor = null) {
     this.muzzleSprite.position.set(pos[0], pos[1], pos[2]);
     this.muzzleSprite.lookAt(pos[0] + dir[0], pos[1] + dir[1], pos[2] + dir[2]);
     this.muzzleSprite.scale.setScalar(scale * (0.8 + Math.random() * 0.5));
@@ -216,6 +235,7 @@ export class Effects {
     this.muzzleLight.position.set(pos[0], pos[1], pos[2]);
     this.muzzleLight.intensity = 12 * scale;
     this.muzzleT = 0.05;
+    this.muzzleFresh = true; this.muzzleAnchor = anchor;
   }
 
   // -------------------------------------------------------------------------
@@ -229,7 +249,8 @@ export class Effects {
   syncSmoke(list) {
     const seen = new Set();
     for (const s of list) {
-      const key = `${Math.round(s.x)},${Math.round(s.z)}`;
+      if (Math.hypot(s.x - this.camera.position.x, s.z - this.camera.position.z) > 200) continue;
+      const key = s.id || `${Math.round(s.x)},${Math.round(s.z)}`;
       seen.add(key);
       let g = this.smokeGroups.get(key);
       if (!g) {
@@ -264,14 +285,12 @@ export class Effects {
   // -------------------------------------------------------------------------
   // Event entry points
   // -------------------------------------------------------------------------
-  shot(ev, weapon) {
+  shot(ev, weapon, anchor = null) {
     const o = ev.o || [0, 0, 0];
     const ends = ev.e || [];
     const color = weapon?.tracer ?? 0xffe6a8;
-    let prev = o;
-    for (const e of ends) {
-      this.tracer(prev, e, color, weapon?.pellets > 1 ? 0.016 : 0.024);
-      prev = e;
+    for (let i = 0; i < ends.length; i++) {
+      this.tracer(o, ends[i], color, weapon?.pellets > 1 ? .009 : .014, ev.flight?.[i], weapon?.grav);
     }
     let d = [0, 0, -1];
     if (ends.length) {
@@ -280,10 +299,14 @@ export class Effects {
       const l = Math.hypot(dx, dy, dz) || 1;
       d = [dx / l, dy / l, dz / l];
     }
-    this.muzzle(o, d, weapon?.pellets > 1 ? 0.8 : 1.1);
+    this.muzzle(o, d, weapon?.pellets > 1 ? 1.2 : .9, anchor);
   }
 
-  impact(ev) {
+  impact(ev, delay = 0) {
+    if (delay > 0) {
+      if (this.pendingImpacts.length >= 512) this.pendingImpacts.shift();
+      this.pendingImpacts.push({ ev, at: this.time + delay }); return;
+    }
     const p = ev.p;
     const mat = ev.mat || 'concrete';
     const cols = SPARK_COLORS[mat] || SPARK_COLORS.concrete;
@@ -309,7 +332,8 @@ export class Effects {
       }
       return;
     }
-    if (mat !== 'dirt') this.decal(p, n, 0.045 + Math.random() * 0.03);
+    const destroyed = ev.bid !== null && ev.bid !== undefined && this.world?.boxes[ev.bid]?.destroyed;
+    if (mat !== 'dirt' && ev.tag !== 'vehicle' && !destroyed) this.decal(p, n, 0.045 + Math.random() * 0.03, ev.bid);
     // dust puff
     for (let i = 0; i < 3; i++) {
       this.spawnParticle(p[0] + (Math.random() - 0.5) * 0.2, p[1] + (Math.random() - 0.5) * 0.2, p[2] + (Math.random() - 0.5) * 0.2,
@@ -327,6 +351,7 @@ export class Effects {
   }
 
   boom(ev) {
+    if (ev.projectileId) this.stopProjectile(ev.projectileId);
     const p = [ev.x, ev.y, ev.z];
     const radius = ev.r || 7;
     const geo = new THREE.SphereGeometry(1, 16, 12);
@@ -358,6 +383,10 @@ export class Effects {
   }
 
   destroy(ev) {
+    const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (let i = 0; i < this.decalData.length; i++) {
+      if (this.decalData[i] === ev.id) { this.decals.setMatrixAt(i, zero); this.decalData[i] = null; this.decals.instanceMatrix.needsUpdate = true; }
+    }
     const cx = ev.x, cy = ev.y, cz = ev.z;
     const n = 6;
     const colors = [0x8a643c, 0x6f747b, 0x9b8a63, 0x9a9a92];
@@ -368,6 +397,7 @@ export class Effects {
         Math.max(0.1, (ev.sz || 1) / n) * (0.6 + Math.random() * 0.6),
       );
       const mat = new THREE.MeshStandardMaterial({ color: colors[i % colors.length], roughness: 0.9 });
+      this.renderer.registerMaterial(mat);
       const m = new THREE.Mesh(geo, mat);
       m.castShadow = true;
       m.position.set(cx + (Math.random() - 0.5) * (ev.sx || 1), cy + Math.random() * (ev.sy || 1), cz + (Math.random() - 0.5) * (ev.sz || 1));
@@ -381,16 +411,24 @@ export class Effects {
   }
 
   projectile(ev) {
-    if (ev.smoke) return;
-    const geo = new THREE.SphereGeometry(0.1, 8, 6);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x3a4230, roughness: 0.6, metalness: 0.4 });
+    const geo = ev.smoke ? new THREE.CylinderGeometry(.045, .045, .14, 10) : new THREE.IcosahedronGeometry(.065, 1);
+    const mat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({ color: ev.smoke ? 0x839481 : 0x3a4230, roughness: .7, metalness: .3 }));
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(ev.o[0], ev.o[1], ev.o[2]);
-    mesh.userData.groundY = ev.o[1] - 1.55;
     this.scene.add(mesh);
     this.projectiles.push({
-      mesh, pos: ev.o.slice(), vel: ev.v.slice(), fuse: CFG.GRENADE.fuse, bounces: 0,
+      mesh, id: ev.projectileId, pos: ev.o.slice(), vel: ev.v.slice(),
+      fuse: ev.smoke ? CFG.SMOKE.fuse : CFG.GRENADE.fuse, bounces: 0, accumulator: 0,
     });
+  }
+
+  stopProjectile(id) {
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectiles[i];
+      if (p.id !== id) continue;
+      p.mesh.removeFromParent(); p.mesh.geometry.dispose(); p.mesh.material.dispose();
+      this.projectiles.splice(i, 1);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -398,6 +436,12 @@ export class Effects {
   // -------------------------------------------------------------------------
   update(dt) {
     this.time += dt;
+    for (let i = this.pendingImpacts.length - 1; i >= 0; i--) {
+      if (this.pendingImpacts[i].at > this.time) continue;
+      const impact = this.pendingImpacts.splice(i, 1)[0]; this.impact(impact.ev);
+    }
+    this.points.material.uniforms.uScale.value = this.renderer.renderer.domElement.height /
+      (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));
     // particles
     const geo = this.points.geometry;
     for (let i = 0; i < MAX_PARTICLES; i++) {
@@ -428,7 +472,12 @@ export class Effects {
 
     // muzzle flash
     if (this.muzzleT > 0) {
-      this.muzzleT -= dt;
+      if (this.muzzleAnchor?.parent?.parent) {
+        this.muzzleAnchor.getWorldPosition(this.muzzleSprite.position);
+        this.muzzleLight.position.copy(this.muzzleSprite.position);
+      }
+      if (!this.muzzleFresh) this.muzzleT -= dt;
+      this.muzzleFresh = false;
       this.muzzleLight.intensity *= 0.55;
       if (this.muzzleT <= 0) { this.muzzleSprite.visible = false; this.muzzleLight.intensity = 0; }
     }
@@ -459,6 +508,13 @@ export class Effects {
       d.mesh.rotation.x += d.spin[0] * dt;
       d.mesh.rotation.y += d.spin[1] * dt;
       d.mesh.rotation.z += d.spin[2] * dt;
+      if (this.world) {
+        const floor = this.world.terrainHeight(d.mesh.position.x, d.mesh.position.z) + .06;
+        if (d.mesh.position.y < floor) {
+          d.mesh.position.y = floor; d.vel[1] = Math.abs(d.vel[1]) * .12;
+          d.vel[0] *= .65; d.vel[2] *= .65;
+        }
+      }
       if (d.mesh.position.y < -30 || d.t > d.life) {
         this.scene.remove(d.mesh);
         d.mesh.geometry.dispose(); d.mesh.material.dispose();
@@ -469,16 +525,10 @@ export class Effects {
     // locally simulated grenades (visual only; server owns damage)
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
-      p.fuse -= dt;
-      p.vel[1] -= 9.8 * dt;
-      p.pos[0] += p.vel[0] * dt;
-      p.pos[1] += p.vel[1] * dt;
-      p.pos[2] += p.vel[2] * dt;
-      // cheap ground bounce against y=0-relative terrain is not known here;
-      // bounce off a plane at the spawn height to keep the visual plausible.
-      if (p.pos[1] < p.mesh.userData.groundY) {
-        p.pos[1] = p.mesh.userData.groundY;
-        p.vel[1] *= -0.35; p.vel[0] *= 0.6; p.vel[2] *= 0.6;
+      p.accumulator += dt;
+      while (p.accumulator + 1e-9 >= CFG.SIM_DT) {
+        p.accumulator -= CFG.SIM_DT; p.fuse -= CFG.SIM_DT;
+        moveProjectile(this.world, p, CFG.SIM_DT);
       }
       p.mesh.position.set(p.pos[0], p.pos[1], p.pos[2]);
       if (p.fuse <= 0) {
@@ -494,6 +544,18 @@ export class Effects {
       const pulse = 1 + Math.sin(this.time * 0.6 + g.position.x) * 0.02;
       g.scale.setScalar(pulse);
     }
+  }
+
+  dispose() {
+    this.scene.removeFromParent();
+    const geometries = new Set(), materials = new Set(), maps = new Set();
+    this.scene.traverse(o => {
+      if (o.geometry) geometries.add(o.geometry);
+      if (o.material) { materials.add(o.material); if (o.material.map) maps.add(o.material.map); }
+    });
+    geometries.forEach(g => g.dispose());
+    materials.forEach(m => m.dispose());
+    maps.forEach(t => t.dispose());
   }
 }
 

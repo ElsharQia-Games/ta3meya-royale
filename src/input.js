@@ -48,7 +48,9 @@ export class Input {
         case 'KeyG': this.actions.grenade = true; break;
         case 'KeyT': this.actions.smoke = true; break;
         case 'KeyF': this.actions.heal = true; break;
-        case 'KeyE': this.actions.interact = true; this.pendingEnter = 'toggle'; break;
+        // One authoritative interaction chooses loot/seat/exit. Sending both
+        // interact and an explicit vehicle command could pick up AND enter.
+        case 'KeyE': this.actions.interact = true; break;
         case 'KeyQ': this.actions.cycle = true; break;
         case 'Digit1': this.pendingSlot = 0; break;
         case 'Digit2': this.pendingSlot = 1; break;

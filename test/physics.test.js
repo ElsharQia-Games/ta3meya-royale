@@ -305,9 +305,11 @@ test('a standing player cannot stand up under a low ceiling', () => {
 });
 
 test('water entry, swimming and exit behave consistently', () => {
+  const terrainHeight = (x, z) => z < 0 ? Math.max(-3, z * .35) : 0;
   const w = flatWorld([], {
-    lakeLevel: 0.5,
-    waterDepth: (x, z) => (z < -5 ? 2.0 : z < 0 ? 1.0 : 0),
+    lakeLevel: 0,
+    terrainHeight,
+    waterDepth: (x, z) => Math.max(0, -terrainHeight(x, z)),
   });
   const p = makePlayer(0, 2, 0.05, w);
   const input = emptyInput();
@@ -323,7 +325,8 @@ test('water entry, swimming and exit behave consistently', () => {
   }
   assert.ok(p.inWater, 'expected to be in water');
   assert.ok(sawSwim, 'expected deep water to trigger swimming');
-  assert.ok(p.pos[1] > 0.1 && p.pos[1] < 0.6, `swimmer should float near surface, y=${p.pos[1]}`);
+  const eye = p.pos[1] + p.eyeHeight();
+  assert.ok(eye > 0 && eye < .5, `swimmer's eye should float near surface, eye=${eye}`);
   assert.ok(maxSwimSpeed <= CFG.PLAYER.SWIM + 0.35, `swim speed ${maxSwimSpeed} exceeded cap`);
 
   // Turn around and leave the water.

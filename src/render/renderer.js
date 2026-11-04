@@ -159,7 +159,12 @@ export class GameRenderer {
     // flattening into the fill.
     this.hemi = new THREE.HemisphereLight(BLACKSHORE.skyFill, BLACKSHORE.groundFill, BLACKSHORE.fillIntensity);
     this.scene.add(this.hemi);
+    this._buildCSM();
+    this.ambient = new THREE.AmbientLight(BLACKSHORE.ambientColor, BLACKSHORE.ambientIntensity);
+    this.scene.add(this.ambient);
+  }
 
+  _buildCSM() {
     const q = this.quality;
     this.csm = new CSM({
       camera: this.camera,
@@ -182,8 +187,6 @@ export class GameRenderer {
       l.castShadow = this.renderer.shadowMap.enabled;
       l.shadow.normalBias = 0.035;
     }
-    this.ambient = new THREE.AmbientLight(BLACKSHORE.ambientColor, BLACKSHORE.ambientIntensity);
-    this.scene.add(this.ambient);
   }
 
   _buildComposer() {
@@ -220,14 +223,29 @@ export class GameRenderer {
     });
   }
 
+  setUnderwater(underwater) {
+    if (this.underwater === underwater) return;
+    this.underwater = underwater;
+    this.scene.fog.color.setHex(underwater ? 0x416f72 : BLACKSHORE.fogColor);
+    this.scene.fog.density = underwater ? .085 : this.quality.fogDensity;
+  }
+
   setQuality(name) {
+    const previous = this.quality;
     this.quality = qualityPreset(name);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this.quality.pixelRatio));
     this.renderer.shadowMap.enabled = this.settings.shadows && this.quality.shadows;
+    if (previous.cascades !== this.quality.cascades || previous.shadowMap !== this.quality.shadowMap) {
+      this.csm.remove();
+      for (const light of this.csm.lights) { light.shadow.map?.dispose(); light.shadow.mapPass?.dispose(); }
+      this.csm.dispose();
+      this._buildCSM();
+      for (const material of this._materials) { this.csm.setupMaterial(material); material.needsUpdate = true; }
+    }
     for (const l of this.csm.lights) l.castShadow = this.renderer.shadowMap.enabled;
     this.camera.far = this.quality.viewDistance;
     this.camera.updateProjectionMatrix();
-    this.scene.fog.density = this.quality.fogDensity;
+    this.scene.fog.density = this.underwater ? .085 : this.quality.fogDensity;
     const bloomWanted = this.settings.bloom && this.quality.bloom;
     if (bloomWanted && !this.composer) this._buildComposer();
     if (!bloomWanted && this.composer) {
@@ -249,13 +267,16 @@ export class GameRenderer {
     if (this.composer) {
       this.composer.setPixelRatio(this.renderer.getPixelRatio());
       this.composer.setSize(w, h);
-      this.bloom?.setSize(w, h);
     }
   }
 
   render(dt) {
     this.renderer.info.reset();
-    if (this.csm) this.csm.update();
+    if (this.csm) {
+      const projection = this.camera.projectionMatrix.elements.join(',');
+      if (projection !== this._shadowProjection) { this.csm.updateFrustums(); this._shadowProjection = projection; }
+      this.csm.update();
+    }
     if (this.clouds) {
       const c = this.camera.position;
       this.clouds.position.x = c.x;

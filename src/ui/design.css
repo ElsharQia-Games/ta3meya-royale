@@ -150,6 +150,18 @@ kbd { display: inline-block; padding: 4px 6px; border: 1px solid #82958d66; bord
 .reload-tag { font-size: 8px; letter-spacing: .08em; }
 .reload-track { width: 100%; height: 2px; background: #acbd9733; margin-top: 8px; opacity: 0; }
 .reload-track.show { opacity: 1; }.reload-track i { display: block; height: 100%; background: var(--accent); }
+.vehicle-panel { position: absolute; right: 30px; bottom: 29px; width: 245px; padding: 16px 18px; border-left: 2px solid var(--accent); background: #0b1917d9; }
+.vehicle-panel.passenger { bottom: 165px; }
+.vehicle-role { color: var(--accent); font: 500 11px var(--mono); letter-spacing: .08em; }
+.vehicle-speed { display: flex; gap: 10px; align-items: baseline; margin: 8px 0; }
+.vehicle-speed b { font: 700 62px/.9 var(--display); }.vehicle-speed span { color: #aab99e; font-size: 11px; }
+.vehicle-condition { font-size: 10px; color: #d5dfbe; }
+.vehicle-health-track, .heal-track { height: 3px; margin: 9px 0; background: #b6c19c30; }
+.vehicle-health-track i, .heal-track i { display: block; height: 100%; background: var(--accent); }
+.vehicle-seats { margin: 12px 0; font-size: 10px; color: #aabbac; }
+.vehicle-controls { margin-top: 7px; font-size: 9px; color: #bbc5ad; }
+.vehicle-panel.critical .vehicle-condition { color: var(--amber); }.vehicle-panel.critical .vehicle-health-track i { background: var(--amber); }
+.heal-panel { position: absolute; left: 50%; bottom: 140px; transform: translateX(-50%); min-width: 270px; padding: 13px 17px; background: #0b1917de; border: 1px solid #ccdda34d; font: 500 11px var(--mono); color: var(--accent); }
 .inventory { bottom: 29px; gap: 6px; }
 .slot { min-width: 128px; min-height: 40px; padding: 10px 12px; border-radius: 2px; border-color: #b8cca336; background: #0d1c18ad; }
 .slot.active { border-color: #d2e4a880; background: #bccd8121; box-shadow: inset 0 -2px var(--accent); }
@@ -226,7 +238,7 @@ kbd { display: inline-block; padding: 4px 6px; border: 1px solid #82958d66; bord
   .lobby-nav { gap: 15px; margin: 0; }.nav-button { font-size: 8px; }#nav-deploy { display: none; }
   .lobby-main { grid-template-columns: 1fr; padding: 30px 0; gap: 28px; }
   .operation-copy { max-width: none; }#operation-name { font-size: 112px; margin-top: 18px; }
-  #operation-name span { display: inline; }.operation-subtitle { margin-top: 16px; }
+  #operation-name span { display: block; }.operation-subtitle { margin-top: 16px; }
   .operation-description { margin-top: 10px; }.operation-facts, .terrain-caption { display: none; }
   .deployment-panel { max-width: 470px; width: 100%; }.lobby-footer { padding: 20px 0; }.quick-controls { display: none; }
   .manual-grid { grid-template-columns: 1fr; }.modal { padding: 15px; }.modal .panel { max-height: calc(100vh - 30px); }
@@ -234,6 +246,7 @@ kbd { display: inline-block; padding: 4px 6px; border: 1px solid #82958d66; bord
   .minimap-wrap { width: 126px; top: 18px; right: 16px; }.minimap { width: 116px; height: 116px; }.killfeed { top: 155px; width: 200px; }
   .vitals { width: 155px; bottom: 22px; }.ammo { bottom: 20px; min-width: 120px; }.mag { font-size: 48px; }.weapon-name { font-size: 17px; }
   .util { bottom: 23px; }.util-item { padding: 4px 5px; font-size: 8px; }.center-msg { top: 26%; font-size: 19px; }
+  .vehicle-panel { right: 16px; bottom: 20px; width: 210px; }.vehicle-speed b { font-size: 48px; }
 }
 @media (max-width: 440px) { #operation-name { font-size: 92px; }.operation-copy { overflow: hidden; }.nav-button { font-size: 7px; }.wordmark { font-size: 21px; }.lobby-nav { gap: 10px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition-duration: 0.01ms !important; } }

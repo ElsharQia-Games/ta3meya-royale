@@ -66,6 +66,32 @@ has a clear hierarchy and leaves the aiming area readable.
 - Use instancing/batching for repeated details. Record actual calls/triangles and
   frame distributions; keep software-GPU and hardware-GPU claims distinct.
 
+### Equipment and vehicle integration
+
+- `weapon-model.js` builds the shared original equipment. `poseWeaponMechanics`
+  derives magazine/pump/bolt/feed-cover/shell poses from authoritative reload
+  time and cosmetic shot age. `animation.js` supplies pure two-bone/reload math.
+- First-person shoulders are camera-relative; hand targets are transformed from
+  the weapon's local grip anchors. Arms and the weapon have separate roots, so
+  raising the weapon does not move the operator's shoulders. ADS at rest must
+  project the optical centre to within one pixel in the arsenal fixture.
+- `vehicle.js` owns chassis extents, suspension anchor/ride height, occupant
+  height/eye height and packed presentation data. `vehicle-model.js` uses those
+  dimensions. Front-wheel steering, signed tyre rotation, suspension, wheel and
+  steering-hand poses read that state. Moving/occupied cars update at30Hz.
+- Driver camera and occupants follow the same rendered chassis pose. Preserve
+  relative mouse look while steering; avoid a smoothed car trailing its camera.
+  Driver shooting is disabled; passengers retain the existing shooting action.
+- Pickup visuals use the same gun silhouettes and distinct medical/ammo/armour/
+  grenade shapes. World destruction state restores both colliders and rendered
+  cover for late join/reconnect/new rounds. It is not only an event effect.
+- A world renderer owns a scene group and its private maps; each view/effect
+  owns/disposes its geometry/materials. Procedural cached maps are shared. CSM
+  registrations must be released on disposal and rebuilt with quality presets.
+- `qa/vehicle.mjs` drives actual Input/App/Game actions with labelled setup and
+  deterministic stepping. `qa/arsenal.mjs` captures staged geometry/phase states.
+  Neither substitutes for the separate real-time gameplay recording/WAN gates.
+
 ## Review loop and evidence
 
 Capture deployment, both gameplay modes, representative map areas/interiors,

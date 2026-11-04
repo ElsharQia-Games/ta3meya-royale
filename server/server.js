@@ -17,6 +17,7 @@ import { WebSocketServer } from 'ws';
 
 import { Game } from '../shared/sim.js';
 import { CFG, MATCH_STATE } from '../shared/config.js';
+import { packVehicle } from '../shared/vehicle.js';
 import { clamp } from '../shared/math.js';
 import {
   PROTOCOL_VERSION, MSG, encodePong, decodePing, decodePong, encodeAck,
@@ -62,6 +63,7 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.ttf': 'font/ttf',
+  '.gltf': 'model/gltf+json', '.glb': 'model/gltf-binary',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
   '.map': 'application/json', '.wasm': 'application/wasm',
 };
@@ -303,6 +305,7 @@ function handleJoin(ws, msg) {
     type: 'welcome',
     playerId: player.id,
     name: player.name,
+    weapons: player.weapons.slice(),
     room: room.code,
     mode: room.mode,
     mapSeed: room.game.mapSeed,
@@ -414,6 +417,7 @@ function statePayload(room) {
     countdown: game.countdown,
     roundTime: game.roundTime,
     score: game.score.slice(),
+    destroyed: [...game.destroyedBoxes],
     winner: game.winner ? { id: game.winner.id ?? null, team: game.winner.team ?? null, name: game.winner.name } : null,
     zone: {
       cx: +game.zone.cx.toFixed(1), cz: +game.zone.cz.toFixed(1),
@@ -421,17 +425,13 @@ function statePayload(room) {
       shrinking: game.zone.shrinking, dps: game.zone.dps, active: game.zone.active,
       phaseT: +game.zone.phaseT.toFixed(1),
     },
-    vehicles: game.vehicles.map(v => ({
-      id: v.id, x: +v.pos[0].toFixed(2), y: +v.pos[1].toFixed(2), z: +v.pos[2].toFixed(2),
-      yaw: +v.yaw.toFixed(3), pitch: +v.pitch.toFixed(3), roll: +v.roll.toFixed(3),
-      speed: +Math.hypot(v.vel[0], v.vel[2]).toFixed(2), type: v.type,
-      occupants: v.occupants.slice(), health: v.health,
-    })),
+    vehicles: game.vehicles.map(packVehicle),
     projectiles: game.projectiles.map(pr => ({
+      id: pr.id,
       type: pr.type, x: +pr.pos[0].toFixed(2), y: +pr.pos[1].toFixed(2), z: +pr.pos[2].toFixed(2),
       fuse: +pr.fuse.toFixed(2), deployed: !!pr.deployed,
     })),
-    smokes: game.smokes.map(s => ({ x: +s.x.toFixed(1), y: +s.y.toFixed(1), z: +s.z.toFixed(1), r: s.r })),
+    smokes: game.smokes.map(s => ({ id: s.id, x: +s.x.toFixed(1), y: +s.y.toFixed(1), z: +s.z.toFixed(1), r: s.r })),
   };
 }
 
@@ -564,6 +564,13 @@ function stepRoom(room, dt) {
   if (room.snapshotAccum >= 1 / CFG.SNAPSHOT_HZ - 1e-6) {
     room.snapshotAccum -= 1 / CFG.SNAPSHOT_HZ;
     sendSnapshots(room);
+    // Moving/occupied vehicles need the same cadence as player snapshots. Full
+    // world/zone state remains low-rate; parked cars do not add motion traffic.
+    const moving = game.vehicles.filter(v => v.occupants.some(id => id !== null) || Math.hypot(v.vel[0], v.vel[2]) > .15);
+    if (moving.length) {
+      const payload = { type: 'vehicles', time: game.time, vehicles: moving.map(packVehicle) };
+      for (const c of room.clients.values()) sendText(c.ws, payload);
+    }
   }
 
   // ---- loot refresh (interest filtered) ----

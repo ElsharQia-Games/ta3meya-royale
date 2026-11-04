@@ -424,9 +424,35 @@ function bark() {
   return finish(c);
 }
 
+function equipment() {
+  const c = canvas(512), ctx = c.getContext('2d'), r = rng(4907);
+  ctx.fillStyle = '#ddddda'; ctx.fillRect(0, 0, 512, 512);
+  grain(ctx, 512, r, 14);
+  for (let i = 0; i < 350; i++) {
+    const x = r() * 512, y = r() * 512;
+    ctx.strokeStyle = i % 4 ? '#28322e18' : '#ffffff42';
+    ctx.lineWidth = .35 + r() * .45;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + r() * 11, y + r() * 1.5); ctx.stroke();
+  }
+  return finish(c);
+}
+
+export function stencil(text, sub = 'BLACKSHORE') {
+  const key = `stencil:${text}:${sub}`;
+  if (cache.has(key)) return cache.get(key);
+  const c = document.createElement('canvas'); c.width = 512; c.height = 192;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#d8d6b8'; ctx.textAlign = 'left';
+  ctx.font = 'bold 62px monospace'; ctx.fillText(text, 12, 78);
+  ctx.font = '25px monospace'; ctx.fillText(sub, 14, 137);
+  ctx.fillRect(14, 158, 150, 4);
+  const map = finish(c); map.wrapS = map.wrapT = THREE.ClampToEdgeWrapping;
+  cache.set(key, map); return map;
+}
+
 const FACTORIES = {
   concrete, brick, plaster, wood, metal, sandbag, glass, rock,
-  ground, asphalt, skyGradient, clouds, grainHeight, fabric, bark,
+  ground, asphalt, skyGradient, clouds, grainHeight, fabric, bark, equipment,
 };
 
 export function texture(name) {
@@ -439,6 +465,6 @@ export function texture(name) {
 
 // Per-material texture tiling in metres (world-space UVs are divided by this).
 export const TILE = {
-  concrete: 2.6, brick: 2.2, plaster: 2.8, wood: 1.6, metal: 2.0,
+  concrete: 2.6, brick: 1.1, plaster: 2.8, wood: 1.6, metal: 2.0,
   sandbag: 2.4, glass: 2.0, rock: 3.0, ground: 5.0, asphalt: 6.0,
 };
