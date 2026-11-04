@@ -18,7 +18,7 @@ import { World } from '../shared/world.js';
 import { Prediction } from '../src/prediction.js';
 import {
   MSG, PROTOCOL_VERSION, encodeInput, decodeSnapshot, applySnapshot,
-  decodeControl, encodePing, decodePong, decodeEvents, decodeLoot,
+  decodeControl, encodePing, decodePong, decodeAck, decodeEvents, decodeLoot,
 } from '../shared/protocol.js';
 
 const SERVER_PORT = 3100;
@@ -40,6 +40,16 @@ const pct = (arr, p) => {
   const s = [...arr].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor(s.length * p))];
 };
+
+// Mirrors NetClient._ackFor: only the ack for this exact snapshot is used.
+// Returns null when that ack frame was lost; reconciliation is skipped rather
+// than guessing a stale sequence (which replays an extra tick).
+function ackFor(client, seq) {
+  const exact = client.acks.get(seq >>> 0);
+  if (exact !== undefined) return exact;
+  client.ackMisses++;
+  return null;
+}
 
 async function waitHealth(port, timeoutMs = 15000) {
   const t0 = Date.now();
@@ -116,6 +126,7 @@ async function runProfile(profile) {
     snapshots: 0, snapshotGaps: [], snapshotBytes: 0,
     rtts: [], predErr: [],
     dropped: 0, errors: [],
+    acksReceived: 0, ackMisses: 0, skippedReconciles: 0,
     matchState: null,
   };
 
@@ -125,6 +136,7 @@ async function runProfile(profile) {
     id: null, cache: new Map(), world: null, pred: null,
     lastSnap: null, seq: 0, pingT: 0,
     lastSnapAt: 0, snapIntervals: [], posHistory: new Map(),
+    acks: new Map(), lastAckInput: 0, ackMisses: 0,
   };
 
   const welcomePromise = new Promise((res, rej) => {
@@ -152,7 +164,17 @@ async function runProfile(profile) {
     if (!isBinary) return;
     const buf = data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     const type = new DataView(buf).getUint8(0);
-    if (type === MSG.SNAPSHOT) {
+    if (type === MSG.ACK) {
+      const ack = decodeAck(buf);
+      if (ack) {
+        const seq = ack.seq >>> 0;
+        const value = ack.ackInput >>> 0;
+        client.acks.set(seq, value);
+        while (client.acks.size > 256) client.acks.delete(client.acks.keys().next().value);
+        client.lastAckInput = Math.max(client.lastAckInput, value);
+        result.acksReceived++;
+      }
+    } else if (type === MSG.SNAPSHOT) {
       const snap = decodeSnapshot(buf);
       if (!snap) return;
       const now = performance.now();
@@ -161,11 +183,16 @@ async function runProfile(profile) {
       client.lastSnap = snap;
       result.snapshots++;
       result.snapshotBytes += buf.byteLength;
+      // Match NetClient: only use the ack for this exact snapshot. If the ack
+      // frame was lost, skip reconciliation instead of guessing.
+      snap.ackInput = ackFor(client, snap.seq);
       applySnapshot(client.cache, snap);
       const local = client.cache.get(client.id);
       if (local) {
         if (!reset) { client.pred.reset(local); reset = true; }
-        else {
+        else if (snap.ackInput === null) {
+          result.skippedReconciles++;
+        } else {
           // Prediction correction: the distance between the position the client
           // had already predicted and the corrected position after replaying
           // unacked inputs from the authoritative snapshot. This is the visible
@@ -221,7 +248,8 @@ async function runProfile(profile) {
   await sleep(RUN_MS);
   clearInterval(inputTimer);
   clearInterval(pingTimer);
-  result.ackInputs = client.lastSnap?.ackInput ?? 0;
+  result.ackInputs = client.lastAckInput;
+  result.ackMisses = client.ackMisses;
   result.dropped = proxy.stats.dropped;
   result.snapshotGaps = client.snapIntervals;
   try { ws.close(); } catch {}
@@ -245,6 +273,9 @@ async function runProfile(profile) {
     snapshotKBps: +((result.snapshotBytes / (RUN_MS / 1000)) / 1024).toFixed(2),
     inputsSent: result.sentInputs,
     inputsAcked: result.ackInputs,
+    acksReceived: result.acksReceived,
+    ackMisses: result.ackMisses,
+    skippedReconciles: result.skippedReconciles,
     droppedMessages: result.dropped,
     note: result.matchState || 'no-local-state',
   };

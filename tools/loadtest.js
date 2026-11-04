@@ -81,24 +81,43 @@ function makeClient(i) {
 }
 
 // Input loop: 60 Hz, walk/sprint in a slow circle, fire in short bursts.
+// A drift-corrected deadline scheduler keeps the average rate at inputHz;
+// setInterval(16.67ms) actually fires at ~61.7 Hz on Node and would make the
+// load generator outrun the 60 Hz simulation.
 const timers = [];
+let inputsSent = 0;
+function sendInput(c, tick) {
+  c.seq = (c.seq + 1) >>> 0;
+  c.yaw += 0.004;
+  const shooting = tick % 300 > 260;          // 0.65 s burst every 5 s
+  const buttons = 1 | 32 | (shooting ? 128 : 0);
+  const buf = encodeInput({
+    seq: c.seq, clientTime: performance.now() / 1000,
+    yaw: c.yaw, pitch: -0.02,
+    buttons, actions: 0, slot: -1, stance: -1,
+    enterVehicle: 0, viewTime: performance.now() / 1000,
+  });
+  try { c.ws.send(buf); inputsSent++; } catch {}
+}
+
 function startInput(c) {
   let tick = 0;
-  timers.push(setInterval(() => {
+  const interval = 1000 / CFG.NET.inputHz;
+  let next = performance.now() + interval;
+  const pump = () => {
     if (c.done || c.ws.readyState !== 1) return;
-    tick++;
-    c.seq = (c.seq + 1) >>> 0;
-    c.yaw += 0.004;
-    const shooting = tick % 300 > 260;          // 0.65 s burst every 5 s
-    const buttons = 1 | 32 | (shooting ? 128 : 0);
-    const buf = encodeInput({
-      seq: c.seq, clientTime: performance.now() / 1000,
-      yaw: c.yaw, pitch: -0.02,
-      buttons, actions: 0, slot: -1, stance: -1,
-      enterVehicle: 0, viewTime: performance.now() / 1000,
-    });
-    try { c.ws.send(buf); } catch {}
-  }, 1000 / CFG.NET.inputHz));
+    const now = performance.now();
+    let sent = 0;
+    while (now >= next && sent < 4) {
+      sendInput(c, ++tick);
+      next += interval;
+      sent++;
+    }
+    // After a long stall, do not try to replay seconds of missed inputs.
+    if (now - next > interval * 8) next = now + interval;
+    timers.push(setTimeout(pump, Math.max(0, next - performance.now())));
+  };
+  pump();
 }
 
 try {
@@ -110,6 +129,7 @@ try {
   await sleep(3000); // let warmup finish and the match go live
 
   const samples = [];
+  const inputsAtStart = inputsSent;
   const t0 = performance.now();
   while (performance.now() - t0 < SECONDS * 1000) {
     await sleep(2000);
@@ -124,6 +144,9 @@ try {
       players: room?.players ?? 0,
       alive: room?.alive ?? 0,
       state: room?.state ?? -1,
+      droppedInputs: room?.droppedInputs ?? 0,
+      skippedSnapshots: room?.skippedSnapshots ?? 0,
+      simResets: room?.simResets ?? 0,
     });
     process.stdout.write('.');
   }
@@ -154,6 +177,10 @@ try {
     heapMinMB: +Math.min(...heap).toFixed(1),
     heapMaxMB: +Math.max(...heap).toFixed(1),
     heapLastMB: +heap.at(-1).toFixed(1),
+    droppedInputs: samples.at(-1)?.droppedInputs ?? 0,
+    skippedSnapshots: samples.at(-1)?.skippedSnapshots ?? 0,
+    simResets: samples.at(-1)?.simResets ?? 0,
+    inputHzPerClient: +(((inputsSent - inputsAtStart) / elapsed) / Math.max(1, connected)).toFixed(1),
   };
   console.table(samples);
   // Compact series so a long soak stays diagnosable even when stdout is tailed.
@@ -162,7 +189,7 @@ try {
   console.log(summary);
   console.log(`\nserver CPU measured as tick time only; see /stats on the live server for tickMs.`);
 } finally {
-  for (const t of timers) clearInterval(t);
+  for (const t of timers) clearTimeout(t);
   for (const c of clients) { try { c.ws.close(); } catch {} }
   server.kill('SIGTERM');
 }
