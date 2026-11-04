@@ -5,3 +5,4 @@ qa/clip/
 *.log
 .DS_Store
 .worktrees/
+node_modules
