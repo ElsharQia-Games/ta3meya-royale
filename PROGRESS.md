@@ -1,11 +1,14 @@
 # PROGRESS.md — Current state
 
-_Last updated for the current working tree. Every number here was produced by a
-script in this repository; see GAP-ANALYSIS.md for caveats._
+_Integration in progress, 2026-11-04. Historical measurements below apply to the
+pre-agent baseline, not to the combined candidate. See
+`qa/reports/INTEGRATION.md` for current findings, revisions and agent ownership._
 
 ## Status
 
-The game is playable end-to-end, online and offline.
+The pre-agent baseline runs online and offline. The expanded acceptance criteria
+are **not complete**. The four original specialist sessions have produced changes;
+controller review and screenshot-driven iteration are in progress.
 
 - `npm install && npm run build && npm start` → open `http://localhost:3000`,
   enter a room code, deploy. Friends join the same URL/room.
@@ -13,7 +16,7 @@ The game is playable end-to-end, online and offline.
 - Online and offline browser QA pass with no console/page errors.
 - Two-client QA passes: roster, remote movement, chat, reconnect (same id).
 
-## Verified in this revision
+## Historical baseline verification
 
 | Check | Result |
 |---|---|
@@ -52,11 +55,20 @@ The game is playable end-to-end, online and offline.
 
 ## Known bugs / rough edges
 
+- **Integration review:** the bot round-trip fixture used gameplay `seed` instead
+  of `mapSeed`; correcting it exposes two failures (16/18 successful round trips).
+  These are being fixed before merging `agent/sim`.
+- **Net review:** expired timer handles accumulated in the load harness, old ACK
+  entries could survive a connection epoch, and deltas lacked missing-baseline
+  validation. Fixes and lifecycle tests are required before `agent/net` merges.
+- **Direct visual review:** baseline vista has repetitive cone trees, sparse
+  foreground detail and harsh shadowed props; the ADS weapon is a large solid
+  silhouette; countdown/nameplate overlap occurs. These are active visual issues,
+  not dismissed as framing artefacts. Image input works for the controller.
+
 - Headless pointer lock emits synthetic movement deltas; QA sets aim/input
   state directly. Real browsers are unaffected (the first post-lock move is
   discarded).
-- Some QA screenshots are dark because the scripted walk ends in shadow or
-  against geometry. This is framing, not a lighting fault.
 - Bots cannot enter building interiors.
 - Spectate is first-person only and only in BR.
 - The stress maximum tick (29.6 ms) and 20 s RSS growth (+22 MB) are
@@ -75,6 +87,10 @@ The game is playable end-to-end, online and offline.
 
 ## Next steps
 
+0. Finish the integration/visual pass in PLAN.md, recapture all representative
+   systems, record and inspect a gameplay clip, then update evidence for the
+   combined revision. Quota-blocked agent sessions remain saved; the controller
+   continues permitted local review and fixes without creating replacement agents.
 1. Hardware GPU profiling at 1080p; then LOD/occlusion and draw-call reduction.
 2. Multi-hour soak for memory/snapshot-cache growth.
 3. Real WAN test through the Cloudflare Tunnel; WebTransport spike.

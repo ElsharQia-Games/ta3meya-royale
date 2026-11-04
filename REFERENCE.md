@@ -3,15 +3,15 @@
 This is the quality bar used to judge *Frontline*. It is written from public technical material and gameplay analysis. No commercial assets, names, maps or code are copied.
 
 ## 1. Movement & character feel
-- **PUBG:** weighty acceleration, distinct walk/sprint/crouch/prone, vaulting, lean, free-look, stamina; character animation telegraphs stance. Gunplay is punishing, ADS is essential, movement accuracy penalty is large.
+- **PUBG:** distinct walk/sprint/crouch/prone, vaulting, lean and free-look; character animation telegraphs stance. Evaluate movement weight and aimed-fire readability. The earlier stamina claim was not substantiated and is removed.
 - **Battlefield:** momentum + slide, vault, bipods, suppression, vehicles; movement readable at distance, third-person animation sells it.
 - **The Finals:** fast acceleration, slide, mantle, destruction-driven traversal, very low input-to-camera latency, strong FOV/sprint/landing feedback.
 - **Bar for us:** fixed 60 Hz deterministic controller, no stuck/tunneling, step/slope/ceiling handling, coyote time + jump buffer, air control, smooth crouch height, camera bob/land dip, ADS FOV, responsive mouse.
 
 ## 2. Shooting & ballistics
-- **PUBG:** real projectile travel, gravity drop, drag, penetration of thin cover, limb/head multipliers, armour, attachments, per-gun recoil patterns, scope sway/breath.
+- **PUBG:** projectile travel/drop, hit zones, armour, attachments, recoil control and scope handling are gameplay reference points. Penetration/destruction behaviour is version/material-specific; generic wall penetration is not asserted here.
 - **Battlefield:** bullet drop + velocity per weapon, suppression, bipods, destructive cover.
-- **The Finals:** highly readable tracers/muzzle flash, fast TTK, strong hit feedback, minimal visual noise.
+- **The Finals:** readable tracers/muzzle flash and strong hit feedback amid destruction. TTK varies by class/weapon; no blanket fast-TTK claim is used as a tuning target.
 - **Bar for us:** data-driven stats, muzzle velocity + drag + drop, travel-time damage scheduling, penetration with damage loss, falloff, head/torso/limb hitboxes, armour, recoil + spread + ADS + movement penalty, hitmarkers/headshot audio.
 
 ## 3. Netcode
@@ -55,4 +55,37 @@ This is the quality bar used to judge *Frontline*. It is written from public tec
 - **Bar for us:** instanced vegetation, merged building geometry, chunk/frustum culling, pooled effects, 60 fps target at 1080p on mid-range hardware, 32-player server at 30 Hz on a small VPS.
 
 ## Honest position
-A single-session build cannot equal the content volume, animation fidelity, art pipeline or QA scale of these games. The goal is to close every *systemic* gap that is technically reachable (netcode, ballistics, controller, destruction, audio, UI) and to record the remaining gaps (photoreal assets, mo-cap animation, 100-player scale, anti-cheat depth) in GAP-ANALYSIS.md.
+The current build remains substantially below the reference bar. Track concrete
+gaps and iterate on reachable improvements; elapsed development time is not an
+acceptance criterion. Commercial-scale content, animation quality and hardware/WAN
+performance are not established by unit tests or brightness statistics.
+
+## Direct reference-image review — 2026-11-04
+
+Source metadata was fetched from the public Steam app-details API and the
+following publisher-provided stills were read as images. These are promotional
+stills, including staged compositions, not timed gameplay measurements. Battlefield
+2042's selected store image has historical/Portal-era styling; it does not establish
+the mechanics of every Battlefield title.
+
+| Reference | Source | Local inspection copy |
+|---|---|---|
+| PUBG: BATTLEGROUNDS | [Store](https://store.steampowered.com/app/578080/) · [still](https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/578080/bf9b3de5896d4ec7ef9531938b26946cded81fdf/ss_bf9b3de5896d4ec7ef9531938b26946cded81fdf.1920x1080.jpg) | `qa/shots/references/pubg-02.jpg` |
+| Battlefield 2042 | [Store](https://store.steampowered.com/app/1517290/) · [still](https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1517290/cf954bff997292185b157a6024a59350544f8147/ss_cf954bff997292185b157a6024a59350544f8147.1920x1080.jpg) | `qa/shots/references/battlefield-02.jpg` |
+| THE FINALS | [Store](https://store.steampowered.com/app/2073850/) · [still](https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/2073850/a68fbbac0318c9fa01330f564b83a14feafcbf44/ss_a68fbbac0318c9fa01330f564b83a14feafcbf44.1920x1080.jpg) | `qa/shots/references/finals-02.jpg` |
+
+Images remain copyright their respective owners. Inspection copies are ignored
+under `qa/shots/`, are not bundled or distributed as game assets, and supply no
+geometry, textures, logos or audio to Frontline.
+
+| Observed reference quality | Observed Frontline baseline gap | Improvement/verification target |
+|---|---|---|
+| Cloth folds, helmets, gloves, seams and hands visibly contacting weapons | Primitive body proportions and little small-scale material definition; mannequin capture reads as a rear view | Clear front/back silhouette, connected grip/arms, articulated stances, representative near/mid-distance frames |
+| Metal, cloth, masonry and ground remain distinct in light and shade | Large dark props and black weapon silhouettes lose surface definition | Correct linear/sRGB pipeline, readable shadow fill and material contrast in both sun directions and interiors |
+| Detailed vegetation and foreground/midground/background layers | Repeated cone trees, sparse open ground and weak locality of cover | Varied vegetation silhouettes and ground detail; maintain sightline/readability and measure draw/triangle cost |
+| Muzzle light, smoke and debris differ in scale, colour and motion role | Current stills do not prove convincing destruction or temporal effects | Capture impact/after state plus an actual moving clip; test synchronized collision removal separately |
+| Poses and scene composition keep the subject/action readable | Tall nameplates overlap countdown text; ADS fills the centre with a solid model | Unobstructed sight picture and HUD priorities, verified at 1080p and smaller viewports |
+
+These observations inform the next pass; they do not assert those gaps have
+already been closed. Baseline images inspected directly: `10-vista.png`,
+`11-character.png`, and `14-ads.png` under `qa/shots/`.

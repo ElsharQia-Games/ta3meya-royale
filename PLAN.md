@@ -3,7 +3,7 @@
 **Project:** *Frontline* — a browser-based, server-authoritative multiplayer tactical shooter.
 **Reference bar:** PUBG (scale, ballistics, BR pacing), Battlefield (combined arms, destruction, audio), The Finals (movement feel, destruction spectacle, UI polish).
 
-## Architecture (final)
+## Architecture (current)
 - **Client:** Three.js r170 + WebGL2. Procedural PBR-ish world, CSM shadows, post-processing, WebAudio synthesis. No external art assets (see ASSETS.md).
 - **Shared deterministic simulation:** plain ES modules imported by both client and server. Fixed 60 Hz step. Custom kinematic capsule controller over heightfield + AABB world. This is intentionally *not* Rapier: identical code on both sides gives exact prediction/replay, no WASM boot cost, and full control of step/slope/ground behaviour. Justified in DECISIONS.md.
 - **Server:** Node.js 20+, `ws`, 60 Hz simulation, 30 Hz snapshots. Authoritative movement, weapons, loot, zone, vehicles, destruction, modes. Lag-compensated hit resolution.
@@ -21,14 +21,40 @@
 ## Acceptance tests (evidence required)
 | # | Criterion | Test |
 |---|---|---|
-| A1 | 16+ players smooth at 100–150 ms | `npm run nettest` (simulated latency + real WS bots) + load report |
+| A1 | 16+ players smooth over the internet at 100–150 ms RTT | Local load/proxy tests are prerequisites; a full WAN match with 16+ clients and recorded RTT/frame/tick evidence is required separately |
 | A2 | Hits register fairly | automated rewind test: moving target, 150 ms, hit verdict matches shooter view |
 | A3 | No stuck/tunnel/jitter in 30 min | `npm run stress` 32 players, 108k ticks, penetration/NaN assertions |
-| A4 | Client 60 fps mid-range 1080p | `npm run qa` reports FPS/draw calls (note: CI uses software GL; hardware measurement documented separately) |
-| A5 | Server 32 players at 30 Hz | `npm run loadtest` reports tick ms, snapshot KB/s |
+| A4 | Client 60 fps mid-range 1080p | Hardware-GPU frame-time capture at 1920×1080; SwiftShader screenshot QA cannot satisfy this gate |
+| A5 | Server 32 players at 60 Hz | `npm run loadtest` with raw tick distribution, input drops, snapshot/ACK bytes and memory; deployment-class VPS measurement separately |
 | A6 | Cohesive look | `qa/shots/*.png` + `qa/clip/*.webm`, reviewed against REFERENCE.md |
 | A7 | 3-command setup | README: `npm install`, `npm run build`, `npm start` |
 | A8 | Gap analysis | GAP-ANALYSIS.md with per-system evidence |
+
+## Active integration and visual-improvement pass
+
+Continue the four existing agent sessions/worktrees; retain their edits through
+quota interruptions. The controller reviews actual diffs, reproduces findings,
+and integrates verified commits in dependency order. Track this work in
+`qa/reports/INTEGRATION.md`.
+
+1. Correct protocol/ACK lifecycle, missing-delta recovery and measurement errors.
+2. Verify bot entry/exit on genuinely different map seeds; profile the reported
+   long ticks and preserve the shared-world/controller contract.
+3. Review and integrate client/HUD/input/audio and renderer changes.
+4. Capture a reproducible **1920×1080** scene matrix: BR/TDM; towns, forest,
+   hills, lake and interiors; stand/crouch/prone/death; every weapon class at
+   hip/ADS/reload/fire; vehicle view/driving; grenade/smoke/destruction; inventory,
+   scoreboard, chat, settings, damage, spectate, reconnect and round-end UI.
+5. Read the actual images. Record framing, silhouette, material/lighting,
+   effect and HUD defects with paths; correct them and recapture affected scenes.
+   Keep fixture images distinct from real gameplay captures. Record and inspect
+   a gameplay clip, including frame cadence and transitions.
+6. Run the combined build/test, browser, stress, latency and load gates. Publish
+   current-revision evidence and leave unavailable WAN/GPU/VPS gates open.
+
+Public reference stills are inspiration for evaluation, not runtime assets or
+evidence of the reference games' measured performance. `REFERENCE.md` records
+their provenance and the concrete visual observations.
 
 ## Working rules
 - Commit after every working slice; `main` always runnable.
