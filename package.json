@@ -1,7 +1,7 @@
 {
-  "name": "shooter-game",
-  "version": "0.1.0",
-  "description": "Multiplayer tactical shooter — browser client (Three.js), authoritative Node server",
+  "name": "frontline",
+  "version": "0.2.0",
+  "description": "Frontline — browser tactical shooter with an authoritative Node server",
   "type": "module",
   "private": true,
   "engines": {
@@ -9,10 +9,13 @@
   },
   "scripts": {
     "start": "node server/server.js",
-    "start:client": "vite --port 5173 --host",
+    "dev": "vite --port 5173 --host",
     "build": "vite build",
-    "test": "node --test test/sim.test.js",
-    "test:sim": "node tools/simtest.js"
+    "preview": "vite preview --port 4173",
+    "test": "node --test test/*.test.js",
+    "nettest": "node tools/nettest.js",
+    "loadtest": "node tools/loadtest.js",
+    "qa": "node qa/screens.js"
   },
   "dependencies": {
     "three": "^0.170.0",

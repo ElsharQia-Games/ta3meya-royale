@@ -1,69 +1,182 @@
-// Unit tests for core sim math — run with `node --test test/`
-import { test } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Game } from '../shared/sim.js';
-import { CFG } from '../shared/config.js';
+import { Game, emptyInput } from '../shared/sim.js';
+import { CFG, MATCH_STATE, STANCE } from '../shared/config.js';
 
-const idle = { f: false, b: false, l: false, r: false, jump: false, sprint: false, ads: false, shoot: false, yaw: 0, pitch: 0, reload: false, grenade: false, heal: false, switch: -1, stance: null };
+function inputsFor(game, pattern, tick) {
+  const map = new Map();
+  for (const p of game.players.values()) {
+    const i = emptyInput();
+    i.yaw = Math.sin(tick * 0.01 + p.id) * 3;
+    i.pitch = Math.cos(tick * 0.013) * 0.2;
+    i.f = pattern.f ?? true;
+    i.sprint = pattern.sprint ?? false;
+    i.jump = pattern.jump ? tick % 90 === 0 : false;
+    map.set(p.id, i);
+  }
+  return map;
+}
 
-test('player falls to terrain and grounds', () => {
-  const g = new Game(); const p = g.addPlayer('a', 10, 10);
-  p.pos[1] += 5;
-  for (let i = 0; i < 120; i++) g.step(new Map([[p.id, idle]]), CFG.SIM_DT);
-  assert.equal(p.grounded, true);
-  assert.ok(Math.abs(p.pos[1] - g.world.terrainH(10, 10)) < 0.05);
+function makeGame(mode = 'br') {
+  const g = new Game({ mode, seed: 424242 });
+  g.addPlayer('Alpha', 0);
+  g.addPlayer('Bravo', 0);
+  return g;
+}
+
+test('two identical games stay deterministic under identical inputs', () => {
+  const a = makeGame(), b = makeGame();
+  a.begin(); b.begin();
+  for (let tick = 0; tick < 300; tick++) {
+    const ia = inputsFor(a, { f: true, sprint: tick % 120 < 60, jump: tick % 150 === 0 }, tick);
+    const ib = inputsFor(b, { f: true, sprint: tick % 120 < 60, jump: tick % 150 === 0 }, tick);
+    a.step(ia, CFG.SIM_DT);
+    b.step(ib, CFG.SIM_DT);
+  }
+  assert.equal(a.players.size, b.players.size);
+  for (const [id, pa] of a.players) {
+    const pb = b.players.get(id);
+    assert.ok(pb);
+    for (let k = 0; k < 3; k++) assert.equal(pa.pos[k], pb.pos[k], `player ${id} axis ${k}`);
+    assert.equal(pa.vel[0], pb.vel[0]);
+    assert.equal(pa.vel[1], pb.vel[1]);
+    assert.equal(pa.vel[2], pb.vel[2]);
+    assert.equal(pa.health, pb.health);
+    assert.equal(pa.stance, pb.stance);
+  }
+  assert.equal(a.tick, b.tick);
+  assert.equal(a.time, b.time);
 });
 
-test('movement speed capped (no speed hack)', () => {
-  const g = new Game(); const p = g.addPlayer('a', 0, 0);
-  const inp = { ...idle, f: true, sprint: true };
-  for (let i = 0; i < 300; i++) g.step(new Map([[p.id, inp]]), CFG.SIM_DT);
-  const sp = Math.hypot(p.vel[0], p.vel[2]);
-  assert.ok(sp <= CFG.PLAYER.SPRINT + 0.3, `speed ${sp} exceeds sprint max`);
+test('movement keeps the player on the terrain and inside the map bounds', () => {
+  const g = makeGame();
+  for (let tick = 0; tick < 600; tick++) {
+    g.step(inputsFor(g, { f: true, sprint: true }, tick), CFG.SIM_DT);
+  }
+  for (const p of g.players.values()) {
+    const ground = g.world.terrainHeight(p.pos[0], p.pos[2]);
+    assert.ok(p.pos[1] >= ground - 0.5, `player ${p.id} below terrain`);
+    assert.ok(Math.abs(p.pos[0]) <= CFG.MAP.BOUNDS + 1);
+    assert.ok(Math.abs(p.pos[2]) <= CFG.MAP.BOUNDS + 1);
+    assert.ok(Number.isFinite(p.pos[1]));
+  }
 });
 
-test('shooting consumes ammo and damages in line of sight', () => {
-  const g = new Game(); const a = g.addPlayer('a', 0, 0); const b = g.addPlayer('b', 0, -20);
-  a.yaw = 0; // facing -Z
-  const shot = { ...idle, shoot: true, yaw: 0, pitch: 0 };
-  const hp0 = b.health;
-  g.step(new Map([[a.id, shot]]), CFG.SIM_DT);
-  assert.equal(a.inv[a.weapons[a.curW]].mag, CFG.WEAPONS[a.weapons[a.curW]].mag - 1);
-  // projectile/hitscan resolution may hit depending on spread; force a clean shot:
-  a.yaw = Math.atan2(-(b.pos[0] - a.pos[0]), -(b.pos[2] - a.pos[2]));
-  for (let i = 0; i < 40; i++) { a.cooldown = 0; g.step(new Map([[a.id, { ...shot, yaw: a.yaw }]]), CFG.SIM_DT); }
-  assert.ok(b.health < hp0, 'target took damage');
+test('sprint does not exceed the configured speed cap', () => {
+  const g = makeGame();
+  let max = 0;
+  for (let tick = 0; tick < 240; tick++) {
+    g.step(inputsFor(g, { f: true, sprint: true }, tick), CFG.SIM_DT);
+    for (const p of g.players.values()) max = Math.max(max, Math.hypot(p.vel[0], p.vel[2]));
+  }
+  assert.ok(max <= CFG.PLAYER.SPRINT + 0.25, `max speed ${max}`);
 });
 
-test('zone damages players outside', () => {
-  const g = new Game(); const p = g.addPlayer('a', 900, 900); // outside initial zone r=330
-  g.zone.r = 50; g.zone.phase = 2; g.zone.shrinking = true; g.zone.phaseT = 0;
-  const hp0 = p.health;
-  for (let i = 0; i < 120; i++) g.step(new Map(), CFG.SIM_DT);
-  assert.ok(p.health < hp0, 'zone should damage outside players');
+test('stance changes apply and crouch lowers the eye height', () => {
+  const g = makeGame();
+  const p = g.players.get(1);
+  const standEye = p.eyeHeight();
+  for (let tick = 0; tick < 60; tick++) {
+    const map = inputsFor(g, {}, tick);
+    map.get(p.id).stance = STANCE.CROUCH;
+    g.step(map, CFG.SIM_DT);
+  }
+  assert.equal(p.stance, STANCE.CROUCH);
+  assert.ok(p.eyeHeight() < standEye);
 });
 
-test('grenade explodes and hurts in radius', () => {
-  const g = new Game(); const a = g.addPlayer('a', 0, 0);
-  const hp0 = a.health;
-  g.projectiles.push({ pos: [a.pos[0], a.pos[1] + 0.5, a.pos[2]], vel: [0, 0, 0], owner: a.id, type: 'grenade', fuse: 0.01, bounces: 0 });
-  for (let i = 0; i < 10; i++) g.step(new Map(), CFG.SIM_DT);
-  assert.ok(a.health < hp0);
+test('zone waits, then shrinks toward the configured radius', () => {
+  const g = makeGame();
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  const startR = g.zone.r;
+  for (let i = 0; i < 50; i++) g.stepZone(1);
+  assert.equal(g.zone.shrinking, true);
+  for (let i = 0; i < 50; i++) g.stepZone(1);
+  assert.ok(g.zone.r < startR, `zone did not shrink: ${g.zone.r}`);
+  assert.ok(g.zone.phase >= 1);
+  assert.ok(g.zone.r >= CFG.ZONE.phases[0].r - 1);
 });
 
-test('heal restores health over time', () => {
-  const g = new Game(); const p = g.addPlayer('a', 0, 0); p.health = 40;
-  g.step(new Map([[p.id, { ...idle, heal: true }]]), CFG.SIM_DT);
-  for (let i = 0; i <= CFG.HEAL.time / CFG.SIM_DT + 10; i++) g.step(new Map([[p.id, idle]]), CFG.SIM_DT);
-  assert.ok(p.health > 40);
+test('players outside the zone take damage over time', () => {
+  const g = makeGame();
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  const p = g.players.get(1);
+  p.pos = [g.zone.cx + g.zone.r + 20, 10, g.zone.cz];
+  const before = p.health;
+  for (let i = 0; i < 10; i++) g.stepZone(1);
+  assert.ok(p.health < before, `hp ${p.health} should drop`);
 });
 
-test('two runs of identical inputs produce identical state (deterministic)', () => {
-  const run = () => {
-    const g = new Game(42); const p = g.addPlayer('a', 5, 5);
-    const inp = new Map([[p.id, { ...idle, f: true, sprint: true, shoot: true }]]);
-    for (let i = 0; i < 240; i++) g.step(new Map(inp), CFG.SIM_DT);
-    return [p.pos[0].toFixed(4), p.pos[2].toFixed(4), p.health];
-  };
-  assert.deepEqual(run(), run());
+test('TDM respawns dead players after the respawn delay', () => {
+  const g = new Game({ mode: 'tdm', seed: 7 });
+  g.addPlayer('A', 0); g.addPlayer('B', 1);
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  const p = g.players.get(1);
+  g.kill(p, 2, 'ar', 'torso', 10);
+  assert.equal(p.alive, false);
+  assert.ok(p.respawnAt > g.time);
+  g.time = p.respawnAt + 0.01;
+  g.stepRespawns();
+  assert.equal(p.alive, true);
+  assert.equal(p.health, CFG.PLAYER.MAX_HEALTH);
+  assert.deepEqual(p.weapons, ['ar', 'pistol']);
+});
+
+test('BR ends when one player remains', () => {
+  const g = makeGame();
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  g.kill(g.players.get(2), 1, 'ar', 'torso', 10);
+  g.checkMatchEnd();
+  assert.equal(g.matchState, MATCH_STATE.ENDED);
+  assert.equal(g.winner.id, 1);
+});
+
+test('kill events and score are recorded', () => {
+  const g = makeGame();
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  g.kill(g.players.get(2), 1, 'dmr', 'head', 42);
+  const kill = g.events.find(e => e.k === 'kill');
+  assert.ok(kill);
+  assert.equal(kill.killer, 1);
+  assert.equal(kill.victim, 2);
+  assert.equal(kill.zone, 'head');
+  assert.equal(g.players.get(1).kills, 1);
+  assert.equal(g.players.get(2).deaths, 1);
+});
+
+test('snapshot packing exposes the fields the client needs', () => {
+  const g = makeGame();
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  g.step(new Map(), CFG.SIM_DT);
+  const packed = g.pack();
+  assert.equal(packed.players.length, 2);
+  assert.equal(packed.mode, 'br');
+  assert.equal(packed.state, MATCH_STATE.LIVE);
+  assert.ok(packed.zone && typeof packed.zone.r === 'number');
+  assert.ok(Array.isArray(packed.vehicles));
+  assert.ok(Array.isArray(packed.projectiles));
+  const p = packed.players[0];
+  for (const key of ['id', 'x', 'y', 'z', 'yaw', 'pitch', 'hp', 'alive', 'stance']) {
+    assert.ok(key in p, `missing ${key}`);
+  }
+});
+
+test('removing a player drops their vehicle seat and map entry', () => {
+  const g = makeGame();
+  g.begin();
+  g.spawnVehicles();
+  const p = g.players.get(1);
+  const v = g.vehicles[0];
+  v.pos = p.pos.slice();
+  assert.equal(g.enterVehicle(p, v), true);
+  assert.equal(p.inVehicle, v.id);
+  g.removePlayer(p.id);
+  assert.equal(g.players.has(p.id), false);
+  assert.equal(v.occupants.includes(p.id), false);
 });

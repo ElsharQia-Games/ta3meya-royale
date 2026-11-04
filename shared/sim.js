@@ -1,480 +1,789 @@
-// Deterministic game simulation shared by client and server.
-// Fixed dt = 1/60. All randomness from seeded RNG streams so replays/tests agree.
-import { CFG } from './config.js';
-import { World, rngStream } from './world.js';
+// ============================================================================
+// Authoritative game simulation. Fixed 60 Hz. Shared by client (prediction)
+// and server (truth). No DOM, no rendering, no network I/O.
+// ============================================================================
+import { CFG, STANCE, MATCH_STATE, TEAMS } from './config.js';
+import { RNG, clamp, yawTo, TAU, lerp } from './math.js';
+import { World } from './world.js';
+import { movePlayer, stanceHeight, stanceEye, supportHeight } from './physics.js';
+import {
+  tryFire, tryReload, finishReload, switchWeapon, throwGrenade, stepProjectiles,
+  tryInteract, spawnWorldLoot, dropInventory, hitboxesFor, applyDamage, explode,
+} from './weapons.js';
+
+export function emptyInput() {
+  return {
+    f: false, b: false, l: false, r: false, jump: false, sprint: false, ads: false,
+    shoot: false, reload: false, grenade: false, smoke: false, heal: false, interact: false,
+    slot: -1, cycle: false, stance: null, enterVehicle: undefined,
+    yaw: 0, pitch: 0, seq: 0, viewTime: 0,
+  };
+}
 
 export class Player {
-  constructor(id, name, x, z, team = 0) {
-    this.id = id; this.name = name; this.team = team;
-    this.pos = [x, 0, z]; this.vel = [0, 0, 0];
+  constructor(id, name, team = 0) {
+    this.id = id;
+    this.name = name;
+    this.team = team;
+    this.pos = [0, 0, 0];
+    this.vel = [0, 0, 0];
     this.yaw = 0; this.pitch = 0;
-    this.health = CFG.PLAYER.MAX_HEALTH; this.alive = true;
-    this.stance = 'stand';            // stand | crouch | prone
-    this.grounded = false; this.sprinting = false; this.adsing = false;
-    this.weapons = ['ar', 'shotgun', 'pistol'];
-    this.inv = {};                    // weapon -> {mag, reserve}
-    for (const w of this.weapons) this.inv[w] = { mag: CFG.WEAPONS[w].mag, reserve: CFG.WEAPONS[w].mag * 5 };
-    this.curW = 0; this.reloadT = 0; this.cooldown = 0; this.grenades = 2; this.med = 3;
-    this.kills = 0; this.deaths = 0; this.lastAttacker = null;
-    this.recoilPitch = 0; this.recoilYaw = 0; this.heat = 0;
-    this.inVehicle = null; this.healT = 0;
+    this.health = CFG.PLAYER.MAX_HEALTH;
+    this.armor = 0;
+    this.alive = true;
+    this.stance = STANCE.STAND;
+    this.stanceT = 1;
+    this.grounded = false;
+    this.coyote = 0;
+    this.jumpBuffer = 0;
+    this.sprinting = false;
+    this.adsing = false;
+    this.inWater = false;
+    this.swimming = false;
+    this.fallImpact = 0;
+    this.pendingFallDamage = 0;
+    this.weapons = [null, null];
+    this.inv = {};
+    this.curSlot = 0;
+    this.switchT = 0;
+    this.reloadT = 0;
+    this.reloadKey = null;
+    this.cooldown = 0;
+    this.heat = 0;
+    this.prevShoot = false;
+    this.grenades = 0;
+    this.smokes = 0;
+    this.bandages = 0;
+    this.medkits = 0;
+    this.healT = 0;
+    this.healItem = null;
+    this.kills = 0; this.deaths = 0;
+    this.damageDealt = 0;
+    this.lastAttacker = null;
+    this.lastDamageAt = -999;
     this.respawnAt = 0;
+    this.inVehicle = null;
+    this.seat = -1;
+    this.isBot = false;
+    this.bot = null;
+    this.connected = true;
+    this.ping = 0;
+    this.spectate = null;
+    this.zoneT = 0;
   }
-  eyeHeight() {
-    const P = CFG.PLAYER;
-    return this.stance === 'crouch' ? 0.85 : this.stance === 'prone' ? 0.45 : P.EYE;
-  }
-  height() {
-    return this.stance === 'crouch' ? CFG.PLAYER.CROUCH_HEIGHT :
-           this.stance === 'prone' ? CFG.PLAYER.PRONE_HEIGHT : CFG.PLAYER.HEIGHT;
+  height() { return stanceHeight(this.stance); }
+  eyeHeight() { return stanceEye(this.stance); }
+  curWeapon() { return this.weapons[this.curSlot]; }
+  hasWeapon() { return !!this.curWeapon(); }
+  giveLoadout(loadout) {
+    this.weapons = [null, null]; this.inv = {};
+    loadout.forEach((w, i) => {
+      if (i > 1 || !w) return;
+      this.weapons[i] = w;
+      this.inv[w] = { mag: CFG.WEAPONS[w].mag, reserve: CFG.WEAPONS[w].reserve };
+    });
+    this.curSlot = this.weapons[0] ? 0 : 1;
+    this.switchT = 0;
   }
 }
 
 export class Vehicle {
-  constructor(id, x, z) {
-    this.id = id; this.pos = [x, 0, z]; this.yaw = 0; this.speed = 0;
-    this.steer = 0; this.occupants = [null, null, null, null];
+  constructor(id, x, z, yaw = 0, type = 'car') {
+    this.id = id;
+    this.pos = [x, 0, z];
+    this.vel = [0, 0, 0];
+    this.yaw = yaw;
+    this.steer = 0;
+    this.type = type;
+    this.health = CFG.VEHICLE.health;
+    this.occupants = [null, null, null, null];
+    this.pitch = 0; this.roll = 0;
+    this.wheelSpin = 0;
+    this.engine = 0;
+    this.braking = false;
+    this.wheelComp = [0, 0, 0, 0];
+    this.airTime = 0;
+    this.lastDriverInput = null;
   }
 }
 
 export class Game {
-  constructor(seed = 1337) {
-    this.world = new World();
-    this._rng = rngStream(seed);
-    this.rng = () => this._rng.fn();
+  constructor(opts = {}) {
+    this.mapSeed = opts.mapSeed ?? CFG.MAP.SEED;
+    this.world = new World(this.mapSeed);
+    this.rng = new RNG((opts.seed ?? 1337) ^ 0x5f3759df);
     this.players = new Map();
     this.vehicles = [];
-    this.projectiles = [];   // {pos, vel, owner, type:'grenade'|'bullet', dmg, life}
-    this.time = 0; this.tick = 0;
-    this.zone = { cx: 0, cz: 0, r: CFG.ZONE.phases[0].r, phase: 0, phaseT: 0, shrinking: false };
-    this.events = [];        // transient events (shots, hits, deaths) — server broadcasts, client renders
+    this.projectiles = [];
+    this.pendingDamage = [];
+    this.loot = [];
+    this.events = [];
+    this.time = 0;
+    this.tick = 0;
+    this.mode = opts.mode || 'br';
+    this.matchState = MATCH_STATE.LOBBY;
+    this.countdown = 0;
+    this.roundTime = 0;
+    this.winner = null;
+    this.score = [0, 0];
     this.nextId = 1;
-    this.mode = 'br';
-    this.phaseNames = ['wait', 'shrink'];
-    this.lockpatch = 0;
+    this.zone = {
+      cx: 0, cz: 0, r: CFG.ZONE.initialRadius, phase: 0, phaseT: 0,
+      shrinking: false, fromR: CFG.ZONE.initialRadius, targetR: CFG.ZONE.initialRadius,
+      dps: 1, active: false,
+    };
+    this.lootDirty = true;
+    this.destroyedBoxes = new Set();
+    this.smokes = [];
+    this.stats = { shots: 0, hits: 0, kills: 0, damage: 0 };
   }
 
-  addPlayer(name, x, z, team = 0) {
+  // --------------------------------------------------------------------------
+  // Players
+  // --------------------------------------------------------------------------
+  addPlayer(name, team = 0, opts = {}) {
     const id = this.nextId++;
-    const p = new Player(id, name, x, z, team);
-    p.pos[1] = this.world.terrainH(x, z);
+    const p = new Player(id, name, team);
+    p.isBot = !!opts.bot;
+    p.connected = opts.connected !== false;
     this.players.set(id, p);
+    this.spawnPlayer(p, opts.forceSpawn);
+    if (this.mode === 'tdm') {
+      p.giveLoadout(['ar', 'pistol']);
+      p.armor = 50;
+      p.grenades = 1; p.bandages = 2;
+    } else {
+      p.giveLoadout(['pistol', null]);
+      p.bandages = 1;
+    }
     return p;
   }
 
-  // ---------- movement ----------
-  stepPlayer(p, input, dt) {
-    const P = CFG.PLAYER;
-    if (!p.alive) return;
-    if (p.inVehicle) return; // vehicle solver moves driver
+  removePlayer(id) {
+    const p = this.players.get(id);
+    if (p && p.inVehicle) this.exitVehicle(p, true);
+    this.players.delete(id);
+    this.lootDirty = true;
+  }
+
+  spawnPlayer(p, force = null) {
+    let s = force;
+    if (!s) {
+      if (this.mode === 'tdm') {
+        const arr = this.world.teamSpawns[p.team] || this.world.teamSpawns[0];
+        s = arr.length ? arr[Math.floor(this.rng.next() * arr.length)] : { x: 0, z: 0 };
+      } else {
+        const arr = this.world.spawnPoints;
+        // Prefer spawns inside the current/initial circle.
+        for (let tries = 0; tries < 24; tries++) {
+          const cand = arr[Math.floor(this.rng.next() * arr.length)];
+          if (Math.hypot(cand.x - this.zone.cx, cand.z - this.zone.cz) < this.zone.r * 0.9) { s = cand; break; }
+        }
+        if (!s) s = arr[0] || { x: 0, z: 0 };
+      }
+    }
+    p.pos = [s.x, this.world.terrainHeight(s.x, s.z) + 0.1, s.z];
+    p.vel = [0, 0, 0];
+    p.health = CFG.PLAYER.MAX_HEALTH;
+    p.alive = true;
+    p.stance = STANCE.STAND;
+    p.grounded = false;
+    p.inVehicle = null; p.seat = -1;
+    p.yaw = this.rng.next() * TAU;
+    p.pitch = 0;
+    p.cooldown = 0; p.reloadT = 0; p.reloadKey = null; p.switchT = 0;
+    p.healT = 0; p.healItem = null;
+    p.lastDamageAt = -999;
+    p.zoneT = 0;
+    p.fallImpact = 0; p.pendingFallDamage = 0;
+    p.prevShoot = false;
+    p.respawnAt = 0;
+  }
+
+  begin() {
+    if (this.matchState !== MATCH_STATE.LOBBY && this.matchState !== MATCH_STATE.ENDED) return;
+    this.matchState = MATCH_STATE.WARMUP;
+    this.countdown = CFG.MODES[this.mode]?.startCountdown ?? 8;
+    this.roundTime = 0;
+    this.winner = null;
+    this.score = [0, 0];
+    this.zone = {
+      cx: 0, cz: 0, r: CFG.ZONE.initialRadius, phase: 0, phaseT: 0,
+      shrinking: false, fromR: CFG.ZONE.initialRadius, targetR: CFG.ZONE.initialRadius,
+      dps: 1, active: false,
+    };
+    this.loot.length = 0;
+    this.projectiles.length = 0;
+    this.pendingDamage.length = 0;
+    this.smokes.length = 0;
+    this.stats = { shots: 0, hits: 0, kills: 0, damage: 0 };
+    this.destroyedBoxes.clear();
+    for (const b of this.world.boxes) b.destroyed = false;
+    for (const p of this.players.values()) {
+      this.spawnPlayer(p);
+      if (this.mode === 'tdm') {
+        p.giveLoadout(['ar', 'pistol']);
+        p.armor = 50; p.grenades = 1; p.bandages = 2;
+      } else {
+        p.giveLoadout(['pistol', null]);
+        p.armor = 0; p.grenades = 0; p.bandages = 1;
+      }
+      p.kills = 0; p.deaths = 0; p.damageDealt = 0;
+    }
+    this.spawnVehicles();
+    this.events.push({ k: 'warmup', countdown: this.countdown, mode: this.mode });
+  }
+
+  spawnVehicles() {
+    this.vehicles.length = 0;
+    for (const s of this.world.vehicleSpawns) {
+      const v = new Vehicle(this.nextId++, s.x, s.z, s.yaw, s.type);
+      v.pos[1] = this.world.terrainHeight(s.x, s.z) + 0.65;
+      this.vehicles.push(v);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Main step
+  // --------------------------------------------------------------------------
+  step(inputs, dt = CFG.SIM_DT, opts = {}) {
+    this.time += dt;
+    this.tick++;
+
+    if (this.matchState === MATCH_STATE.WARMUP) {
+      this.countdown -= dt;
+      if (this.countdown <= 0) {
+        this.matchState = MATCH_STATE.LIVE;
+        this.roundTime = 0;
+        this.zone.active = true;
+        this.zone.phaseT = 0;
+        this.spawnWorldLootNow();
+        this.events.push({ k: 'live', mode: this.mode });
+      }
+    } else if (this.matchState === MATCH_STATE.LIVE) {
+      this.roundTime += dt;
+    }
+
+    const fireTargets = opts.fireTargets || null;
+    const cosmetic = !!opts.cosmetic;
+    for (const [id, p] of this.players) {
+      const input = inputs.get(id) || null;
+      if (p.alive && p.connected) this.stepPlayer(p, input, dt, {
+        targets: fireTargets ? fireTargets.get(id) : null,
+        cosmetic,
+      });
+      else if (p.alive && !p.connected) {
+        // disconnected players freeze but still collide with the world
+        p.vel[0] *= 0.8; p.vel[2] *= 0.8;
+      }
+    }
+
+    for (const v of this.vehicles) this.stepVehicle(v, inputs, dt);
+    stepProjectiles(this, dt);
+    this.stepPendingDamage();
+    this.stepSmokes(dt);
+    if (this.matchState === MATCH_STATE.LIVE) {
+      if (this.mode === 'br') this.stepZone(dt);
+      this.stepRespawns();
+      this.checkMatchEnd();
+    }
+    // prune old events (safety)
+    if (this.events.length > 4000) this.events.splice(0, this.events.length - 4000);
+  }
+
+  stepPlayer(p, input, dt, opts = {}) {
+    if (!input) input = emptyInput();
+    // timers
     p.cooldown = Math.max(0, p.cooldown - dt);
-    p.heat = Math.max(0, p.heat - dt * 1.6);
+    p.switchT = Math.max(0, p.switchT - dt);
+    p.heat = Math.max(0, p.heat - dt * 1.35);
     if (p.reloadT > 0) {
       p.reloadT -= dt;
-      if (p.reloadT <= 0) {  // finish reload
-        const w = p.weapons[p.curW], slot = p.inv[w];
-        const need = CFG.WEAPONS[w].mag - slot.mag, take = Math.min(need, slot.reserve);
-        slot.mag += take; slot.reserve -= take;
-      }
+      if (p.reloadT <= 0) finishReload(p);
     }
     if (p.healT > 0) {
       p.healT -= dt;
-      if (p.healT <= 0 && p.alive) { p.health = Math.min(P.MAX_HEALTH, p.health + CFG.HEAL.amount); this.events.push({ k: 'heal', id: p.id }); }
-    }
-    if (input.stance) p.stance = input.stance;
-    p.sprinting = !!input.sprint && p.stance === 'stand' && !input.ads;
-    p.adsing = !!input.ads;
-    p.yaw = input.yaw; p.pitch = input.pitch;
-    const wb = p.weapons[p.curW];
-
-    // weapon slot switch
-    if (input.switch !== undefined && input.switch >= 0 && input.switch < p.weapons.length) p.curW = input.switch;
-
-    // wish direction from yaw + input
-    const f = [-Math.sin(p.yaw), -Math.cos(p.yaw)];
-    const r = [Math.cos(p.yaw), -Math.sin(p.yaw)];
-    const want = [ [0, 0], [0, 0] ];
-    let mx = 0, mz = 0;
-    if (input.f) { mx += f[0]; mz += f[1]; }
-    if (input.b) { mx -= f[0]; mz -= f[1]; }
-    if (input.r) { mx += r[0]; mz += r[1]; }
-    if (input.l) { mx -= r[0]; mz -= r[1]; }
-    const len = Math.hypot(mx, mz) || 1;
-    want[0] = mx / len; want[1] = mz / len;
-
-    let maxSpeed = p.sprinting ? P.SPRINT : P.WALK;
-    if (p.stance === 'crouch') maxSpeed = P.CROUCH;
-    if (p.stance === 'prone') maxSpeed = P.PRONE;
-    if (p.adsing) maxSpeed = P.ADS;
-    // water slow
-    if (this.world.terrainH(p.pos[0], p.pos[2]) < CFG.WATER.level - 0.4) maxSpeed *= CFG.WATER.slow;
-    // reload/heal slows movement
-    if (p.reloadT > 0 || p.healT > 0) maxSpeed *= 0.55;
-
-    const accel = p.grounded ? P.ACCEL_GND : P.ACCEL_AIR;
-    const control = p.grounded ? 1 : P.AIR_CONTROL;
-    p.vel[0] += (want[0] * maxSpeed - p.vel[0]) * Math.min(1, accel * control * dt * (p.grounded ? 1 : 1));
-    p.vel[2] += (want[1] * maxSpeed - p.vel[2]) * Math.min(1, accel * dt);
-
-    // jump
-    if (input.jump && p.grounded) { p.vel[1] = P.JUMP; p.grounded = false; }
-    // gravity
-    p.vel[1] -= CFG.GRAVITY * dt;
-    if (p.vel[1] < -40) p.vel[1] = -40;
-
-    p.pos[0] += p.vel[0] * dt; p.pos[1] += p.vel[1] * dt; p.pos[2] += p.vel[2] * dt;
-
-    const { collideCapsule } = { collideCapsule: null }; // placeholder to avoid circular import style issues
-    // inline collide (imported at module bottom to keep single-file determinism)
-    this.collide(p, dt);
-
-    // --- shooting ---
-    if (input.shoot && p.cooldown <= 0 && p.reloadT <= 0 && p.alive) this.tryShoot(p, input, dt);
-    if (input.reload && p.reloadT <= 0) {
-      const slot = p.inv[wb];
-      if (slot.mag < CFG.WEAPONS[wb].mag && slot.reserve > 0 && p.cooldown <= 0) {
-        p.reloadT = CFG.WEAPONS[wb].reload; p.cooldown = 0.25;
-        this.events.push({ k: 'reload', id: p.id });
+      if (p.healT <= 0) {
+        const def = CFG.HEAL[p.healItem] || CFG.HEAL.bandage;
+        p.health = Math.min(def.cap, p.health + def.amount);
+        this.events.push({ k: 'healed', id: p.id, hp: Math.round(p.health) });
+        p.healItem = null;
       }
     }
-    if (input.enterVehicle !== undefined) {
-      if (input.enterVehicle !== -1) {
-        const v = this.vehicles.find(vv => vv.id === input.enterVehicle);
-        if (v && v.occupants.length < 4 && !v.occupants.includes(p.id)) {
-          v.occupants.push(p.id); p.inVehicle = v.id;
-          this.events.push({ k: 'enterVehicle', id: p.id, vid: v.id });
-        }
-      } else if (p.inVehicle) {
-        const v = this.vehicles.find(vv => vv.id === p.inVehicle);
-        if (v) {
-          const i = v.occupants.indexOf(p.id); if (i >= 0) v.occupants.splice(i, 1);
-          p.pos = [v.pos[0] + 2, v.pos[1], v.pos[2] + 2]; p.pos[1] = this.world.terrainH(p.pos[0], p.pos[2]);
-        }
-        p.inVehicle = null; this.events.push({ k: 'exitVehicle', id: p.id });
+
+    if (p.inVehicle) {
+      p.vel = [0, 0, 0];
+      p.yaw = input.yaw; p.pitch = input.pitch;
+      p.adsing = !!input.ads;
+      // passengers can shoot from vehicles (except driver for now)
+      this.handleActions(p, input, opts);
+      return;
+    }
+
+    p.yaw = input.yaw;
+    p.pitch = clamp(input.pitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH);
+    // Stance changes are validated inside the controller (headroom checks).
+    movePlayer(this.world, p, input, dt);
+    p.pos[1] = Math.max(p.pos[1], this.world.terrainHeight(p.pos[0], p.pos[2]) - 0.4);
+
+    // fall damage accumulated by the controller
+    if (p.pendingFallDamage > 0) {
+      const dmg = p.pendingFallDamage;
+      p.pendingFallDamage = 0;
+      if (this.matchState === MATCH_STATE.LIVE && dmg > 0) {
+        applyDamage(this, p, dmg, p.lastAttacker ?? -1, 'fall', p.pos, 'fall');
+        this.events.push({ k: 'falldmg', id: p.id, dmg });
       }
     }
-    if (input.grenade && p.grenades > 0) {
-      p.grenades--; p.cooldown = 0.6;
-      const eye = this.eyePos(p);
-      const dir = this.viewDir(p);
-      this.projectiles.push({ pos: eye.slice(), vel: [dir[0] * CFG.GRENADE.mv, dir[1] * CFG.GRENADE.mv + 3, dir[2] * CFG.GRENADE.mv], owner: p.id, type: 'grenade', fuse: CFG.GRENADE.fuse, bounces: 0 });
-      this.events.push({ k: 'throw', id: p.id });
+
+    // health regeneration out of combat
+    if (p.alive && this.matchState === MATCH_STATE.LIVE && p.health < CFG.PLAYER.MAX_HEALTH &&
+      this.time - p.lastDamageAt > CFG.PLAYER.HEALTH_REGEN_DELAY && p.healT <= 0) {
+      p.health = Math.min(CFG.PLAYER.MAX_HEALTH, p.health + CFG.PLAYER.HEALTH_REGEN_RATE * dt);
     }
-    if (input.heal && p.med > 0 && p.health < P.MAX_HEALTH && p.healT <= 0) {
-      p.med--; p.healT = CFG.HEAL.time; this.events.push({ k: 'healstart', id: p.id });
-    }
+
+    this.handleActions(p, input, opts);
   }
 
-  collide(p, dt) {
-    const r = CFG.PLAYER.RADIUS, h = p.height(), step = CFG.PLAYER.STEP_HEIGHT;
-    p.grounded = false;
-    const gy = this.world.terrainH(p.pos[0], p.pos[2]);
-    if (p.pos[1] <= gy + 0.001 && p.vel[1] <= 0.01) { p.pos[1] = gy; p.grounded = true; if (p.vel[1] < 0) p.vel[1] = 0; }
-    for (let iter = 0; iter < 3; iter++) {
-      for (const b of this.world.boxes) {
-        if (b.tag === 'ground') continue;
-        const minX = b.min[0] - r, maxX = b.max[0] + r;
-        const minZ = b.min[2] - r, maxZ = b.max[2] + r;
-        if (p.pos[0] < minX || p.pos[0] > maxX || p.pos[2] < minZ || p.pos[2] > maxZ) continue;
-        if (p.pos[1] + h < b.min[1] + 0.01 || p.pos[1] > b.max[1] - 0.01) continue;
-        if (b.max[1] - p.pos[1] <= step && b.max[1] - p.pos[1] >= -0.05 && p.vel[1] <= 0.5) { p.pos[1] = b.max[1]; p.grounded = true; continue; }
-        const pushL = p.pos[0] - minX, pushR = maxX - p.pos[0];
-        const pushB = p.pos[2] - minZ, pushF = maxZ - p.pos[2];
-        const m = Math.min(pushL, pushR, pushB, pushF);
-        if (m === pushL) { p.pos[0] = minX; p.vel[0] = Math.max(p.vel[0], 0); }
-        else if (m === pushR) { p.pos[0] = maxX; p.vel[0] = Math.min(p.vel[0], 0); }
-        else if (m === pushB) { p.pos[2] = minZ; p.vel[2] = Math.max(p.vel[2], 0); }
-        else { p.pos[2] = maxZ; p.vel[2] = Math.min(p.vel[2], 0); }
+  handleActions(p, input, opts = {}) {
+    const key = p.curWeapon();
+    // weapon switch
+    if (input.slot === 0 || input.slot === 1) switchWeapon(this, p, input.slot);
+    else if (input.cycle) switchWeapon(this, p, p.curSlot === 0 ? 1 : 0);
+
+    // reload
+    if (input.reload) tryReload(this, p);
+
+    // healing
+    if (input.heal && p.healT <= 0 && p.health < CFG.PLAYER.MAX_HEALTH) {
+      if (p.bandages > 0 && p.health < CFG.HEAL.bandage.cap) {
+        p.bandages--; p.healT = CFG.HEAL.bandage.time; p.healItem = 'bandage';
+        this.events.push({ k: 'healstart', id: p.id, item: 'bandage' });
+      } else if (p.medkits > 0) {
+        p.medkits--; p.healT = CFG.HEAL.medkit.time; p.healItem = 'medkit';
+        this.events.push({ k: 'healstart', id: p.id, item: 'medkit' });
       }
     }
-  }
 
-  eyePos(p) { return [p.pos[0], p.pos[1] + p.eyeHeight(), p.pos[2]]; }
-  viewDir(p) {
-    const cp = Math.cos(p.pitch);
-    return [-Math.sin(p.yaw) * cp, Math.sin(p.pitch), -Math.cos(p.yaw) * cp];
-  }
+    // interact (loot / vehicle)
+    if (input.interact) tryInteract(this, p);
 
-  // ---------- shooting (hitscan + lag info; bullets authoritative) ----------
-  tryShoot(p, input, dt) {
-    const w = p.weapons[p.curW], W = CFG.WEAPONS[w], slot = p.inv[w];
-    const interval = 60 / W.rpm;
-    if (slot.mag <= 0) { // auto reload attempt
-      this.events.push({ k: 'dry', id: p.id });
-      if (slot.reserve > 0) { p.reloadT = W.reload; }
-      p.cooldown = 0.2; return;
-    }
-    slot.mag--; p.cooldown = interval;
-    p.heat = Math.min(1, p.heat + 0.12);
-    // recoil accumulates
-    p.recoilPitch += W.rPitch * (0.7 + p.heat); p.recoilYaw += W.rYaw * (this.rng() - 0.5) * 2;
-    const eye = this.eyePos(p);
-    const baseDir = this.viewDir(p);
-    for (let i = 0; i < W.pellet; i++) {
-      const sp = W.spread * (p.adsing ? 0.4 : 1) * (1 + p.heat * 0.6) * (p.grounded ? 1 : 2);
-      const d = baseDir.slice();
-      d[0] += (this.rng() - 0.5) * 2 * sp; d[1] += (this.rng() - 0.5) * 2 * sp; d[2] += (this.rng() - 0.5) * 2 * sp;
-      const l = Math.hypot(...d); d[0] /= l; d[1] /= l; d[2] /= l;
-      if (this.onShoot) { const cb = this.onShoot; cb(p, input, dt); this.onShoot = null; }
-      else this.fireHitscan(p, eye, d, w, input.atTime || this.time);
-    }
-    this.events.push({ k: 'shot', id: p.id, w });
-  }
+    // grenades
+    if (input.grenade) throwGrenade(this, p, false);
+    if (input.smoke) throwGrenade(this, p, true);
 
-  fireHitscan(shooter, origin, dir, wkey, atTime) {
-    const W = CFG.WEAPONS[wkey];
-    // world hit
-    const wHit = this.world.raycast(origin, dir, 600);
-    const wDist = wHit ? wHit.t : 600;
-    // players: capsule test along ray (body = vertical capsule)
-    let best = null, bestT = wDist, bestZone = 'torso';
-    for (const q of this.players.values()) {
-      if (!q.alive || q.id === shooter.id) continue;
-      if (this.mode === 'tdm' && q.team === shooter.team) continue;
-      const t = rayCapsule(origin, dir, q.pos, CFG.PLAYER.RADIUS, q.height());
-      if (t !== null && t < bestT) {
-        best = q; bestT = t;
-        // hit zone by height fraction at hit point
-        const hy = origin[1] + dir[1] * t - q.pos[1];
-        bestZone = hy > q.height() * 0.82 ? 'head' : hy < q.height() * 0.35 ? 'legs' : 'torso';
-      }
-    }
-    const dist = bestT;
-    let dmg = W.dmg;
-    if (dist > W.falloff[0]) dmg *= Math.max(0.35, 1 - (dist - W.falloff[0]) / (W.falloff[1] - W.falloff[0]));
-    if (bestZone === 'head') dmg *= 2.2; else if (bestZone === 'legs') dmg *= 0.8;
-    if (best) {
-      best.health -= dmg; best.lastAttacker = shooter.id;
-      this.events.push({ k: 'hit', from: shooter.id, to: best.id, dmg: Math.round(dmg), zone: bestZone, x: origin[0] + dir[0] * dist, y: origin[1] + dir[1] * dist, z: origin[2] + dir[2] * dist });
-      if (best.health <= 0) this.kill(best, shooter.id);
-    } else {
-      this.events.push({ k: 'impact', x: origin[0] + dir[0] * dist, y: origin[1] + dir[1] * dist, z: origin[2] + dir[2] * dist, tag: wHit ? wHit.box.tag : 'air' });
-      // destructible damage
-      if (wHit && wHit.box.tag === 'destructible') this.damageDestructible(wHit.box, dmg);
-    }
-  }
-
-  damageDestructible(box, dmg) {
-    for (const d of this.world.destructibles) {
-      if (this.world.boxes[d.idx] === box) {
-        d.hp -= dmg;
-        if (d.hp <= 0) {
-          box.min[0] = box.max[0]; box.min[1] = box.max[1]; box.min[2] = box.max[2]; // remove collider
-          this.events.push({ k: 'destroyed', x: d.x, z: d.z });
-        }
-      }
-    }
-  }
-
-  kill(victim, killerId) {
-    if (!victim.alive) return;
-    victim.alive = false; victim.health = 0; victim.deaths++;
-    const killer = this.players.get(killerId);
-    if (killer && killerId !== victim.id) killer.kills++;
-    this.events.push({ k: 'kill', victim: victim.id, killer: killerId, vname: victim.name, kname: killer ? killer.name : '?' });
-    if (this.mode === 'tdm') victim.respawnAt = this.time + 4;
-  }
-
-  // ---------- projectiles (grenades) ----------
-  stepProjectiles(dt) {
-    for (let i = this.projectiles.length - 1; i >= 0; i--) {
-      const pr = this.projectiles[i];
-      if (pr.type === 'grenade') {
-        pr.fuse -= dt;
-        pr.vel[1] -= CFG.GRAVITY * 0.7 * dt;
-        pr.pos[0] += pr.vel[0] * dt; pr.pos[1] += pr.vel[1] * dt; pr.pos[2] += pr.vel[2] * dt;
-        const gy = this.world.terrainH(pr.pos[0], pr.pos[2]);
-        if (pr.pos[1] < gy) { pr.pos[1] = gy; pr.vel[1] *= -0.35; pr.vel[0] *= 0.7; pr.vel[2] *= 0.7; pr.bounces++; }
-        if (pr.fuse <= 0) { this.explode(pr.pos, CFG.GRENADE.dmg, CFG.GRENADE.radius, pr.owner); this.projectiles.splice(i, 1); continue; }
-      }
-      if (pr.fuse <= 0 && pr.type !== 'grenade') this.projectiles.splice(i, 1);
-    }
-  }
-
-  explode(pos, dmg, radius, owner) {
-    this.events.push({ k: 'boom', x: pos[0], y: pos[1], z: pos[2] });
-    for (const p of this.players.values()) {
-      if (!p.alive) continue;
-      const d = Math.hypot(p.pos[0] - pos[0], p.pos[1] + 1 - pos[1], p.pos[2] - pos[2]);
-      if (d < radius) {
-        const f = 1 - d / radius;
-        p.health -= dmg * f; p.lastAttacker = owner;
-        if (p.health <= 0) this.kill(p, owner);
-      }
-    }
-  }
-
-  // ---------- vehicles ----------
-  stepVehicle(v, input, dt) {
-    const V = CFG.VEHICLE;
-    if (input) v.steer += ((input.l ? 1 : 0) - (input.r ? 1 : 0)) * dt * 3;
-    v.steer *= Math.pow(0.001, dt); // decay
-    if (input && input.f) v.speed = Math.min(V.maxSpeed, v.speed + V.accel * dt);
-    if (input && input.b) v.speed = Math.max(-V.maxSpeed * 0.4, v.speed - V.brake * dt);
-    if (!input) v.speed *= Math.pow(0.55, dt);
-    const turn = v.steer * V.turn * Math.min(1, Math.abs(v.speed) / 6) * Math.sign(v.speed || 1);
-    v.yaw += turn * dt;
-    v.pos[0] += -Math.sin(v.yaw) * v.speed * dt;
-    v.pos[2] += -Math.cos(v.yaw) * v.speed * dt;
-    v.pos[1] = this.world.terrainH(v.pos[0], v.pos[2]);
-    // carry all occupants (driver + passengers) at the vehicle transform
-    for (const pid of v.occupants) {
-      const occ = this.players.get(pid);
-      if (occ) { occ.pos = [v.pos[0], v.pos[1], v.pos[2]]; occ.vel = [0, 0, 0]; }
-    }
-  }
-
-  // ---------- zone ----------
-  stepZone(dt) {
-    const Z = CFG.ZONE;
-    if (this.zone.phase >= Z.phases.length) this.zone.phase = Z.phases.length - 1; // stay at final radius
-    this.zone.phaseT += dt;
-    const ph = Z.phases[this.zone.phase];
-    const wait = ph.wait, shrink = ph.shrink;
-    if (this.zone.fromR === undefined) { this.zone.fromR = this.zone.r; }
-    if (!this.zone.shrinking && this.zone.phaseT >= wait) { this.zone.shrinking = true; this.zone.phaseT = 0; this.nextZoneTarget(); }
-    if (this.zone.shrinking) {
-      const k = this.zone.phaseT / shrink;
-      if (k >= 1) { this.zone.phase++; this.zone.phaseT = 0; this.zone.shrinking = false; this.zone.r = Z.phases[Math.min(this.zone.phase, Z.phases.length - 1)].r; }
+    // vehicle entry/exit
+    if (input.enterVehicle !== undefined && input.enterVehicle !== null) {
+      if (input.enterVehicle === -1) { if (p.inVehicle) this.exitVehicle(p); }
       else {
-        const fromR = this.zone.fromR ?? this.zone.r, toR = Z.phases[this.zone.phase].r;
-        if (isFinite(fromR) && isFinite(toR)) this.zone.r = fromR + (toR - fromR) * easeInOut(k);
+        const v = this.vehicles.find(vv => vv.id === input.enterVehicle);
+        if (v) this.enterVehicle(p, v);
       }
     }
-    // zone damage
-    const dps = Z.dps[Math.min(this.zone.phase, Z.dps.length - 1)];
-    for (const p of this.players.values()) {
-      if (!p.alive) continue;
-      const d = Math.hypot(p.pos[0] - this.zone.cx, p.pos[2] - this.zone.cz);
-      if (d > this.zone.r) {
-        p.health -= dps * dt; p.lastAttacker = -1;
-        if (p.health <= 0) this.kill(p, -1);
-        if (this.tick % 30 === 0) this.events.push({ k: 'zonetick', id: p.id });
+
+    // shooting
+    if (key && p.alive && this.matchState === MATCH_STATE.LIVE) {
+      const W = CFG.WEAPONS[key];
+      const wantFire = W.auto ? input.shoot : (input.shoot && !p.prevShoot);
+      if (wantFire) {
+        const targets = opts.targets || this.buildTargets();
+        tryFire(this, p, input, targets, { rng: this.rng, cosmetic: opts.cosmetic });
+        if (opts.cosmetic) this.pendingDamage.length = 0;
       }
     }
-  }
-  nextZoneTarget() {
-    this.zone.fromR = this.zone.r;
-    const nr = CFG.ZONE.phases[Math.min(this.zone.phase, CFG.ZONE.phases.length - 1)].r;
-    this.zone.cx += (this.rng() - 0.5) * (this.zone.r - nr) * 0.7;
-    this.zone.cz += (this.rng() - 0.5) * (this.zone.r - nr) * 0.7;
+    p.prevShoot = !!input.shoot;
   }
 
-  addVehicle(x, z) {
-    const v = new Vehicle(this.nextId++, x, z);
-    v.pos[1] = this.world.terrainH(x, z);
-    this.vehicles.push(v);
-    return v;
+  // --------------------------------------------------------------------------
+  // Damage / kills / respawn
+  // --------------------------------------------------------------------------
+  stepPendingDamage() {
+    if (!this.pendingDamage.length) return;
+    for (let i = this.pendingDamage.length - 1; i >= 0; i--) {
+      const d = this.pendingDamage[i];
+      if (this.time < d.at) continue;
+      this.pendingDamage.splice(i, 1);
+      const victim = this.players.get(d.victimId);
+      const attacker = this.players.get(d.attackerId);
+      if (!victim || !victim.alive) continue;
+      if (attacker && attacker.id !== victim.id) attacker.damageDealt += d.amount;
+      applyDamage(this, victim, d.amount, d.attackerId, d.zone, d.point, d.weapon, d.dist);
+      this.stats.hits++;
+      this.stats.damage += d.amount;
+    }
   }
 
-  // ---------- master step ----------
-  step(inputs, dt = CFG.SIM_DT) {
-    this.time += dt; this.tick++;
-    for (const [id, input] of inputs) {
-      const p = this.players.get(id);
-      if (p) this.stepPlayer(p, input, dt);
+  kill(victim, killerId, weapon = '?', zone = 'torso', dist = 0) {
+    if (!victim.alive) return;
+    victim.alive = false;
+    victim.health = 0;
+    victim.deaths++;
+    const killer = this.players.get(killerId);
+    if (killer && killer.id !== victim.id) killer.kills++;
+    if (this.mode === 'tdm') {
+      this.score[victim.team === 0 ? 1 : 0]++;
+      victim.respawnAt = this.time + CFG.MODES.tdm.respawn;
     }
-    this.stepProjectiles(dt);
-    for (const v of this.vehicles) {
-      const drvId = v.occupants[0];
-      const dIn = drvId ? inputs.get(drvId) : null;
-      this.stepVehicle(v, dIn, dt);
-    }
-    if (this.mode === 'br') this.stepZone(dt);
-    // respawns (TDM)
+    dropInventory(this, victim);
+    this.stats.kills++;
+    this.events.push({
+      k: 'kill', victim: victim.id, killer: killerId, vname: victim.name,
+      kname: killer ? killer.name : (killerId === -1 ? 'ZONE' : '?'),
+      w: weapon, zone, dist: Math.round(dist), team: victim.team, kteam: killer ? killer.team : -1,
+    });
+  }
+
+  stepRespawns() {
+    if (this.mode !== 'tdm') return;
     for (const p of this.players.values()) {
-      if (!p.alive && this.mode === 'tdm' && p.respawnAt && this.time >= p.respawnAt) {
-        p.alive = true; p.health = CFG.PLAYER.MAX_HEALTH;
-        const a = this.rng() * Math.PI * 2, rr = 30 + this.rng() * 60;
-        p.pos = [Math.cos(a) * rr, 0, Math.sin(a) * rr]; p.pos[1] = this.world.terrainH(p.pos[0], p.pos[2]);
+      if (!p.alive && p.respawnAt && this.time >= p.respawnAt) {
+        this.spawnPlayer(p);
+        p.health = CFG.PLAYER.MAX_HEALTH;
+        p.armor = 50;
+        p.giveLoadout(['ar', 'pistol']);
+        p.grenades = 1; p.bandages = 2;
         this.events.push({ k: 'respawn', id: p.id });
       }
     }
   }
 
-  // history for lag rewind
-  snapshotPlayers() {
-    const out = new Map();
-    for (const p of this.players.values()) out.set(p.id, { pos: p.pos.slice(), health: p.health, alive: p.alive });
+  checkMatchEnd() {
+    if (this.matchState !== MATCH_STATE.LIVE) return;
+    if (this.mode === 'br') {
+      const alive = [...this.players.values()].filter(p => p.alive);
+      if (alive.length <= 1 && this.players.size > 1) {
+        this.matchState = MATCH_STATE.ENDED;
+        this.winner = alive[0] || null;
+        this.events.push({ k: 'matchend', mode: 'br', winner: this.winner ? this.winner.id : -1, wname: this.winner ? this.winner.name : 'NOBODY' });
+      }
+    } else if (this.mode === 'tdm') {
+      if (this.score[0] >= CFG.MODES.tdm.scoreLimit || this.score[1] >= CFG.MODES.tdm.scoreLimit || this.roundTime >= CFG.MODES.tdm.timeLimit) {
+        this.matchState = MATCH_STATE.ENDED;
+        this.winner = this.score[0] === this.score[1] ? null : (this.score[0] > this.score[1] ? { team: 0, name: TEAMS[0].name } : { team: 1, name: TEAMS[1].name });
+        this.events.push({ k: 'matchend', mode: 'tdm', winner: this.winner ? this.winner.team : -1, wname: this.winner ? this.winner.name : 'DRAW', score: this.score });
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Zone
+  // --------------------------------------------------------------------------
+  stepZone(dt) {
+    const Z = CFG.ZONE;
+    const z = this.zone;
+    z.active = true;
+    if (z.phase >= Z.phases.length) {
+      // final zone holds
+      z.r = Z.phases[Z.phases.length - 1].r;
+    } else {
+      z.phaseT += dt;
+      const ph = Z.phases[z.phase];
+      z.dps = ph.dps;
+      if (!z.shrinking) {
+        if (z.phaseT >= ph.wait) {
+          z.shrinking = true; z.phaseT = 0;
+          z.fromR = z.r; z.targetR = ph.r;
+          // pick a new centre inside the current circle
+          const maxOff = Math.max(0, z.r - ph.r) * 0.72;
+          const a = this.rng.next() * TAU, r = Math.sqrt(this.rng.next()) * maxOff;
+          z.cx += Math.cos(a) * r; z.cz += Math.sin(a) * r;
+          this.events.push({ k: 'zone', phase: z.phase, shrink: true, r: ph.r, cx: z.cx, cz: z.cz, wait: 0, dps: ph.dps });
+        }
+      } else {
+        const k = clamp(z.phaseT / ph.shrink, 0, 1);
+        z.r = lerp(z.fromR, z.targetR, k * k * (3 - 2 * k));
+        if (k >= 1) {
+          z.r = z.targetR;
+          z.shrinking = false;
+          z.phaseT = 0;
+          z.phase++;
+          if (z.phase < Z.phases.length) {
+            this.events.push({ k: 'zone', phase: z.phase, shrink: false, r: z.r, cx: z.cx, cz: z.cz, wait: Z.phases[z.phase].wait, dps: Z.phases[z.phase].dps });
+          }
+        }
+      }
+    }
+    // damage outside
+    for (const p of this.players.values()) {
+      if (!p.alive) continue;
+      const d = Math.hypot(p.pos[0] - z.cx, p.pos[2] - z.cz);
+      if (d > z.r) {
+        p.health -= z.dps * dt;
+        p.lastDamageAt = this.time;
+        p.lastAttacker = -1;
+        p.zoneT += dt;
+        if (p.health <= 0) this.kill(p, -1, 'zone', 'torso', 0);
+      } else p.zoneT = 0;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Vehicles (raycast suspension, simplified 6-DOF)
+  // --------------------------------------------------------------------------
+  enterVehicle(p, v) {
+    if (p.inVehicle) return false;
+    const seat = v.occupants.findIndex(o => o === null);
+    if (seat < 0) return false;
+    if (Math.hypot(v.pos[0] - p.pos[0], v.pos[2] - p.pos[2]) > CFG.VEHICLE.enterRange) return false;
+    v.occupants[seat] = p.id;
+    p.inVehicle = v.id; p.seat = seat;
+    p.vel = [0, 0, 0];
+    this.events.push({ k: 'enterVehicle', id: p.id, vid: v.id, seat });
+    return true;
+  }
+
+  exitVehicle(p, silent = false) {
+    if (!p.inVehicle) return;
+    const v = this.vehicles.find(vv => vv.id === p.inVehicle);
+    if (v) {
+      const seat = v.occupants.indexOf(p.id);
+      if (seat >= 0) v.occupants[seat] = null;
+      const right = [Math.cos(v.yaw), 0, -Math.sin(v.yaw)];
+      const side = seat % 2 === 0 ? 1.8 : -1.8;
+      p.pos = [v.pos[0] + right[0] * side, this.world.terrainHeight(v.pos[0] + right[0] * side, v.pos[2] + right[2] * side) + 0.1, v.pos[2] + right[2] * side];
+      p.vel = [v.vel[0] * 0.3, 0, v.vel[2] * 0.3];
+    }
+    p.inVehicle = null; p.seat = -1;
+    if (!silent) this.events.push({ k: 'exitVehicle', id: p.id, vid: v ? v.id : -1 });
+  }
+
+  stepVehicle(v, inputs, dt) {
+    const V = CFG.VEHICLE;
+    const driverId = v.occupants[0];
+    const driver = driverId ? this.players.get(driverId) : null;
+    const input = driver ? inputs.get(driverId) : null;
+    if (driver) driver.lastVehicleInput = input;
+    const forward = [-Math.sin(v.yaw), 0, -Math.cos(v.yaw)];
+    const right = [Math.cos(v.yaw), 0, -Math.sin(v.yaw)];
+
+    // Steering
+    let steerTarget = 0;
+    if (input) {
+      if (input.l) steerTarget += 1;
+      if (input.r) steerTarget -= 1;
+    }
+    v.steer += (steerTarget - v.steer) * Math.min(1, 6 * dt);
+    const speed = Math.hypot(v.vel[0], v.vel[2]);
+    const speedFactor = clamp(speed / 8, 0, 1);
+    v.yaw += v.steer * V.steerMax * speedFactor * Math.sign(Math.max(0.1, v.vel[0] * forward[0] + v.vel[2] * forward[2])) * dt * 3.2;
+
+    // Engine / brake
+    const fwdSpeed = v.vel[0] * forward[0] + v.vel[2] * forward[2];
+    let accel = 0;
+    v.braking = false;
+    if (input && input.f) accel = V.engineForce;
+    else if (input && input.b) {
+      if (fwdSpeed > 1) { accel = -V.brakeForce; v.braking = true; }
+      else accel = -V.engineForce * 0.45;
+    }
+    v.engine += (accel - v.engine) * Math.min(1, 8 * dt);
+    v.vel[0] += forward[0] * (v.engine / V.mass) * dt;
+    v.vel[2] += forward[2] * (v.engine / V.mass) * dt;
+
+    // Lateral grip
+    const lat = v.vel[0] * right[0] + v.vel[2] * right[2];
+    v.vel[0] -= right[0] * lat * Math.min(1, V.grip * dt);
+    v.vel[2] -= right[2] * lat * Math.min(1, V.grip * dt);
+    // Drag
+    const drag = 1 - Math.min(0.6, V.drag * dt * (0.4 + speed / V.maxSpeed));
+    v.vel[0] *= drag; v.vel[2] *= drag;
+    // Speed cap
+    if (speed > V.maxSpeed) { const k = V.maxSpeed / speed; v.vel[0] *= k; v.vel[2] *= k; }
+
+    // Wheel suspension: 4 raycasts.
+    const wheelPositions = [
+      [V.wheelBase / 2, V.track / 2], [V.wheelBase / 2, -V.track / 2],
+      [-V.wheelBase / 2, V.track / 2], [-V.wheelBase / 2, -V.track / 2],
+    ];
+    let totalSpring = 0, frontSpring = 0, backSpring = 0, leftSpring = 0, rightSpring = 0;
+    let groundCount = 0;
+    for (let i = 0; i < 4; i++) {
+      const [fz, rx] = wheelPositions[i];
+      const wx = v.pos[0] + forward[0] * fz + right[0] * rx;
+      const wz = v.pos[2] + forward[2] * fz + right[2] * rx;
+      const ground = this.vehicleGround(wx, wz, v.pos[1] + 0.7);
+      const rayLen = 1.15;
+      let comp = 0;
+      if (ground !== null && v.pos[1] + 0.7 - ground < rayLen) {
+        const dist = v.pos[1] + 0.7 - ground;
+        comp = clamp(V.suspensionRest - (dist - V.wheelRadius), -0.12, 0.42);
+        groundCount++;
+      }
+      v.wheelComp[i] = comp;
+      const spring = comp * V.suspensionK;
+      totalSpring += spring;
+      if (i < 2) frontSpring += spring; else backSpring += spring;
+      if (i % 2 === 0) rightSpring += spring; else leftSpring += spring;
+      v.wheelSpin += (fwdSpeed / V.wheelRadius) * dt;
+    }
+    // Vertical dynamics
+    const gravity = -9.81 * V.mass;
+    const damping = -v.vel[1] * V.suspensionD;
+    v.vel[1] += ((totalSpring + gravity + damping) / V.mass) * dt;
+    if (groundCount === 0) v.airTime += dt; else v.airTime = 0;
+    v.pos[1] += v.vel[1] * dt;
+    // terrain/box floor clamp
+    const floor = this.vehicleGround(v.pos[0], v.pos[2], v.pos[1] + 0.7);
+    if (floor !== null && v.pos[1] < floor + 0.35) {
+      v.pos[1] = floor + 0.35;
+      if (v.vel[1] < 0) v.vel[1] *= -0.15;
+    }
+
+    // Pitch/roll visual from suspension
+    const targetPitch = clamp((frontSpring - backSpring) / (V.suspensionK * 0.6), -0.22, 0.22);
+    const targetRoll = clamp((rightSpring - leftSpring) / (V.suspensionK * 0.6), -0.22, 0.22);
+    v.pitch += (targetPitch - v.pitch) * Math.min(1, 8 * dt);
+    v.roll += (targetRoll - v.roll) * Math.min(1, 8 * dt);
+
+    // Horizontal integration + collision
+    const px = v.pos[0], pz = v.pos[2];
+    v.pos[0] += v.vel[0] * dt;
+    v.pos[2] += v.vel[2] * dt;
+    this.collideVehicle(v);
+    // crude collision response
+    if (Math.abs(v.pos[0] - px) < Math.abs(v.vel[0] * dt) * 0.5) v.vel[0] *= -0.15;
+    if (Math.abs(v.pos[2] - pz) < Math.abs(v.vel[2] * dt) * 0.5) v.vel[2] *= -0.15;
+
+    // Auto-right if badly tilted (arcade forgiveness)
+    if (Math.abs(v.roll) > 1.1) v.roll *= 0.9;
+
+    // Carry occupants
+    for (let i = 0; i < v.occupants.length; i++) {
+      const pid = v.occupants[i];
+      if (!pid) continue;
+      const occ = this.players.get(pid);
+      if (!occ) continue;
+      const seatF = i === 0 ? 0.15 : i === 1 ? -0.25 : i === 2 ? -0.7 : -0.9;
+      const seatR = i % 2 === 0 ? 0.34 : -0.34;
+      occ.pos = [
+        v.pos[0] + forward[0] * seatF + right[0] * seatR,
+        v.pos[1] + 0.15,
+        v.pos[2] + forward[2] * seatF + right[2] * seatR,
+      ];
+      occ.vel = [v.vel[0], v.vel[1], v.vel[2]];
+      occ.grounded = false;
+      // The driver/passengers keep their own look direction (set from input).
+    }
+  }
+
+  vehicleGround(x, z, fromY) {
+    let g = this.world.terrainHeight(x, z);
+    const boxes = this.world.queryBoxes(x - 1, z - 1, x + 1, z + 1);
+    for (const b of boxes) {
+      if (b.destroyed || b.tag === 'glass') continue;
+      const top = b.max[1];
+      if (top <= fromY && top > fromY - 3 && top > g) {
+        if (x > b.min[0] - 0.3 && x < b.max[0] + 0.3 && z > b.min[2] - 0.3 && z < b.max[2] + 0.3) g = top;
+      }
+    }
+    return g;
+  }
+
+  collideVehicle(v) {
+    const r = 1.15;
+    const boxes = this.world.queryBoxes(v.pos[0] - r - 1, v.pos[2] - r - 1, v.pos[0] + r + 1, v.pos[2] + r + 1);
+    for (const b of boxes) {
+      if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;
+      if (v.pos[1] + 1.4 < b.min[1] || v.pos[1] > b.max[1]) continue;
+      const cx = clamp(v.pos[0], b.min[0], b.max[0]);
+      const cz = clamp(v.pos[2], b.min[2], b.max[2]);
+      const dx = v.pos[0] - cx, dz = v.pos[2] - cz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < r * r) {
+        const d = Math.sqrt(d2) || 0.001;
+        v.pos[0] += (dx / d) * (r - d + 0.01);
+        v.pos[2] += (dz / d) * (r - d + 0.01);
+        const vn = v.vel[0] * (dx / d) + v.vel[2] * (dz / d);
+        if (vn < 0) { v.vel[0] -= 1.4 * vn * (dx / d); v.vel[2] -= 1.4 * vn * (dz / d); }
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Smoke
+  // --------------------------------------------------------------------------
+  stepSmokes(dt) {
+    this.smokes.length = 0;
+    for (const pr of this.projectiles) {
+      if (pr.type === 'smoke' && pr.fuse <= 0) this.smokes.push({ x: pr.pos[0], y: pr.pos[1], z: pr.pos[2], r: CFG.SMOKE.radius });
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Targeting / history
+  // --------------------------------------------------------------------------
+  buildTargets() {
+    const out = [];
+    for (const p of this.players.values()) {
+      if (!p.alive) continue;
+      const h = p.height();
+      out.push({ id: p.id, pos: p.pos, height: h, stance: p.stance, alive: p.alive, team: p.team, hitboxes: hitboxesFor(p.pos, h, p.stance) });
+    }
     return out;
   }
 
-  saveState() {
-    const state = {
-      time: this.time, tick: this.tick,
-      zone: { ...this.zone },
-      players: new Map(),
-      projectiles: this.projectiles.map(pr => ({ ...pr, pos: pr.pos.slice(), vel: pr.vel.slice() })),
-      vehicles: this.vehicles.map(v => ({ ...v, pos: v.pos.slice(), occupants: v.occupants.slice() })),
-      rngState: this.rngState ?? null,
-    };
-    if (this._rng) state.rngState = this._rng.state;
+  captureHitboxes() {
+    const out = new Map();
     for (const p of this.players.values()) {
-      state.players.set(p.id, {
-        pos: p.pos.slice(), vel: p.vel.slice(), yaw: p.yaw, pitch: p.pitch,
-        health: p.health, alive: p.alive, stance: p.stance, grounded: p.grounded,
-        sprinting: p.sprinting, adsing: p.adsing, curW: p.curW,
-        inv: JSON.parse(JSON.stringify(p.inv)), reloadT: p.reloadT, cooldown: p.cooldown,
-        grenades: p.grenades, med: p.med, kills: p.kills, deaths: p.deaths,
-        recoilPitch: p.recoilPitch, recoilYaw: p.recoilYaw, heat: p.heat,
-        inVehicle: p.inVehicle, healT: p.healT, respawnAt: p.respawnAt, team: p.team,
-        lastAttacker: p.lastAttacker,
-      });
+      if (!p.alive) continue;
+      const h = p.height();
+      out.set(p.id, { id: p.id, pos: p.pos.slice(), height: h, stance: p.stance, alive: true, team: p.team });
     }
-    state.destructibles = this.world.destructibles.map(d => ({ ...d }));
-    state.boxMinMax = this.world.boxes.map(b => [b.min.slice(), b.max.slice()]);
-    return state;
+    return out;
   }
 
-  restoreState(s) {
-    this.time = s.time; this.tick = s.tick; this.zone = { ...s.zone };
-    this.projectiles = s.projectiles.map(pr => ({ ...pr, pos: pr.pos.slice(), vel: pr.vel.slice() }));
-    this.vehicles = s.vehicles.map(v => ({ ...v, pos: v.pos.slice(), occupants: v.occupants.slice() }));
-    if (this._rng && s.rngState !== null) { this._rng.state = s.rngState; }
-    for (const [id, st] of s.players) {
-      const p = this.players.get(id); if (!p) continue;
-      Object.assign(p, {
-        pos: st.pos.slice(), vel: st.vel.slice(), yaw: st.yaw, pitch: st.pitch,
-        health: st.health, alive: st.alive, stance: st.stance, grounded: st.grounded,
-        sprinting: st.sprinting, adsing: st.adsing, curW: st.curW,
-        inv: JSON.parse(JSON.stringify(st.inv)), reloadT: st.reloadT, cooldown: st.cooldown,
-        grenades: st.grenades, med: st.med, kills: st.kills, deaths: st.deaths,
-        recoilPitch: st.recoilPitch, recoilYaw: st.recoilYaw, heat: st.heat,
-        inVehicle: st.inVehicle, healT: st.healT, respawnAt: st.respawnAt, team: st.team,
-        lastAttacker: st.lastAttacker,
-      });
+  static targetsFromHistory(hist) {
+    const out = [];
+    for (const t of hist.values()) {
+      out.push({ ...t, hitboxes: hitboxesFor(t.pos, t.height, t.stance) });
     }
-    s.destructibles.forEach((d, i) => { if (this.world.destructibles[i]) Object.assign(this.world.destructibles[i], d); });
-    s.boxMinMax.forEach((mm, i) => { if (this.world.boxes[i]) { this.world.boxes[i].min = mm[0].slice(); this.world.boxes[i].max = mm[1].slice(); } });
-    this.events.length = 0;
+    return out;
   }
 
-  // serialization for server->client snapshots
+  // --------------------------------------------------------------------------
+  // Packing for the wire
+  // --------------------------------------------------------------------------
   pack() {
     return {
-      t: this.time, tick: this.tick, mode: this.mode,
-      zone: { cx: this.zone.cx, cz: this.zone.cz, r: this.zone.r, phase: this.zone.phase, shrinking: this.zone.shrinking, phaseT: this.zone.phaseT },
+      t: this.time, tick: this.tick, mode: this.mode, state: this.matchState,
+      countdown: this.countdown, roundTime: this.roundTime,
+      winner: this.winner ? { id: this.winner.id ?? null, team: this.winner.team ?? null, name: this.winner.name } : null,
+      score: this.score.slice(),
+      zone: {
+        cx: this.zone.cx, cz: this.zone.cz, r: this.zone.r, phase: this.zone.phase,
+        phaseT: this.zone.phaseT, shrinking: this.zone.shrinking, dps: this.zone.dps,
+        active: this.zone.active,
+      },
       players: [...this.players.values()].map(p => ({
-        id: p.id, name: p.name, team: p.team, x: +p.pos[0].toFixed(2), y: +p.pos[1].toFixed(2), z: +p.pos[2].toFixed(2),
-        yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), hp: Math.max(0, Math.round(p.health)), alive: p.alive,
-        stance: p.stance, w: p.weapons[p.curW], mag: p.inv[p.weapons[p.curW]].mag, res: p.inv[p.weapons[p.curW]].reserve,
-        k: p.kills, d: p.deaths, gren: p.grenades, med: p.med, inV: p.inVehicle
+        id: p.id, name: p.name, bot: p.isBot, team: p.team, x: p.pos[0], y: p.pos[1], z: p.pos[2],
+        yaw: p.yaw, pitch: p.pitch, hp: Math.max(0, p.health), armor: p.armor,
+        alive: p.alive, stance: p.stance, grounded: p.grounded,
+        w: p.curWeapon(), slot: p.curSlot,
+        mag: p.curWeapon() && p.inv[p.curWeapon()] ? p.inv[p.curWeapon()].mag : 0,
+        res: p.curWeapon() && p.inv[p.curWeapon()] ? p.inv[p.curWeapon()].reserve : 0,
+        gren: p.grenades, smoke: p.smokes, band: p.bandages, med: p.medkits,
+        k: p.kills, d: p.deaths, dmg: Math.round(p.damageDealt),
+        vehicle: p.inVehicle || 0, seat: p.seat, ping: p.ping,
+        reload: p.reloadT, heal: p.healT, switchT: p.switchT,
+        inWater: p.inWater, connected: p.connected,
       })),
-      vehicles: this.vehicles.map(v => ({ id: v.id, x: +v.pos[0].toFixed(2), y: +v.pos[1].toFixed(2), z: +v.pos[2].toFixed(2), yaw: +v.yaw.toFixed(3), speed: +v.speed.toFixed(2) }))
+      vehicles: this.vehicles.map(v => ({
+        id: v.id, x: v.pos[0], y: v.pos[1], z: v.pos[2], yaw: v.yaw,
+        pitch: v.pitch, roll: v.roll, speed: Math.hypot(v.vel[0], v.vel[2]),
+        type: v.type, occupants: v.occupants.slice(), health: v.health,
+      })),
+      projectiles: this.projectiles.map(pr => ({ id: pr.id || 0, type: pr.type, x: pr.pos[0], y: pr.pos[1], z: pr.pos[2], fuse: pr.fuse })),
     };
   }
-}
 
-function easeInOut(x) { return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; }
+  // Loot list (sent occasionally, not per snapshot).
+  packLoot() {
+    return this.loot.map(l => ({ id: l.id, type: l.type, weapon: l.weapon || null, sub: l.sub || null, amount: l.amount || 0, x: l.x, y: l.y, z: l.z, rot: l.rot || 0, mag: l.mag || 0, reserve: l.reserve || 0 }));
+  }
 
-function rayCapsule(o, d, base, radius, height) {
-  // approximate capsule as sphere at mid-height + segment test; fine for hit reg.
-  const c = [base[0], base[1] + height / 2, base[2]];
-  const oc = [o[0] - c[0], o[1] - c[1], o[2] - c[2]];
-  const b = oc[0] * d[0] + oc[1] * d[1] + oc[2] * d[2];
-  const cc = oc[0] ** 2 + oc[1] ** 2 + oc[2] ** 2 - (height / 2 + radius) ** 2;
-  const disc = b * b - cc;
-  if (disc < 0) return null;
-  const t = -b - Math.sqrt(disc);
-  return t > 0 ? t : null;
+  spawnWorldLootNow() {
+    if (this.loot.length) return;
+    spawnWorldLoot(this);
+    this.lootDirty = true;
+  }
 }

@@ -1,0 +1,462 @@
+// ============================================================================
+// Frontline wire protocol.
+//
+// Control/roster/chat use small JSON text frames (human readable, rare).
+// Input, snapshots, events and loot use compact little-endian binary frames.
+//
+// Snapshot strategy (Gambetta / Source style):
+//   - 30 Hz snapshots, 60 Hz simulation.
+//   - Per-player field mask, delta against the previous room snapshot.
+//   - A full keyframe every CFG.NET.snapshotKeyframeEvery snapshots, on join,
+//     and on demand. WebSocket is ordered/reliable so no per-client baseline
+//     divergence is expected; a reconnect always starts with a keyframe.
+// ============================================================================
+import { CFG } from './config.js';
+import { WEAPON_KEYS } from './weapons.js';
+import { clamp, wrapAngle, TAU } from './math.js';
+
+export const PROTOCOL_VERSION = 5;
+
+export const MSG = {
+  INPUT: 0x10,
+  PING: 0x11,
+  PONG: 0x12,
+  SNAPSHOT: 0x14,
+  EVENTS: 0x15,
+  LOOT: 0x16,
+};
+
+export const BTN = {
+  F: 1 << 0, B: 1 << 1, L: 1 << 2, R: 1 << 3,
+  JUMP: 1 << 4, SPRINT: 1 << 5, ADS: 1 << 6, SHOOT: 1 << 7,
+};
+
+export const ACT = {
+  RELOAD: 1 << 0, GRENADE: 1 << 1, SMOKE: 1 << 2,
+  HEAL: 1 << 3, INTERACT: 1 << 4, CYCLE: 1 << 5,
+};
+
+// Player field mask.
+export const F = {
+  POS: 1 << 0,
+  ANG: 1 << 1,
+  VEL: 1 << 2,
+  VIT: 1 << 3,
+  FLAGS: 1 << 4,
+  WEAPON: 1 << 5,
+  AMMO: 1 << 6,
+  SCORE: 1 << 7,
+  VEH: 1 << 8,
+  TIMERS: 1 << 9,
+  META: 1 << 10,
+  PING: 1 << 11,
+};
+export const F_ALL = (1 << 12) - 1;
+
+const POS_SCALE = 50;      // 2 cm
+const VEL_SCALE = 100;     // 1 cm/s
+const PITCH_SCALE = 10000;
+const YAW_SCALE = 65535 / TAU;
+const PAD = 256;
+
+const textEnc = new TextEncoder();
+const textDec = new TextDecoder();
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+export function encodeInput(inp) {
+  const buf = new ArrayBuffer(32);
+  const v = new DataView(buf);
+  v.setUint8(0, MSG.INPUT);
+  v.setUint32(1, inp.seq >>> 0, true);
+  v.setFloat64(5, inp.clientTime || 0, true);
+  v.setFloat32(13, inp.yaw || 0, true);
+  v.setFloat32(17, inp.pitch || 0, true);
+  v.setUint16(21, inp.buttons || 0, true);
+  v.setUint8(23, inp.actions || 0);
+  v.setInt8(24, inp.slot === undefined ? -1 : inp.slot);
+  v.setInt8(25, inp.stance === undefined || inp.stance === null ? -1 : inp.stance);
+  v.setInt16(26, inp.enterVehicle === undefined || inp.enterVehicle === null ? 0 : inp.enterVehicle, true);
+  v.setFloat32(28, inp.viewTime || 0, true);
+  return buf;
+}
+
+export function decodeInput(buf) {
+  if (buf.byteLength < 32) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.INPUT) return null;
+  return {
+    seq: v.getUint32(1, true),
+    clientTime: v.getFloat64(5, true),
+    yaw: v.getFloat32(13, true),
+    pitch: v.getFloat32(17, true),
+    buttons: v.getUint16(21, true),
+    actions: v.getUint8(23),
+    slot: v.getInt8(24),
+    stance: v.getInt8(25),
+    enterVehicle: v.getInt16(26, true),
+    viewTime: v.getFloat32(28, true),
+  };
+}
+
+// Convert a decoded wire input into the simulation input shape.
+export function wireToSimInput(w, previous = null) {
+  const b = w.buttons, a = w.actions;
+  return {
+    f: !!(b & BTN.F), b: !!(b & BTN.B), l: !!(b & BTN.L), r: !!(b & BTN.R),
+    jump: !!(b & BTN.JUMP), sprint: !!(b & BTN.SPRINT), ads: !!(b & BTN.ADS),
+    shoot: !!(b & BTN.SHOOT),
+    reload: !!(a & ACT.RELOAD), grenade: !!(a & ACT.GRENADE), smoke: !!(a & ACT.SMOKE),
+    heal: !!(a & ACT.HEAL), interact: !!(a & ACT.INTERACT), cycle: !!(a & ACT.CYCLE),
+    slot: w.slot >= 0 && w.slot <= 1 ? w.slot : -1,
+    stance: w.stance >= 0 && w.stance <= 2 ? w.stance : null,
+    enterVehicle: w.enterVehicle === 0 ? undefined : w.enterVehicle,
+    yaw: w.yaw, pitch: w.pitch, seq: w.seq, viewTime: w.viewTime,
+    clientTime: w.clientTime,
+    // Retained for reconnect / debug; never trusted for authority.
+    prev: previous,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Ping / pong
+// ---------------------------------------------------------------------------
+export function encodePing(clientTime) {
+  const b = new ArrayBuffer(9); const v = new DataView(b);
+  v.setUint8(0, MSG.PING); v.setFloat64(1, clientTime, true); return b;
+}
+export function decodePing(buf) {
+  if (buf.byteLength < 9) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.PING) return null;
+  return { clientTime: v.getFloat64(1, true) };
+}
+export function encodePong(clientTime, serverTime) {
+  const b = new ArrayBuffer(17); const v = new DataView(b);
+  v.setUint8(0, MSG.PONG); v.setFloat64(1, clientTime, true); v.setFloat64(9, serverTime, true); return b;
+}
+export function decodePong(buf) {
+  if (buf.byteLength < 17) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.PONG) return null;
+  return { clientTime: v.getFloat64(1, true), serverTime: v.getFloat64(9, true) };
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot state
+// ---------------------------------------------------------------------------
+export function weaponIndex(key) {
+  if (!key) return 0;
+  const i = WEAPON_KEYS.indexOf(key);
+  return i < 0 ? 0 : i + 1;
+}
+export function weaponKey(index) {
+  if (!index) return null;
+  return WEAPON_KEYS[index - 1] || null;
+}
+
+export function snapshotState(game) {
+  const out = new Map();
+  for (const p of game.players.values()) {
+    const w = p.curWeapon();
+    const inv = w ? p.inv[w] : null;
+    out.set(p.id, {
+      id: p.id,
+      x: p.pos[0], y: p.pos[1], z: p.pos[2],
+      yaw: p.yaw, pitch: p.pitch,
+      vx: p.vel[0], vz: p.vel[2],
+      hp: Math.max(0, Math.min(255, Math.round(p.health))),
+      armor: Math.max(0, Math.min(255, Math.round(p.armor))),
+      alive: p.alive ? 1 : 0,
+      grounded: p.grounded ? 1 : 0,
+      inWater: p.inWater ? 1 : 0,
+      connected: p.connected ? 1 : 0,
+      stance: p.stance,
+      sprinting: p.sprinting ? 1 : 0,
+      adsing: p.adsing ? 1 : 0,
+      w: weaponIndex(w), slot: p.curSlot,
+      mag: inv ? inv.mag : 0, res: inv ? inv.reserve : 0,
+      k: Math.min(65535, p.kills), d: Math.min(65535, p.deaths),
+      dmg: Math.min(65535, Math.round(p.damageDealt)),
+      vehicle: p.inVehicle || 0, seat: p.seat,
+      reload: Math.min(65535, Math.round(p.reloadT * 100)),
+      heal: Math.min(65535, Math.round(p.healT * 100)),
+      switchT: Math.min(255, Math.round(p.switchT * 100)),
+      team: p.team,
+      gren: Math.min(255, p.grenades), smoke: Math.min(255, p.smokes),
+      band: Math.min(255, p.bandages), med: Math.min(255, p.medkits),
+      ping: Math.min(65535, Math.round(p.ping || 0)),
+    });
+  }
+  return out;
+}
+
+function sameField(a, b, key) {
+  if (a === undefined || b === undefined) return false;
+  const va = a[key], vb = b[key];
+  if (typeof va === 'number') return Math.abs(va - vb) < 1e-9;
+  return va === vb;
+}
+
+function diffMask(cur, prev) {
+  if (!prev) return F_ALL;
+  let mask = 0;
+  if (Math.abs(cur.x - prev.x) > 0.009 || Math.abs(cur.y - prev.y) > 0.009 || Math.abs(cur.z - prev.z) > 0.009) mask |= F.POS;
+  if (Math.abs(wrapAngle(cur.yaw - prev.yaw)) > 0.002 || Math.abs(cur.pitch - prev.pitch) > 0.002) mask |= F.ANG;
+  if (Math.abs(cur.vx - prev.vx) > 0.02 || Math.abs(cur.vz - prev.vz) > 0.02) mask |= F.VEL;
+  if (cur.hp !== prev.hp || cur.armor !== prev.armor) mask |= F.VIT;
+  if (cur.alive !== prev.alive || cur.grounded !== prev.grounded || cur.inWater !== prev.inWater ||
+    cur.connected !== prev.connected || cur.stance !== prev.stance ||
+    cur.sprinting !== prev.sprinting || cur.adsing !== prev.adsing) mask |= F.FLAGS;
+  if (cur.w !== prev.w || cur.slot !== prev.slot) mask |= F.WEAPON;
+  if (cur.mag !== prev.mag || cur.res !== prev.res) mask |= F.AMMO;
+  if (cur.k !== prev.k || cur.d !== prev.d || cur.dmg !== prev.dmg) mask |= F.SCORE;
+  if (cur.vehicle !== prev.vehicle || cur.seat !== prev.seat) mask |= F.VEH;
+  if (cur.reload !== prev.reload || cur.heal !== prev.heal || cur.switchT !== prev.switchT) mask |= F.TIMERS;
+  if (cur.team !== prev.team || cur.gren !== prev.gren || cur.smoke !== prev.smoke ||
+    cur.band !== prev.band || cur.med !== prev.med) mask |= F.META;
+  if (cur.ping !== prev.ping) mask |= F.PING;
+  return mask;
+}
+
+function playerBlockSize(mask) {
+  let n = 4; // id + mask
+  if (mask & F.POS) n += 6;
+  if (mask & F.ANG) n += 4;
+  if (mask & F.VEL) n += 4;
+  if (mask & F.VIT) n += 2;
+  if (mask & F.FLAGS) n += 1;
+  if (mask & F.WEAPON) n += 2;
+  if (mask & F.AMMO) n += 4;
+  if (mask & F.SCORE) n += 6;
+  if (mask & F.VEH) n += 3;
+  if (mask & F.TIMERS) n += 5;
+  if (mask & F.META) n += 5;
+  if (mask & F.PING) n += 2;
+  return n;
+}
+
+function writePlayer(v, off, cur, mask) {
+  v.setUint16(off, cur.id, true); off += 2;
+  v.setUint16(off, mask, true); off += 2;
+  if (mask & F.POS) {
+    v.setInt16(off, clamp(Math.round(cur.x * POS_SCALE), -32768, 32767), true); off += 2;
+    v.setInt16(off, clamp(Math.round(cur.y * POS_SCALE), -32768, 32767), true); off += 2;
+    v.setInt16(off, clamp(Math.round(cur.z * POS_SCALE), -32768, 32767), true); off += 2;
+  }
+  if (mask & F.ANG) {
+    v.setUint16(off, Math.round(wrapAngle(cur.yaw) * YAW_SCALE) & 0xffff, true); off += 2;
+    v.setInt16(off, clamp(Math.round(clamp(cur.pitch, -1.5, 1.5) * PITCH_SCALE), -32768, 32767), true); off += 2;
+  }
+  if (mask & F.VEL) {
+    v.setInt16(off, clamp(Math.round(cur.vx * VEL_SCALE), -32768, 32767), true); off += 2;
+    v.setInt16(off, clamp(Math.round(cur.vz * VEL_SCALE), -32768, 32767), true); off += 2;
+  }
+  if (mask & F.VIT) { v.setUint8(off++, cur.hp); v.setUint8(off++, cur.armor); }
+  if (mask & F.FLAGS) {
+    v.setUint8(off++, (cur.alive ? 1 : 0) | (cur.grounded ? 2 : 0) | (cur.inWater ? 4 : 0) |
+      (cur.connected ? 8 : 0) | ((cur.stance & 3) << 4) | (cur.sprinting ? 64 : 0) | (cur.adsing ? 128 : 0));
+  }
+  if (mask & F.WEAPON) { v.setUint8(off++, cur.w); v.setUint8(off++, cur.slot); }
+  if (mask & F.AMMO) { v.setUint16(off, cur.mag, true); off += 2; v.setUint16(off, cur.res, true); off += 2; }
+  if (mask & F.SCORE) {
+    v.setUint16(off, cur.k, true); off += 2;
+    v.setUint16(off, cur.d, true); off += 2;
+    v.setUint16(off, cur.dmg, true); off += 2;
+  }
+  if (mask & F.VEH) { v.setUint16(off, cur.vehicle, true); off += 2; v.setInt8(off++, cur.seat); }
+  if (mask & F.TIMERS) {
+    v.setUint16(off, cur.reload, true); off += 2;
+    v.setUint16(off, cur.heal, true); off += 2;
+    v.setUint8(off++, cur.switchT);
+  }
+  if (mask & F.META) {
+    v.setUint8(off++, cur.team); v.setUint8(off++, cur.gren);
+    v.setUint8(off++, cur.smoke); v.setUint8(off++, cur.band); v.setUint8(off++, cur.med);
+  }
+  if (mask & F.PING) { v.setUint16(off, cur.ping, true); off += 2; }
+  return off;
+}
+
+// Encode a snapshot. `prev` is the previous state map (null => keyframe).
+// Returns { buffer, states }.
+export function encodeSnapshot(states, prev, seq, serverTime, ackInput, forceKeyframe = false) {
+  const keyframe = forceKeyframe || !prev;
+  const ids = [...states.keys()].sort((a, b) => a - b);
+  const removed = [];
+  if (!keyframe && prev) {
+    for (const id of prev.keys()) if (!states.has(id)) removed.push(id);
+  }
+  let size = 20 + removed.length * 2 + 64;
+  const blocks = [];
+  for (const id of ids) {
+    const cur = states.get(id);
+    const m = keyframe ? F_ALL : diffMask(cur, prev.get(id));
+    if (!m) continue;
+    blocks.push({ id, mask: m });
+    size += playerBlockSize(m);
+  }
+  const buf = new ArrayBuffer(size);
+  const v = new DataView(buf);
+  let off = 0;
+  v.setUint8(off++, MSG.SNAPSHOT);
+  v.setUint8(off++, keyframe ? 1 : 0);
+  v.setUint16(off, seq & 0xffff, true); off += 2;
+  v.setFloat64(off, serverTime, true); off += 8;
+  v.setUint32(off, ackInput >>> 0, true); off += 4;
+  v.setUint16(off, keyframe ? 0 : (seq - 1) & 0xffff, true); off += 2;
+  v.setUint8(off++, blocks.length);
+  v.setUint8(off++, removed.length);
+  for (const id of removed) { v.setUint16(off, id, true); off += 2; }
+  for (const b of blocks) off = writePlayer(v, off, states.get(b.id), b.mask);
+  return { buffer: buf.slice(0, off), states };
+}
+
+function readPlayer(v, off) {
+  const id = v.getUint16(off, true); off += 2;
+  const mask = v.getUint16(off, true); off += 2;
+  const p = { id, mask };
+  if (mask & F.POS) {
+    p.x = v.getInt16(off, true) / POS_SCALE; off += 2;
+    p.y = v.getInt16(off, true) / POS_SCALE; off += 2;
+    p.z = v.getInt16(off, true) / POS_SCALE; off += 2;
+  }
+  if (mask & F.ANG) {
+    p.yaw = v.getUint16(off, true) / YAW_SCALE; off += 2;
+    p.pitch = v.getInt16(off, true) / PITCH_SCALE; off += 2;
+  }
+  if (mask & F.VEL) {
+    p.vx = v.getInt16(off, true) / VEL_SCALE; off += 2;
+    p.vz = v.getInt16(off, true) / VEL_SCALE; off += 2;
+  }
+  if (mask & F.VIT) { p.hp = v.getUint8(off++); p.armor = v.getUint8(off++); }
+  if (mask & F.FLAGS) {
+    const f = v.getUint8(off++);
+    p.alive = !!(f & 1); p.grounded = !!(f & 2); p.inWater = !!(f & 4);
+    p.connected = !!(f & 8); p.stance = (f >> 4) & 3;
+    p.sprinting = !!(f & 64); p.adsing = !!(f & 128);
+  }
+  if (mask & F.WEAPON) { p.w = v.getUint8(off++); p.slot = v.getUint8(off++); }
+  if (mask & F.AMMO) { p.mag = v.getUint16(off, true); off += 2; p.res = v.getUint16(off, true); off += 2; }
+  if (mask & F.SCORE) {
+    p.k = v.getUint16(off, true); off += 2;
+    p.d = v.getUint16(off, true); off += 2;
+    p.dmg = v.getUint16(off, true); off += 2;
+  }
+  if (mask & F.VEH) { p.vehicle = v.getUint16(off, true); off += 2; p.seat = v.getInt8(off++); }
+  if (mask & F.TIMERS) {
+    p.reload = v.getUint16(off, true) / 100; off += 2;
+    p.heal = v.getUint16(off, true) / 100; off += 2;
+    p.switchT = v.getUint8(off++) / 100;
+  }
+  if (mask & F.META) {
+    p.team = v.getUint8(off++); p.gren = v.getUint8(off++);
+    p.smoke = v.getUint8(off++); p.band = v.getUint8(off++); p.med = v.getUint8(off++);
+  }
+  if (mask & F.PING) { p.ping = v.getUint16(off, true); off += 2; }
+  return { player: p, off };
+}
+
+export function decodeSnapshot(buf) {
+  if (buf.byteLength < 20) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.SNAPSHOT) return null;
+  const keyframe = !!(v.getUint8(1) & 1);
+  const seq = v.getUint16(2, true);
+  const serverTime = v.getFloat64(4, true);
+  const ackInput = v.getUint32(12, true);
+  const baseSeq = v.getUint16(16, true);
+  const count = v.getUint8(18);
+  const removedCount = v.getUint8(19);
+  let off = 20;
+  const removed = [];
+  for (let i = 0; i < removedCount; i++) { removed.push(v.getUint16(off, true)); off += 2; }
+  const players = [];
+  for (let i = 0; i < count; i++) {
+    const r = readPlayer(v, off); off = r.off;
+    players.push(r.player);
+  }
+  return { keyframe, seq, serverTime, ackInput, baseSeq, players, removed, bytes: buf.byteLength };
+}
+
+// Apply a decoded snapshot to a client-side cache Map.
+export function applySnapshot(cache, snap) {
+  if (snap.keyframe) cache.clear();
+  for (const id of snap.removed) cache.delete(id);
+  for (const p of snap.players) {
+    const prev = cache.get(p.id) || { id: p.id };
+    cache.set(p.id, { ...prev, ...p });
+  }
+  return cache;
+}
+
+// ---------------------------------------------------------------------------
+// Events / loot (binary header + JSON body; small and rare)
+// ---------------------------------------------------------------------------
+function jsonFrame(type, value) {
+  const body = textEnc.encode(JSON.stringify(value));
+  const buf = new ArrayBuffer(5 + body.length);
+  const v = new DataView(buf);
+  v.setUint8(0, type);
+  v.setUint32(1, body.length, true);
+  new Uint8Array(buf, 5).set(body);
+  return buf;
+}
+function readJsonFrame(buf, type) {
+  if (buf.byteLength < 5) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== type) return null;
+  const len = v.getUint32(1, true);
+  if (buf.byteLength < 5 + len) return null;
+  try { return JSON.parse(textDec.decode(new Uint8Array(buf, 5, len))); } catch { return null; }
+}
+
+export const encodeEvents = (events) => jsonFrame(MSG.EVENTS, events);
+export const decodeEvents = (buf) => readJsonFrame(buf, MSG.EVENTS);
+export const encodeLoot = (loot) => jsonFrame(MSG.LOOT, loot);
+export const decodeLoot = (buf) => readJsonFrame(buf, MSG.LOOT);
+
+// ---------------------------------------------------------------------------
+// Text control frames
+// ---------------------------------------------------------------------------
+export function encodeControl(obj) { return JSON.stringify(obj); }
+export function decodeControl(str) {
+  try { const o = JSON.parse(str); return o && typeof o === 'object' ? o : null; } catch { return null; }
+}
+
+export function sanitizeName(name) {
+  const s = String(name || 'Soldier').replace(/[^\w \-.]/g, '').trim().slice(0, 16);
+  return s || 'Soldier';
+}
+export function sanitizeRoom(code) {
+  const s = String(code || 'ALPHA01').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+  return s || 'ALPHA01';
+}
+
+// Interest filter for events: keep events near the viewer or involving them.
+export function filterEvents(events, viewer, radius = CFG.NET.eventRadius) {
+  if (!events.length) return events;
+  const out = [];
+  const vx = viewer.pos[0], vz = viewer.pos[2];
+  for (const e of events) {
+    if (e.k === 'hit' || e.k === 'kill') {
+      if (e.from === viewer.id || e.to === viewer.id || e.victim === viewer.id || e.killer === viewer.id) { out.push(e); continue; }
+    }
+    if (e.k === 'shot') {
+      if (e.id === viewer.id) { out.push(e); continue; }
+      const dx = e.o[0] - vx, dz = e.o[2] - vz;
+      if (dx * dx + dz * dz <= radius * radius) out.push(e);
+      continue;
+    }
+    if (e.x !== undefined && e.z !== undefined) {
+      const dx = e.x - vx, dz = e.z - vz;
+      if (dx * dx + dz * dz <= radius * radius) out.push(e);
+      continue;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+export { PAD };

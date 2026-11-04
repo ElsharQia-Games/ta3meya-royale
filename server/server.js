@@ -1,190 +1,759 @@
-// Authoritative server: 30 Hz tick, lag rewind, anti-cheat, bots, vehicle spawn.
+// ============================================================================
+// Frontline authoritative server.
+//
+//   HTTP  : serves dist/ (production build) + /health + /stats
+//   WS    : /ws  — binary inputs/snapshots, JSON control/roster/chat
+//
+// Authority: the server owns position, damage, ammo, loot, zone and match
+// state. Clients only send yaw/pitch/buttons/edge actions. Movement is replayed
+// by the shared deterministic simulation at 60 Hz; snapshots go out at 30 Hz.
+// Lag compensation rewinds target hitboxes using the server-measured RTT.
+// ============================================================================
 import { createServer } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, join, normalize, sep } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
+
 import { Game } from '../shared/sim.js';
-import { CFG } from '../shared/config.js';
-import { decodeInput, buttonsToInput } from '../shared/net.js';
+import { CFG, MATCH_STATE } from '../shared/config.js';
+import { clamp, wrapAngle } from '../shared/math.js';
+import {
+  PROTOCOL_VERSION, MSG, encodePong, decodePing, decodePong,
+  decodeInput, wireToSimInput, encodeSnapshot, snapshotState, encodeEvents,
+  encodeLoot, filterEvents, sanitizeName, sanitizeRoom, decodeControl,
+} from '../shared/protocol.js';
+import { spawnBots, stepBots } from './bots.js';
 
-const PORT = process.env.PORT || 3000;
-const http = createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('Crouton Alpha server OK — connect via ws'); });
-const wss = new WebSocketServer({ server: http, path: '/' });
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '127.0.0.1';
+const ROOT = join(process.cwd(), 'dist');
+const MAX_PLAYERS = clamp(Number(process.env.MAX_PLAYERS || CFG.NET.maxPlayers), 2, 64);
+const BOT_OVERRIDE = process.env.BOTS !== undefined ? Number(process.env.BOTS) : null;
+const RECONNECT_GRACE_MS = 45_000;
+const SESSION_MS = 60_000;
+const ROOM_IDLE_MS = 5 * 60_000;
+const AUTO_RESTART_S = 12;
 
-const rooms = new Map(); // code -> Game
+const rooms = new Map();          // roomCode -> Room
+const sessions = new Map();       // token -> { roomCode, playerId, expires }
+const clients = new Map();        // ws -> client (also room.clients)
 
-function getRoom(code, mode) {
-  if (!rooms.has(code)) {
-    const g = new Game(); g.mode = mode; rooms.set(code, g);
-    // spawn vehicles: 3 cars spread on the map
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2 + 0.7;
-      g.addVehicle(Math.cos(a) * 140, Math.sin(a) * 140);
-    }
-  }
-  return rooms.get(code);
-}
+// ---------------------------------------------------------------------------
+// HTTP static server
+// ---------------------------------------------------------------------------
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
+  '.map': 'application/json', '.wasm': 'application/wasm',
+};
 
-const clients = new Map(); // ws -> {room, playerId, game, lastInputAt}
-const inputs = new Map();  // playerId -> latest input
-const histories = new Map(); // game -> [{tick, snap}]
-const HIST_MAX = 600; // 20s at 30 Hz covers even 300ms rtt x2 rewound
+const http = createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/health') return json(res, { ok: true, uptime: process.uptime(), rooms: rooms.size });
+    if (url.pathname === '/stats') return json(res, stats());
+    if (url.pathname === '/api/rooms') return json(res, [...rooms.values()].map(roomInfo));
+    if (url.pathname === '/ws') { res.writeHead(426); return res.end('WebSocket upgrade required'); }
 
-function historyFor(game) {
-  if (!histories.has(game)) histories.set(game, []);
-  return histories.get(game);
-}
-
-function spawnBots(game, n) {
-  for (let i = 0; i < n; i++) {
-    const a = game.rng() * Math.PI * 2, r = 40 + game.rng() * 200;
-    const x = Math.cos(a) * r, z = Math.sin(a) * r;
-    const p = game.addPlayer('Bot-' + (i + 1), x, z, 0);
-    p.bot = true;
-    p.botState = { yaw: game.rng() * 6.28, shootT: 0, strafeDir: 1, think: game.rng() * 60 };
-  }
-}
-function botInput(game, p, dt) {
-  const s = p.botState; s.think -= dt * 60;
-  if (s.think <= 0) {
-    s.think = 20 + game.rng() * 40;
-    let best = null, bd = 1e9;
-    for (const q of game.players.values()) if (q.alive && q.id !== p.id) { const d = Math.hypot(q.pos[0] - p.pos[0], q.pos[2] - p.pos[2]); if (d < bd) { bd = d; best = q; } }
-    s.target = best; s.dist = bd;
-    s.strafeDir = game.rng() > 0.5 ? 1 : -1;
-    s.wantShoot = !!best && bd < 55 && game.rng() > 0.3;
-  }
-  const t = s.target;
-  const input = { f: false, b: false, l: false, r: false, jump: false, sprint: true, ads: false, shoot: false, yaw: s.yaw, pitch: 0, reload: false, grenade: false, heal: false, switch: -1, stance: null };
-  if (t && t.alive) {
-    s.yaw = Math.atan2(-(t.pos[0] - p.pos[0]), -(t.pos[2] - p.pos[2]));
-    const d = Math.hypot(t.pos[0] - p.pos[0], t.pos[2] - p.pos[2]);
-    if (d > 18) input.f = true; else if (d < 8) input.b = true;
-    if (s.strafeDir > 0) input.r = true; else input.l = true;
-    if (d < 60 && s.wantShoot) input.shoot = true;
-    input.pitch = Math.max(-0.2, Math.min(0.2, ((t.pos[1] + 1.2) - (p.pos[1] + 1.4)) / Math.max(5, d)));
-    if (p.inv[p.weapons[p.curW]].mag === 0) input.reload = true;
-    if (p.health < 35 && p.med > 0) input.heal = true;
-  }
-  return input;
-}
-
-// Rewind target figure: given the shooter's claimed input time (client clock
-// in seconds ~= game seconds at connect), find the history snapshot whose
-// game time was closest to that. Client clocks differ slightly, so we only
-// trust relative ordering: clamp to the last 20s of history.
-function rewindFrac(input, game) {
-  const hist = historyFor(game);
-  if (!hist.length) return null;
-  const claimed = input.yawTime ?? null;
-  if (claimed === null || !isFinite(claimed)) return null;
-  let best = hist[0], bd = Math.abs(hist[0].time - claimed);
-  for (const h of hist) { const d = Math.abs(h.time - claimed); if (d < bd) { bd = d; best = h; } }
-  // only rewind if claimed is within recent window (avoid stale/cheat claims)
-  if (bd > 2.5) return null;
-  return best;
-}
-
-// Fire a rewound shot: temporarily restore the shooter's recorded position
-// (all players at that snapshot), run ONE step with a ray-only hook that
-// resolves the hit, then restore the live state. The hook reuses fireHitscan
-// against the rewound positions so hit registration matches what the shooter saw.
-function fireRewound(game, shooter, input, dt, histSnap) {
-  if (!histSnap) { game.fireHitscan(shooter, game.eyePos(shooter), game.viewDir(shooter), shooter.weapons[shooter.curW], game.time); return; }
-  const saved = game.saveState();
-  game.restoreState(histSnap.state);
-  game.onShoot = (sh, inp, d) => {
-    game.fireHitscan(sh, game.eyePos(sh), game.viewDir(sh), sh.weapons[sh.curW], game.time);
-  };
-  game.step(new Map([[shooter.id, input]]), dt);
-  const evs = game.events.splice(0);
-  // merge rewound events into live event stream (they report hits/kills)
-  game.events.push(...evs);
-  game.restoreState(saved);
-  // Note: destructible changes made during rewound step are discarded;
-  // the next live step re-applies them if the player keeps shooting.
-}
-
-wss.on('connection', (ws) => {
-  ws.on('message', (data) => {
+    let pathname = decodeURIComponent(url.pathname);
+    if (pathname === '/') pathname = '/index.html';
+    // Prevent path traversal outside dist/.
+    const rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
+    let file = join(ROOT, rel);
+    if (!file.startsWith(ROOT + sep) && file !== ROOT) { res.writeHead(403); return res.end('forbidden'); }
+    let data;
     try {
-      const msg = JSON.parse(data.toString());
-      if (msg.type === 'join') {
-        const roomCode = (msg.room || 'ALPHA01').toUpperCase();
-        const game = getRoom(roomCode, msg.mode || 'br');
-        const a = game.rng() * Math.PI * 2, r = 20 + game.rng() * 120;
-        const p = game.addPlayer(msg.name || 'Soldier', Math.cos(a) * r, Math.sin(a) * r, game.mode === 'tdm' ? (game.players.size % 2) : 0);
-        clients.set(ws, { room: roomCode, playerId: p.id, game });
-        ws.send(JSON.stringify({ type: 'welcome', playerId: p.id, tick: game.tick, mapSeed: 20261104 }));
-        if (game.players.size <= 3) spawnBots(game, CFG.BOT_COUNT - game.players.size + 1);
-      } else if (msg.type === 'input') {
-        const c = clients.get(ws); if (!c) return;
-        const raw = decodeInput(msg.buf);
-        // ANTI-CHEAT: rate limit + finite sanity + teleports rejected by sim bounds
-        const now = Date.now();
-        c.lastInputAt = c.lastInputAt || 0;
-        if (now - c.lastInputAt < 10) return;
-        c.lastInputAt = now;
-        if (!isFinite(raw.yaw) || !isFinite(raw.pitch)) return;
-        if (Math.abs(raw.yaw) > 1e6 || Math.abs(raw.pitch) > 100) return;
-        const inp = buttonsToInput(raw.buttons, msg.extra || {});
-        inp.yaw = raw.yaw; inp.pitch = raw.pitch;
-        inp.yawTime = raw.atTime; // client claimed time for rewind
-        // validate vehicle id if requested
-        if (inp.enterVehicle !== undefined && inp.enterVehicle !== -1) {
-          const v = c.game.vehicles.find(vv => vv.id === inp.enterVehicle);
-          if (!v) inp.enterVehicle = -1;
-        }
-        inputs.set(c.playerId, inp);
-      }
-    } catch (e) { /* ignore malformed */ }
-  });
-  ws.on('close', () => clients.delete(ws));
-  ws.on('error', () => clients.delete(ws));
+      const st = await stat(file);
+      if (st.isDirectory()) file = join(file, 'index.html');
+      data = await readFile(file);
+    } catch {
+      // SPA fallback.
+      try { data = await readFile(join(ROOT, 'index.html')); file = join(ROOT, 'index.html'); }
+      catch { res.writeHead(503, { 'content-type': 'text/plain' }); return res.end('Client not built. Run: npm run build'); }
+    }
+    const ext = extname(file).toLowerCase();
+    res.writeHead(200, {
+      'content-type': MIME[ext] || 'application/octet-stream',
+      'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+    });
+    res.end(data);
+  } catch (e) {
+    res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('server error');
+  }
 });
 
-// ---- 30 Hz authoritative loop ----
-const TICK_MS = 1000 / CFG.TICK_HZ;
-let last = Date.now();
-setInterval(() => {
-  const now = Date.now(); const dt = Math.max(0, (now - last) / 1000); last = now;
-  for (const game of rooms.values()) {
-    const stepInputs = new Map();
-    for (const [ws, c] of clients) {
-      if (c.game !== game) continue;
-      const inp = inputs.get(c.playerId);
-      if (inp) { stepInputs.set(c.playerId, inp); inputs.delete(c.playerId); }
-    }
-    for (const p of game.players.values()) if (p.bot && p.alive) stepInputs.set(p.id, botInput(game, p, dt));
+function json(res, obj) {
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
 
-    const hist = historyFor(game);
+// ---------------------------------------------------------------------------
+// Rooms
+// ---------------------------------------------------------------------------
+class Room {
+  constructor(code, mode) {
+    this.code = code;
+    this.mode = mode;
+    this.game = new Game({ mode });
+    this.clients = new Map();       // ws -> client
+    this.byPlayer = new Map();      // playerId -> client
+    this.inputQueues = new Map();   // playerId -> wire inputs
+    this.history = [];              // { t, map } at 60 Hz
+    this.snapshotSeq = 0;
+    this.prevStates = null;
+    this.snapshotAccum = 0;
+    this.pingTimer = 0;
+    this.lootTimer = 0;
+    this.stateTimer = 0;
+    this.accum = 0;
+    this.tickMsEma = 0;
+    this.bytesTimer = 0;
+    this.snapshotBytesWindow = 0;
+    this.snapshotBytesPerSec = 0;
+    this.started = false;
+    this.createdAt = Date.now();
+    this.lastHumanAt = Date.now();
+    this.endRestartT = 0;
+    this.botCount = BOT_OVERRIDE !== null ? clamp(BOT_OVERRIDE | 0, 0, 48) : CFG.MODES[mode].bots;
+    this.spawnBots();
+  }
 
-    // Rewound-fire handling: if a human player wants to shoot, consume that
-    // shot at the rewound time instead of the current position step.
-    const shooters = [...stepInputs.entries()].filter(([id, inp]) => inp.shoot && !game.players.get(id)?.bot);
-    for (const [id, inp] of shooters) {
-      const shooter = game.players.get(id);
-      if (!shooter || !shooter.alive) continue;
-      inp.shoot = false; // rewound step hides this flag; cooldown inside prevents double fire
-      const histSnap = rewindFrac(inp, game);
-      // run the rewound shot as its own micro-step
-      fireRewound(game, shooter, inp, CFG.SIM_DT, histSnap);
-      // cooldown prevents double-fire in the same tick
-    }
-
-    game.step(stepInputs, CFG.SIM_DT);
-    const snap = game.pack();
-
-    hist.push({ tick: game.tick, time: game.time, state: game.saveState() });
-    if (hist.length > HIST_MAX) hist.shift();
-
-    const ev = game.events.splice(0);
-    for (const [ws, c] of clients) {
-      if (c.game !== game) continue;
-      try {
-        ws.send(JSON.stringify({ type: 'snap', snap }));
-        if (ev.length) ws.send(JSON.stringify({ type: 'events', events: ev }));
-      } catch {}
+  spawnBots() {
+    if (this.botCount <= 0) return;
+    const bots = spawnBots(this.game, this.botCount, this.mode === 'tdm');
+    for (const p of bots) {
+      this.inputQueues.set(p.id, []);
     }
   }
-}, TICK_MS);
 
-http.listen(PORT, () => console.log(`[server] Crouton Alpha on :${PORT} (30 Hz authoritative)`));
+  humanCount() {
+    let n = 0;
+    for (const c of this.clients.values()) if (c.ws.readyState === 1) n++;
+    return n;
+  }
+
+  maxPlayers() { return Math.min(MAX_PLAYERS, CFG.MODES[this.mode].maxPlayers); }
+
+  ensureCapacity() {
+    while (this.game.players.size >= this.maxPlayers()) {
+      const bot = [...this.game.players.values()].find(p => p.isBot);
+      if (!bot) return false;
+      this.game.removePlayer(bot.id);
+      this.inputQueues.delete(bot.id);
+    }
+    return true;
+  }
+
+  resetBrains() {
+    for (const p of this.game.players.values()) {
+      if (!p.bot) continue;
+      p.bot.path = null;
+      p.bot.pathIdx = 0;
+      p.bot.targetId = null;
+      p.bot.patrol = null;
+      p.bot.repathT = 0;
+      p.bot.thinkT = 0;
+    }
+  }
+
+  start() {
+    if (this.game.matchState === MATCH_STATE.LIVE || this.game.matchState === MATCH_STATE.WARMUP) return;
+    this.game.begin();
+    this.resetBrains();
+    this.started = true;
+    this.endRestartT = 0;
+    broadcastRoster(this);
+    log(`[room ${this.code}] match start (${this.mode}) players=${this.game.players.size}`);
+  }
+}
+
+function createRoom(code, mode) {
+  const room = new Room(code, mode);
+  rooms.set(code, room);
+  log(`[room ${code}] created mode=${mode} bots=${room.botCount}`);
+  return room;
+}
+
+function pickTeam(room) {
+  let a = 0, b = 0;
+  for (const p of room.game.players.values()) { if (p.team === 0) a++; else b++; }
+  return a <= b ? 0 : 1;
+}
+
+function viewerPos(room, client) {
+  const p = room.game.players.get(client.playerId);
+  if (p && p.alive) return p.pos;
+  if (client.spectateId) {
+    const t = room.game.players.get(client.spectateId);
+    if (t && t.alive) return t.pos;
+  }
+  const z = room.game.zone;
+  return [z.cx, 0, z.cz];
+}
+
+// ---------------------------------------------------------------------------
+// Join / leave / reconnect
+// ---------------------------------------------------------------------------
+function handleJoin(ws, msg) {
+  if (ws.client) return;
+  const name = sanitizeName(msg.name);
+  const requestedMode = msg.mode === 'tdm' ? 'tdm' : 'br';
+  const code = sanitizeRoom(msg.room);
+
+  let room = rooms.get(code);
+  let player = null;
+  let token = null;
+
+  if (msg.token) {
+    const sess = sessions.get(String(msg.token));
+    if (sess && sess.expires > Date.now()) {
+      const r = rooms.get(sess.roomCode);
+      const p = r && r.game.players.get(sess.playerId);
+      if (r && p && !p.isBot) {
+        room = r; player = p; token = String(msg.token);
+      }
+    }
+  }
+  if (!room) room = createRoom(code, requestedMode);
+  if (!player) {
+    if (!room.ensureCapacity()) return reject(ws, 'Room is full');
+    const team = room.mode === 'tdm' ? pickTeam(room) : 0;
+    player = room.game.addPlayer(name, team, { connected: true });
+    token = randomBytes(16).toString('hex');
+    sessions.set(token, { roomCode: room.code, playerId: player.id, expires: Date.now() + SESSION_MS });
+  } else {
+    player.connected = true;
+    player.name = name;
+  }
+
+  // If the same player already has a socket, replace it.
+  const existing = room.byPlayer.get(player.id);
+  if (existing && existing.ws !== ws) {
+    try { existing.ws.close(4001, 'replaced by reconnect'); } catch {}
+    room.clients.delete(existing.ws);
+    clients.delete(existing.ws);
+  }
+
+  const client = existing && existing.ws === ws ? existing : {
+    ws, room, playerId: player.id, token,
+    lastSeq: 0, lastConsumedSeq: 0, lastSimInput: null,
+    queue: [], needsKeyframe: true, spectateId: null,
+    rttEma: 120, pingSentAt: 0,
+    inputWindowStart: performance.now(), inputCount: 0,
+    disconnectedAt: 0, joinedAt: Date.now(), chatTimes: [],
+  };
+  client.ws = ws;
+  client.room = room;
+  client.playerId = player.id;
+  client.token = token;
+  client.disconnectedAt = 0;
+  client.needsKeyframe = true;
+  client.lastSeq = 0;
+  client.lastConsumedSeq = 0;
+  client.queue = [];
+  client.lastSimInput = null;
+  ws.client = client;
+  room.clients.set(ws, client);
+  room.byPlayer.set(player.id, client);
+  clients.set(ws, client);
+  room.inputQueues.set(player.id, []);
+  room.lastHumanAt = Date.now();
+
+  sendText(ws, {
+    type: 'welcome',
+    playerId: player.id,
+    name: player.name,
+    room: room.code,
+    mode: room.mode,
+    mapSeed: room.game.mapSeed,
+    protocol: PROTOCOL_VERSION,
+    token,
+    serverTime: room.game.time,
+    tickRate: CFG.SIM_HZ,
+    snapshotRate: CFG.SNAPSHOT_HZ,
+    maxPlayers: room.maxPlayers(),
+    reconnectGrace: RECONNECT_GRACE_MS,
+  });
+  broadcastRoster(room);
+  sendLoot(room, client);
+  sendState(room, client);
+
+  if (room.game.matchState === MATCH_STATE.LOBBY || room.game.matchState === MATCH_STATE.ENDED) room.start();
+  log(`[room ${room.code}] join ${player.name}#${player.id} (${room.game.players.size} players)`);
+}
+
+function reject(ws, reason) {
+  sendText(ws, { type: 'error', reason });
+  try { ws.close(4003, reason); } catch {}
+}
+
+function disconnect(ws, explicit = false) {
+  const c = clients.get(ws) || ws.client;
+  if (!c) return;
+  const room = c.room;
+  const player = room.game.players.get(c.playerId);
+  clients.delete(ws);
+  ws.client = null;
+
+  if (explicit) {
+    room.clients.delete(ws);
+    room.byPlayer.delete(c.playerId);
+    room.inputQueues.delete(c.playerId);
+    if (player) room.game.removePlayer(player.id);
+    sessions.delete(c.token);
+    broadcastRoster(room);
+    log(`[room ${room.code}] leave ${c.playerId}`);
+    return;
+  }
+
+  c.disconnectedAt = Date.now();
+  if (player) player.connected = false;
+  room.inputQueues.delete(c.playerId);
+  broadcastRoster(room);
+  log(`[room ${room.code}] disconnect ${c.playerId} (grace ${RECONNECT_GRACE_MS / 1000}s)`);
+}
+
+function expireDisconnected(room) {
+  const now = Date.now();
+  for (const c of [...room.clients.values()]) {
+    if (!c.disconnectedAt || now - c.disconnectedAt < RECONNECT_GRACE_MS) continue;
+    room.clients.delete(c.ws);
+    room.byPlayer.delete(c.playerId);
+    room.inputQueues.delete(c.playerId);
+    const p = room.game.players.get(c.playerId);
+    if (p) room.game.removePlayer(p.id);
+    sessions.delete(c.token);
+    broadcastRoster(room);
+    log(`[room ${room.code}] expired ${c.playerId}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sending
+// ---------------------------------------------------------------------------
+function sendBinary(ws, buf) {
+  if (!ws || ws.readyState !== 1) return false;
+  try { ws.send(buf, { binary: true }); return true; } catch { return false; }
+}
+function sendText(ws, obj) {
+  if (!ws || ws.readyState !== 1) return false;
+  try { ws.send(JSON.stringify(obj)); return true; } catch { return false; }
+}
+
+function broadcastRoster(room) {
+  const players = [...room.game.players.values()].map(p => ({
+    id: p.id, name: p.name, team: p.team, bot: p.isBot,
+    alive: p.alive, kills: p.kills, deaths: p.deaths, ping: Math.round(p.ping || 0),
+  }));
+  const msg = { type: 'roster', players, mode: room.mode, state: room.game.matchState, maxPlayers: room.maxPlayers() };
+  for (const c of room.clients.values()) sendText(c.ws, msg);
+}
+
+function sendLoot(room, only = null) {
+  const all = room.game.packLoot();
+  const targets = only ? [only] : [...room.clients.values()];
+  for (const c of targets) {
+    if (c.ws.readyState !== 1) continue;
+    const pos = viewerPos(room, c);
+    const near = all.filter(l => {
+      const dx = l.x - pos[0], dz = l.z - pos[2];
+      return dx * dx + dz * dz < 180 * 180;
+    });
+    sendBinary(c.ws, encodeLoot(near));
+  }
+}
+
+function statePayload(room) {
+  const game = room.game;
+  return {
+    type: 'state',
+    time: game.time,
+    tick: game.tick,
+    mode: game.mode,
+    matchState: game.matchState,
+    countdown: game.countdown,
+    roundTime: game.roundTime,
+    score: game.score.slice(),
+    winner: game.winner ? { id: game.winner.id ?? null, team: game.winner.team ?? null, name: game.winner.name } : null,
+    zone: {
+      cx: +game.zone.cx.toFixed(1), cz: +game.zone.cz.toFixed(1),
+      r: +game.zone.r.toFixed(1), phase: game.zone.phase,
+      shrinking: game.zone.shrinking, dps: game.zone.dps, active: game.zone.active,
+      phaseT: +game.zone.phaseT.toFixed(1),
+    },
+    vehicles: game.vehicles.map(v => ({
+      id: v.id, x: +v.pos[0].toFixed(2), y: +v.pos[1].toFixed(2), z: +v.pos[2].toFixed(2),
+      yaw: +v.yaw.toFixed(3), pitch: +v.pitch.toFixed(3), roll: +v.roll.toFixed(3),
+      speed: +Math.hypot(v.vel[0], v.vel[2]).toFixed(2), type: v.type,
+      occupants: v.occupants.slice(), health: v.health,
+    })),
+    projectiles: game.projectiles.map(pr => ({
+      type: pr.type, x: +pr.pos[0].toFixed(2), y: +pr.pos[1].toFixed(2), z: +pr.pos[2].toFixed(2),
+      fuse: +pr.fuse.toFixed(2), deployed: !!pr.deployed,
+    })),
+    smokes: game.smokes.map(s => ({ x: +s.x.toFixed(1), y: +s.y.toFixed(1), z: +s.z.toFixed(1), r: s.r })),
+  };
+}
+
+function sendState(room, only = null) {
+  const payload = statePayload(room);
+  if (only) { sendText(only.ws, payload); return; }
+  for (const c of room.clients.values()) sendText(c.ws, payload);
+}
+
+function sendKeyframe(room, client, seq, states) {
+  const ack = client.lastConsumedSeq >>> 0;
+  const { buffer } = encodeSnapshot(states, null, seq, room.game.time, ack, true);
+  sendBinary(client.ws, buffer);
+  client.needsKeyframe = false;
+  room.snapshotBytesWindow += buffer.byteLength;
+}
+
+function sendSnapshots(room) {
+  const game = room.game;
+  const seq = room.snapshotSeq++ & 0xffff;
+  const keyframe = !room.prevStates || (room.snapshotSeq % CFG.NET.snapshotKeyframeEvery === 0);
+  const states = snapshotState(game);
+  const { buffer, states: newStates } = encodeSnapshot(states, room.prevStates, seq, game.time, 0, keyframe);
+  room.prevStates = newStates;
+
+  for (const c of room.clients.values()) {
+    if (c.ws.readyState !== 1) continue;
+    if (c.needsKeyframe) { sendKeyframe(room, c, seq, states); continue; }
+    // Ack is per client, so patch the 4-byte header field on a copy.
+    const copy = buffer.slice(0);
+    new DataView(copy).setUint32(12, c.lastConsumedSeq >>> 0, true);
+    sendBinary(c.ws, copy);
+    room.snapshotBytesWindow += copy.byteLength;
+  }
+}
+
+function sendEvents(room, events) {
+  if (!events.length) return;
+  for (const c of room.clients.values()) {
+    if (c.ws.readyState !== 1) continue;
+    const p = room.game.players.get(c.playerId);
+    const viewer = { id: c.playerId, pos: viewerPos(room, c) };
+    const filtered = filterEvents(events, viewer);
+    if (filtered.length) sendBinary(c.ws, encodeEvents(filtered));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Simulation step
+// ---------------------------------------------------------------------------
+function findHistory(room, t) {
+  const h = room.history;
+  if (!h.length) return null;
+  let best = h[0], bd = Math.abs(h[0].t - t);
+  for (let i = 1; i < h.length; i++) {
+    const d = Math.abs(h[i].t - t);
+    if (d < bd) { bd = d; best = h[i]; }
+  }
+  return bd <= 0.25 ? best.map : null;
+}
+
+function stepRoom(room, dt) {
+  const game = room.game;
+  const inputs = new Map();
+
+  // ---- collect one input per connected player ----
+  for (const c of room.clients.values()) {
+    const p = game.players.get(c.playerId);
+    if (!p || !p.connected) continue;
+    const q = room.inputQueues.get(c.playerId);
+    if (q && q.length) {
+      const w = q.shift();
+      if (w.seq <= c.lastSeq) continue; // duplicate / replay
+      c.lastSeq = w.seq;
+      const sim = wireToSimInput(w, c.lastSimInput);
+      // Validate client-supplied identifiers against server truth.
+      if (sim.enterVehicle !== undefined && sim.enterVehicle !== -1) {
+        if (!game.vehicles.some(v => v.id === sim.enterVehicle)) sim.enterVehicle = undefined;
+      }
+      c.lastSimInput = sim;
+      c.lastConsumedSeq = w.seq;
+      inputs.set(c.playerId, sim);
+    } else if (c.lastSimInput) {
+      // Repeat held buttons but never repeat one-shot actions.
+      const last = c.lastSimInput;
+      inputs.set(c.playerId, {
+        ...last, reload: false, grenade: false, smoke: false, heal: false,
+        interact: false, cycle: false, slot: -1, stance: null, enterVehicle: undefined,
+      });
+    }
+  }
+
+  // ---- bots ----
+  stepBots(game, dt, inputs);
+
+  // ---- lag compensation targets ----
+  const fireTargets = new Map();
+  for (const [pid, sim] of inputs) {
+    if (!sim.shoot) continue;
+    const c = room.byPlayer.get(pid);
+    if (!c) continue;
+    const rewind = clamp(c.rttEma / 2000 + CFG.INTERP_DELAY, 0, CFG.MAX_REWIND);
+    const hist = findHistory(room, game.time - rewind);
+    if (hist) fireTargets.set(pid, Game.targetsFromHistory(hist));
+  }
+
+  game.step(inputs, dt, { fireTargets });
+  sanitizePlayers(room);
+
+  // ---- history for next rewinds ----
+  room.history.push({ t: game.time, map: game.captureHitboxes() });
+  const maxHist = Math.ceil(CFG.HISTORY_SECONDS * CFG.SIM_HZ);
+  if (room.history.length > maxHist) room.history.shift();
+
+  // ---- events ----
+  const events = game.events.splice(0);
+  if (events.length) sendEvents(room, events);
+
+  // ---- snapshots at 30 Hz ----
+  room.snapshotAccum += dt;
+  if (room.snapshotAccum >= 1 / CFG.SNAPSHOT_HZ - 1e-6) {
+    room.snapshotAccum -= 1 / CFG.SNAPSHOT_HZ;
+    sendSnapshots(room);
+  }
+
+  // ---- loot refresh (interest filtered) ----
+  room.lootTimer -= dt;
+  if (room.lootTimer <= 0) { room.lootTimer = 1.2; sendLoot(room); }
+
+  // ---- low-rate world state (zone, vehicles, grenades, smoke) ----
+  room.stateTimer -= dt;
+  if (room.stateTimer <= 0) { room.stateTimer = 0.2; sendState(room); }
+
+  // ---- server-initiated RTT probe ----
+  room.pingTimer -= dt;
+  if (room.pingTimer <= 0) {
+    room.pingTimer = 1;
+    for (const c of room.clients.values()) {
+      if (c.ws.readyState !== 1) continue;
+      c.pingSentAt = performance.now();
+      const b = new ArrayBuffer(9); const v = new DataView(b);
+      v.setUint8(0, MSG.PING); v.setFloat64(1, game.time, true);
+      sendBinary(c.ws, b);
+    }
+  }
+
+  // ---- match lifecycle ----
+  if (game.matchState === MATCH_STATE.ENDED) {
+    room.endRestartT += dt;
+    if (room.endRestartT > AUTO_RESTART_S && room.humanCount() > 0) room.start();
+  }
+}
+
+function sanitizePlayers(room) {
+  for (const p of room.game.players.values()) {
+    if (!Number.isFinite(p.pos[0]) || !Number.isFinite(p.pos[1]) || !Number.isFinite(p.pos[2]) ||
+      !Number.isFinite(p.vel[0]) || !Number.isFinite(p.vel[1]) || !Number.isFinite(p.vel[2]) ||
+      p.pos[1] < -80 || p.pos[1] > 400) {
+      log(`[anti-cheat] invalid state for ${p.id}; respawning`);
+      room.game.spawnPlayer(p);
+      p.vel = [0, 0, 0];
+    }
+    // Update the ping value shown in snapshots/roster.
+    const c = room.byPlayer.get(p.id);
+    if (c) p.ping = c.rttEma;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WS handling
+// ---------------------------------------------------------------------------
+const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: 64 * 1024, perMessageDeflate: false });
+
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('message', (data, isBinary) => {
+    const client = ws.client;
+    if (!isBinary) {
+      const msg = decodeControl(data.toString());
+      if (!msg) return;
+      if (msg.type === 'join') return handleJoin(ws, msg);
+      if (!client) return;
+      handleControl(client, msg);
+      return;
+    }
+    // Binary frames.
+    const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    const type = new DataView(ab).getUint8(0);
+    if (type === MSG.INPUT) {
+      if (!client) return;
+      handleInput(client, ab);
+    } else if (type === MSG.PING) {
+      const ping = decodePing(ab);
+      if (ping && client) sendBinary(client.ws, encodePong(ping.clientTime, client.room.game.time));
+    } else if (type === MSG.PONG) {
+      const pong = decodePong(ab);
+      if (pong && client && client.pingSentAt) {
+        const rtt = performance.now() - client.pingSentAt;
+        client.rttEma = client.rttEma * 0.7 + clamp(rtt, 1, 1000) * 0.3;
+      }
+    }
+  });
+  ws.on('close', () => disconnect(ws, false));
+  ws.on('error', () => { try { ws.close(); } catch {} });
+});
+
+function handleInput(client, ab) {
+  const w = decodeInput(ab);
+  if (!w) return;
+  const now = performance.now();
+  // Token bucket: 150 inputs/s sustained, burst 90.
+  if (now - client.inputWindowStart > 1000) {
+    client.inputWindowStart = now;
+    client.inputCount = 0;
+  }
+  client.inputCount++;
+  if (client.inputCount > 150) return;
+
+  if (!Number.isFinite(w.yaw) || !Number.isFinite(w.pitch)) return;
+  w.yaw = wrapAngle(w.yaw);
+  w.pitch = clamp(w.pitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH);
+  w.slot = w.slot >= 0 && w.slot <= 1 ? w.slot : -1;
+  w.stance = w.stance >= 0 && w.stance <= 2 ? w.stance : -1;
+
+  const q = client.queue;
+  if (q.length >= CFG.NET.maxQueuedInputs) q.shift();
+  q.push(w);
+  client.room.inputQueues.set(client.playerId, q);
+}
+
+function handleControl(client, msg) {
+  const room = client.room;
+  const player = room.game.players.get(client.playerId);
+  if (!player) return;
+  switch (msg.type) {
+    case 'start':
+      room.start();
+      break;
+    case 'leave':
+      disconnect(client.ws, true);
+      break;
+    case 'resync':
+      client.needsKeyframe = true;
+      break;
+    case 'spectate': {
+      const id = Number(msg.id);
+      const t = room.game.players.get(id);
+      client.spectateId = t && t.alive ? id : null;
+      break;
+    }
+    case 'chat': {
+      const now = Date.now();
+      client.chatTimes = client.chatTimes.filter(t => now - t < 5000);
+      if (client.chatTimes.length >= 6) return;
+      client.chatTimes.push(now);
+      const text = String(msg.text || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 140);
+      if (!text) return;
+      const out = { type: 'chat', name: player.name, team: player.team, text };
+      for (const c of room.clients.values()) sendText(c.ws, out);
+      break;
+    }
+    case 'rtt':
+      // Client-reported RTT is diagnostic only; lag comp uses server probes.
+      break;
+    default:
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+const LOOP_MS = 4;
+let lastLoop = performance.now();
+
+setInterval(() => {
+  const now = performance.now();
+  let frameDt = (now - lastLoop) / 1000;
+  lastLoop = now;
+  if (frameDt > 0.5) frameDt = 0.5;
+
+  for (const room of [...rooms.values()]) {
+    room.accum += frameDt;
+    let steps = 0;
+    while (room.accum >= CFG.SIM_DT && steps < 8) {
+      const t0 = performance.now();
+      stepRoom(room, CFG.SIM_DT);
+      const ms = performance.now() - t0;
+      room.tickMsEma = room.tickMsEma * 0.94 + ms * 0.06;
+      room.accum -= CFG.SIM_DT;
+      steps++;
+    }
+    if (room.accum > CFG.SIM_DT * 10) room.accum = 0;
+
+    room.bytesTimer += frameDt;
+    if (room.bytesTimer >= 1) {
+      room.snapshotBytesPerSec = room.snapshotBytesWindow / room.bytesTimer;
+      room.snapshotBytesWindow = 0;
+      room.bytesTimer = 0;
+    }
+
+    expireDisconnected(room);
+
+    if (room.humanCount() === 0) {
+      if (Date.now() - room.lastHumanAt > ROOM_IDLE_MS) {
+        rooms.delete(room.code);
+        log(`[room ${room.code}] closed (idle)`);
+      }
+    } else {
+      room.lastHumanAt = Date.now();
+    }
+  }
+}, LOOP_MS);
+
+// WebSocket-level liveness.
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  }
+}, 30_000);
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+function roomInfo(room) {
+  const game = room.game;
+  const alive = [...game.players.values()].filter(p => p.alive).length;
+  let pingSum = 0, pingN = 0;
+  for (const c of room.clients.values()) { pingSum += c.rttEma; pingN++; }
+  return {
+    code: room.code, mode: room.mode, state: game.matchState,
+    tick: game.tick, time: +game.time.toFixed(1),
+    players: game.players.size, humans: room.humanCount(), bots: game.players.size - room.humanCount(),
+    alive, score: game.score, zone: { r: +game.zone.r.toFixed(1), phase: game.zone.phase, shrinking: game.zone.shrinking },
+    tickMs: +room.tickMsEma.toFixed(3), snapshotKBps: +(room.snapshotBytesPerSec / 1024).toFixed(2),
+    avgPing: pingN ? Math.round(pingSum / pingN) : 0,
+    uptime: Math.round((Date.now() - room.createdAt) / 1000),
+  };
+}
+function stats() {
+  return {
+    ok: true, uptime: +process.uptime().toFixed(1), protocol: PROTOCOL_VERSION,
+    simHz: CFG.SIM_HZ, snapshotHz: CFG.SNAPSHOT_HZ,
+    memoryMB: +(process.memoryUsage().rss / 1048576).toFixed(1),
+    rooms: [...rooms.values()].map(roomInfo),
+  };
+}
+
+function log(...args) { console.log(new Date().toISOString().slice(11, 19), ...args); }
+
+http.listen(PORT, HOST, () => {
+  log(`[server] Frontline on http://${HOST}:${PORT}  (ws /ws, ${CFG.SIM_HZ} Hz sim, ${CFG.SNAPSHOT_HZ} Hz snapshots)`);
+  log(`[server] static root: ${ROOT}`);
+  if (HOST === '127.0.0.1') log('[server] bound to localhost only. For LAN set HOST=0.0.0.0; for internet use a Cloudflare Tunnel (see README).');
+});
