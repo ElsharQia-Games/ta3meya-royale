@@ -1,6 +1,10 @@
 // Procedural WebAudio: every sound is synthesised at runtime, so the project
 // ships no audio files. Distant sounds are delayed by distance / speed of sound
 // and panned relative to the listener.
+//
+// Bus: voices -> master gain -> glue compressor -> brick-wall limiter ->
+//      analyser -> destination. The limiter keeps overlapping gunfire and
+//      explosions below full scale; the analyser is used by QA to measure it.
 import { clamp } from '../../shared/math.js';
 
 const SPEED_OF_SOUND = 343;
@@ -9,14 +13,21 @@ export class AudioEngine {
   constructor() {
     this.ctx = null;
     this.master = null;
+    this.comp = null;
+    this.limiter = null;
+    this.analyser = null;
     this.enabled = false;
     this.volume = 0.65;
+    this.muted = false;
     this.listenerYaw = 0;
     this.listenerPos = [0, 0, 0];
     this._noise = null;
     this._ambient = null;
     this._zone = null;
     this._lastStep = 0;
+    this._steps = new Map();
+    this._levelBuf = null;
+    this._gesture = null;
   }
 
   init() {
@@ -24,28 +35,80 @@ export class AudioEngine {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;
     this.ctx = new Ctx();
-    const comp = this.ctx.createDynamicsCompressor();
-    comp.threshold.value = -14;
-    comp.knee.value = 18;
-    comp.ratio.value = 5;
-    comp.attack.value = 0.003;
-    comp.release.value = 0.22;
-    comp.connect(this.ctx.destination);
+    this.comp = this.ctx.createDynamicsCompressor();
+    this.comp.threshold.value = -14;
+    this.comp.knee.value = 18;
+    this.comp.ratio.value = 5;
+    this.comp.attack.value = 0.003;
+    this.comp.release.value = 0.22;
+
+    // Brick-wall-ish limiter after the mix so no combination of voices clips.
+    this.limiter = this.ctx.createDynamicsCompressor();
+    this.limiter.threshold.value = -6;
+    this.limiter.knee.value = 0;
+    this.limiter.ratio.value = 20;
+    this.limiter.attack.value = 0.002;
+    this.limiter.release.value = 0.12;
+
+    this.analyser = this.ctx.createAnalyser();
+    this.analyser.fftSize = 2048;
+    this.analyser.smoothingTimeConstant = 0;
+
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.volume;
-    this.master.connect(comp);
+    this.master.gain.value = this.muted ? 0 : clamp(this.volume, 0, 1);
+    this.master.connect(this.comp);
+    this.comp.connect(this.limiter);
+    this.limiter.connect(this.analyser);
+    this.analyser.connect(this.ctx.destination);
+
     this._noise = this._makeNoise(2.0);
     this._startAmbient();
     this.enabled = true;
+
+    // Autoplay policies suspend a context created before the first gesture.
+    // Resume on the next pointer/key event as well as the join click.
+    this._gesture = () => this.resume();
+    addEventListener('pointerdown', this._gesture, { passive: true });
+    addEventListener('keydown', this._gesture);
   }
 
   resume() {
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') {
+      const p = this.ctx.resume();
+      if (p && p.catch) p.catch(() => {});
+    }
   }
 
   setVolume(v) {
-    this.volume = v;
-    if (this.master) this.master.gain.value = v;
+    this.volume = clamp(Number.isFinite(+v) ? +v : this.volume, 0, 1);
+    this._applyGain();
+  }
+
+  setMuted(m) {
+    this.muted = !!m;
+    this._applyGain();
+  }
+
+  _applyGain() {
+    if (this.master) this.master.gain.value = this.muted ? 0 : this.volume;
+  }
+
+  // Time-domain levels after the limiter. QA uses this to prove no clipping.
+  getLevels() {
+    if (!this.ctx || !this.analyser) return { peak: 0, rms: 0, state: 'none' };
+    if (!this._levelBuf || this._levelBuf.length !== this.analyser.fftSize) {
+      this._levelBuf = new Float32Array(this.analyser.fftSize);
+    }
+    this.analyser.getFloatTimeDomainData(this._levelBuf);
+    let peak = 0, sum = 0;
+    for (let i = 0; i < this._levelBuf.length; i++) {
+      const v = this._levelBuf[i];
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+      sum += v * v;
+    }
+    return { peak, rms: Math.sqrt(sum / this._levelBuf.length), state: this.ctx.state };
   }
 
   _makeNoise(seconds) {
@@ -208,13 +271,26 @@ export class AudioEngine {
     this._tone(62, 0.8, 0.5 * s.gain, 'sine', s.delay, s.pan, 28);
   }
 
-  footstep(surface, speed) {
+  // Local footsteps pass no position (centred); remote footsteps pass a world
+  // point and are attenuated/panned exactly like gunfire.
+  footstep(surface, speed, x, y, z, id = 'self') {
     if (!this.enabled) return;
     const now = this.ctx.currentTime;
-    if (now - this._lastStep < (speed > 5 ? 0.3 : 0.46)) return;
+    const interval = speed > 5 ? 0.3 : 0.46;
+    const last = this._steps.get(id) || 0;
+    if (now - last < interval) return;
+    this._steps.set(id, now);
     this._lastStep = now;
+    let gain = 0.075 + Math.min(0.06, speed * 0.008);
+    let pan = 0;
+    if (x !== undefined) {
+      const s = this.spatial(x, y, z);
+      if (s.dist > 60) return;
+      gain *= s.gain;
+      pan = s.pan;
+    }
     const freq = surface === 'wood' ? 320 : surface === 'metal' ? 620 : surface === 'water' ? 900 : 210;
-    this._noiseBurst(0.07, 0.075 + Math.min(0.06, speed * 0.008), 'bandpass', freq, 1.1, 0, 0);
+    this._noiseBurst(0.07, gain, 'bandpass', freq, 1.1, 0, pan);
   }
 
   heal() {
