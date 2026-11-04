@@ -42,7 +42,7 @@ This is the quality bar used to judge *Frontline*. It is written from public tec
 - **PUBG:** distance-filtered gunshots, surface footsteps, ambient bed, directional cues.
 - **Battlefield:** layered weapon tails, reverb by space, occlusion, vehicle audio.
 - **The Finals:** punchy close-range shots, destruction impacts, clear UI audio.
-- **Bar for us:** WebAudio synthesis, HRTF panning, distance attenuation + air-absorption lowpass, occlusion raycast, surface footsteps, layered gunshots, explosions, ambience, UI cues.
+- **Bar for us:** spatially readable synthesis, distance filtering, surface footsteps, vehicle feedback and controlled levels. The current implementation uses stereo panning; HRTF, geometric audio occlusion and room reverb remain gaps.
 
 ## 8. UI/UX
 - **PUBG:** inventory, minimap/zone, kill feed, damage direction, compass, team frames.
@@ -52,7 +52,7 @@ This is the quality bar used to judge *Frontline*. It is written from public tec
 
 ## 9. Performance
 - **PUBG/BF:** aggressive LOD, instancing, streaming, occlusion, server tick budgets.
-- **Bar for us:** instanced vegetation, merged building geometry, chunk/frustum culling, pooled effects, 60 fps target at 1080p on mid-range hardware, 32-player server at 30 Hz on a small VPS.
+- **Bar for us:** instancing, bounded near detail, effective culling and pooled effects; hardware60fps at1080p and32 players at60Hz server simulation/30Hz snapshots, verified on a deployment-class host.
 
 ## Honest position
 The current build remains substantially below the reference bar. Track concrete
@@ -89,3 +89,23 @@ geometry, textures, logos or audio to Frontline.
 These observations inform the next pass; they do not assert those gaps have
 already been closed. Baseline images inspected directly: `10-vista.png`,
 `11-character.png`, and `14-ads.png` under `qa/shots/`.
+
+## Blackshore iteration evidence
+
+Actual images in `arsenal-pass1` and `arsenal-pass2` cover all seven weapons at
+hip/ADS/fire and three reload phases. The controller inspected contact sheets
+and full-size frames; the first pass exposed excessive receiver/rail/arm size,
+unlined scope tubes and overly saturated foliage. Refinements preserve the
+shared anchor/timer contracts. Stable optical alignment passed for all classes.
+
+`scenes-pass1` adds13 directly inspected1080p images spanning deployment,
+town/interiors/upstairs, forest/industrial areas, shore/underwater, standing/
+crouched/prone/fallen characters and a truck. Materials and hierarchy improved;
+simple furnishings, repeated buildings and stylized characters still fall well
+short of the commercial art bar.
+
+The first47.64s gameplay recording was sampled at2fps into six reviewed contact
+sheets. It shows magazine motion, ADS, movement and steering hands, and exposed
+an initial overlapping-spawn defect. Its2.06 measured render FPS on SwiftShader
+is a severe environment limitation, not temporal-quality or hardware-performance
+proof. See the clip metadata and GAP-ANALYSIS.md.

@@ -61,3 +61,29 @@ their provenance and the concrete visual observations.
 - Keep PROGRESS.md current (done / doing / bugs / gaps / next).
 - Never claim a measurement that was not run. Software-GL numbers are labelled as such.
 - Gameplay tuning lives in `shared/config.js`; visual tokens/contracts are in `src/render/style.js`, `src/ui/design.css` and DESIGN.md.
+
+## Blackshore / combined-arms presentation pass
+
+User steering: combine grounded tactical pacing with stronger combined-arms
+spectacle and graphic/motion polish; improve sound, sniper/RPG and death flows.
+Continue the existing four worktrees if their provider becomes available. Their
+last attempts hit quota; the controller owns this pass locally.
+
+1. Preserve the current lifecycle corrections. Finish the interrupted multiplayer
+   check using bounded, software-renderer-appropriate navigation deadlines.
+2. Add authoritative combat kits (Assault, Recon, Breacher, Heavy) with a lobby
+   selector and respawn persistence. BR keeps its looted arsenal. Add one-shot
+   reloadable RPG: swept live projectile, impacts/blast/cover/vehicle damage,
+   bounded lifetime and state/event replication. Upgrade sniper presentation.
+3. Introduce sample-based, spatial, cancellable audio. Evaluate requested LANDR/
+   Pixabay terms/access and retain source evidence. Source usable recordings
+   and Foley under verified redistribution terms; add a documented import path
+   for owner-supplied licensed selections.
+4. Replace rigid tipping deaths with articulated stance-aware impact/collapse/
+   settle motion, terrain/obstacle-aware placement, kill/death information and
+   death-to-spectate/respawn transitions. Tie animation/audio to actual state.
+5. Refine industrial-coastal world dressing, sightlines and action feedback;
+   use spatially bounded render batches so distant content is actually culled.
+6. Validate each new kit/weapon/death path in Node and browser, inspect screenshots
+   and recorded transitions, then run combined unit/build/multiplayer/stress/
+   load/impairment checks. Hardware GPU/VPS/WAN gates still require that environment.

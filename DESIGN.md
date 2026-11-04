@@ -66,6 +66,22 @@ has a clear hierarchy and leaves the aiming area readable.
 - Use instancing/batching for repeated details. Record actual calls/triangles and
   frame distributions; keep software-GPU and hardware-GPU claims distinct.
 
+### Combined-arms identity
+
+The next pass keeps BLACKSHORE's original coastal setting and tactical equipment,
+and adds bolder action readability: distinct combat kits, substantial launcher
+silhouettes, directional blast/dust, readable kill/death information, and short
+coordinated screen transitions. Reused components must fit metre-scale world
+coordinates, -Z weapon forward, shared authoritative event timing and the
+existing asset/disposal owners.
+
+The sniper has a deliberate bolt cycle and clear magnified optic. A launcher is
+a visible travelling projectile, not an instant explosive hitscan. Its launch,
+flight, impact and reload all have separate presentation states. Death first
+reacts to impact, then folds the articulated body, then settles against terrain;
+the local camera briefly remains with the fall before spectator/respawn handoff.
+All gameplay-changing state remains server-owned.
+
 ### Equipment and vehicle integration
 
 - `weapon-model.js` builds the shared original equipment. `poseWeaponMechanics`

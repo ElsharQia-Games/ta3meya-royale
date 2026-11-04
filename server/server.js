@@ -256,10 +256,11 @@ function handleJoin(ws, msg) {
     const team = room.mode === 'tdm' ? pickTeam(room) : 0;
     player = room.game.addPlayer(name, team, { connected: true });
     token = randomBytes(16).toString('hex');
-    sessions.set(token, { roomCode: room.code, playerId: player.id, expires: Date.now() + SESSION_MS });
+    sessions.set(token, { roomCode: room.code, playerId: player.id, expires: Infinity });
   } else {
     player.connected = true;
     player.name = name;
+    sessions.get(token).expires = Infinity;
   }
 
   // If the same player already has a socket, replace it.
@@ -340,6 +341,9 @@ function disconnect(ws, explicit = false) {
   const player = room.game.players.get(c.playerId);
   clients.delete(ws);
   ws.client = null;
+  // Close events from a replaced socket can arrive after a new owner joined.
+  // They must not clear that owner's connected flag, input queue or token.
+  if (room.byPlayer.get(c.playerId) !== c) { room.clients.delete(ws); return; }
 
   if (explicit) {
     room.clients.delete(ws);
@@ -353,6 +357,8 @@ function disconnect(ws, explicit = false) {
   }
 
   c.disconnectedAt = Date.now();
+  const session = sessions.get(c.token);
+  if (session) session.expires = c.disconnectedAt + SESSION_MS;
   if (player) player.connected = false;
   room.inputQueues.delete(c.playerId);
   broadcastRoster(room);

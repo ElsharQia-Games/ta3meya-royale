@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const BASE = process.env.QA_URL || 'http://127.0.0.1:3000/';
-const SHOTS = path.resolve('qa/shots');
+const SHOTS = path.resolve(process.env.QA_OUT || 'qa/shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 
 const checks = [];
@@ -39,6 +39,9 @@ const browser = await chromium.launch({
 const errors = [];
 const mk = async (name) => {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await ctx.addInitScript(() => localStorage.setItem('frontline.settings.v1', JSON.stringify({
+    quality: 'low', shadows: false, bloom: false, showFps: true, muted: true, mode: 'br',
+  })));
   const p = await ctx.newPage();
   p.on('pageerror', (e) => errors.push(name + ': ' + (e.stack || e)));
   p.on('console', (m) => { if (m.type() === 'error') errors.push(name + ': ' + m.text()); });
@@ -71,6 +74,7 @@ try {
   const A = await mk('Alpha');
   await A.waitForTimeout(800);
   const B = await mk('Bravo');
+  await Promise.all([A, B].map(p => p.waitForFunction(() => window.__frontline?.state?.matchState === 2, null, { timeout: 45000 })));
   await A.waitForTimeout(2500);
   await B.waitForTimeout(1200);
 
