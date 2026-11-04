@@ -174,18 +174,24 @@ export class Game {
     if (p.inVehicle) this.exitVehicle(p, true);
     let s = force;
     if (!s) {
-      if (this.mode === 'tdm') {
-        const arr = this.world.teamSpawns[p.team] || this.world.teamSpawns[0];
-        s = arr.length ? arr[Math.floor(this.rng.next() * arr.length)] : { x: 0, z: 0 };
-      } else {
-        const arr = this.world.spawnPoints;
-        // Prefer spawns inside the current/initial circle.
-        for (let tries = 0; tries < 24; tries++) {
-          const cand = arr[Math.floor(this.rng.next() * arr.length)];
-          if (Math.hypot(cand.x - this.zone.cx, cand.z - this.zone.cz) < this.zone.r * 0.9) { s = cand; break; }
-        }
-        if (!s) s = arr[0] || { x: 0, z: 0 };
+      const arr = this.mode === 'tdm'
+        ? this.world.teamSpawns[p.team] || this.world.teamSpawns[0] : this.world.spawnPoints;
+      const clear = candidate => {
+        const { x, z } = candidate, y = this.world.terrainHeight(x, z);
+        if (Math.abs(x) > CFG.MAP.BOUNDS - 1 || Math.abs(z) > CFG.MAP.BOUNDS - 1 || this.world.waterDepth(x, z) > .25) return false;
+        if (this.mode === 'br' && Math.hypot(x - this.zone.cx, z - this.zone.cz) > this.zone.r * .9) return false;
+        if (capsuleBlocked(this.world, x, y + .02, z, CFG.PLAYER.HEIGHT)) return false;
+        return ![...this.players.values()].some(other => other !== p && other.alive &&
+          Math.abs(other.pos[1] - y) < CFG.PLAYER.HEIGHT && Math.hypot(other.pos[0] - x, other.pos[2] - z) < 1.4);
+      };
+      for (let tries = 0; tries < 48; tries++) {
+        const candidate = arr[Math.floor(this.rng.next() * arr.length)] || { x: 0, z: 0 };
+        const radius = tries < 16 ? 0 : 1.6 + (tries % 4) * .8;
+        const angle = tries * Math.PI / 4;
+        const point = { x: candidate.x + Math.cos(angle) * radius, z: candidate.z + Math.sin(angle) * radius };
+        if (clear(point)) { s = point; break; }
       }
+      if (!s) s = arr.find(clear) || arr[0] || { x: 0, z: 0 };
     }
     p.pos = [s.x, this.world.terrainHeight(s.x, s.z) + 0.1, s.z];
     p.vel = [0, 0, 0];
@@ -224,6 +230,7 @@ export class Game {
     this.stats = { shots: 0, hits: 0, kills: 0, damage: 0 };
     this.destroyedBoxes.clear();
     for (const b of this.world.boxes) { b.destroyed = false; b.hp = b.maxHp; }
+    this.spawnVehicles();
     for (const p of this.players.values()) {
       this.spawnPlayer(p);
       p.smokes = 0; p.medkits = 0;
@@ -236,7 +243,6 @@ export class Game {
       }
       p.kills = 0; p.deaths = 0; p.damageDealt = 0;
     }
-    this.spawnVehicles();
     this.events.push({ k: 'warmup', countdown: this.countdown, mode: this.mode });
   }
 

@@ -178,14 +178,14 @@ export class GameRenderer {
       lightNear: 0.5,
       lightFar: 600,
       lightMargin: 220,
-      shadowBias: -0.00035,
+      shadowBias: -.00005,
     });
     this.csm.fade = false;
     this.sun = this.csm.lights[0];
     for (const l of this.csm.lights) {
       l.color.setHex(BLACKSHORE.sunColor);
       l.castShadow = this.renderer.shadowMap.enabled;
-      l.shadow.normalBias = 0.035;
+      l.shadow.normalBias = .015;
     }
   }
 

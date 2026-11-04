@@ -23,7 +23,10 @@
     "qa:visual": "node qa/visual.mjs",
     "qa:design": "node qa/design.mjs",
     "qa:arsenal": "node qa/arsenal.mjs",
-    "qa:vehicle": "node qa/vehicle.mjs"
+    "qa:vehicle": "node qa/vehicle.mjs",
+    "qa:journeys": "node qa/journeys.mjs",
+    "qa:scenes": "node qa/scenes.mjs",
+    "qa:record": "node qa/record.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",

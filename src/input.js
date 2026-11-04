@@ -67,7 +67,7 @@ export class Input {
     addEventListener('blur', () => { this.clearHeld(); });
     this.canvas.addEventListener('mousedown', (e) => {
       if (!this.enabled || this.textMode) return;
-      if (!this.pointerLocked) { this.requestLock(); return; }
+      if (!this.syncPointerLock()) { this.requestLock(); return; }
       if (e.button === 0) this.mouse.left = true;
       if (e.button === 2) this.mouse.right = true;
     });
@@ -77,18 +77,26 @@ export class Input {
     });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('mousemove', (e) => {
-      if (!this.pointerLocked || this.textMode) return;
+      if (!this.syncPointerLock() || this.textMode) return;
       // Browsers can report a huge synthetic delta on the first event after
       // the pointer is locked. Discarding it prevents the camera snapping.
       if (this._lockFresh) { this._lockFresh = false; return; }
       this.mouse.dx += e.movementX;
       this.mouse.dy += e.movementY;
     });
-    document.addEventListener('pointerlockchange', () => {
-      this.pointerLocked = document.pointerLockElement === this.canvas;
-      if (this.pointerLocked) { this._lockFresh = true; this.mouse.dx = 0; this.mouse.dy = 0; }
+    document.addEventListener('pointerlockchange', () => this.syncPointerLock());
+  }
+
+  syncPointerLock() {
+    // The DOM property can change before its queued event is dispatched. Input
+    // must use the current lock, not wait for that notification under load.
+    const locked = document.pointerLockElement === this.canvas;
+    if (locked !== this.pointerLocked) {
+      this.pointerLocked = locked;
+      if (locked) { this._lockFresh = true; this.mouse.dx = 0; this.mouse.dy = 0; }
       else this.clearHeld();
-    });
+    }
+    return locked;
   }
 
   // Drop all held state. Used on blur, tab-out, menu/chat focus and pointer
@@ -132,6 +140,7 @@ export class Input {
 
   // Build one simulation input frame. Clears edge actions afterwards.
   frame(yaw, pitch, seq, viewTime = 0) {
+    this.syncPointerLock();
     const f = this.keys.has('KeyW') || this.keys.has('ArrowUp');
     const b = this.keys.has('KeyS') || this.keys.has('ArrowDown');
     const l = this.keys.has('KeyA') || this.keys.has('ArrowLeft');

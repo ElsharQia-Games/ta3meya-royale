@@ -30,18 +30,23 @@ player-journey evidence. Expanded release acceptance is still open.
 
 | Scope | Evidence |
 |---|---|
-| Current controller source | `npm test`: **118/118**; production build passes,906.43kB JS /256.09kB gzip |
+| Current controller source | `npm test`: **120/120**; production build passes,907.02kB JS /256.28kB gzip |
 | Network branch |77 tests; five real-NetClient impairment profiles; zero missing baselines/ACKs in no-loss runs |
 |32-client network load |60s,32/32 joined,60Hz input/client,0 drops/skips/resets; raw tick mean0.769ms, last600 p99=2.654ms, lifetime max13.419ms |
 | Simulation branch at9a71664 |108,000ticks /30sim minutes /32players,0 recorded player/vehicle invariant violations; p99=2.1322ms, one43.626ms startup tick |
-| Vehicle browser journey | `qa/vehicle.mjs`: E enter, W move, A steer, Space brake, S reverse, E exit; zero browser errors |
-| Arsenal visual pass1 |42 actual1920×1080 pose screenshots; all7 optical centres aligned within1px, all arm targets reachable, zero browser errors |
+| Browser journey pass2 |62/62 checks,13 captures, zero errors; fixed a reproduced pointer-lock event-order race |
+| Vehicle browser journey | `qa/vehicle.mjs`: E enter, W move, A steer, Space brake, S reverse, E exit; zero browser errors; passenger extension pending |
+| Arsenal visual pass2 |42 actual1920×1080 pose screenshots;50/50 checks, all7 optical centres aligned within1px, all arm targets reachable, zero browser errors |
+| Scene matrix |13 high-quality1080p captures, all directly inspected, zero browser errors |
+| Gameplay clip |47.64s silent VP9 capture; six sampled frame sheets inspected. Software-rendered2.06fps and slowed simulation are recorded explicitly |
 
 The controller read all42 arsenal images in contact sheets and inspected eight
 full-size frames. Findings included oversized receivers/rails, over-thick arms,
 a missing scope inner wall and red foliage conflicting with the palette. Those
-refinements are implemented and await recapture. Cockpit review found excessive
-roof/opaque-glass framing; eye/glass/steering-hand corrections await pass2.
+refinements are implemented and recaptured in arsenal-pass2. Cockpit review found
+excessive roof/opaque-glass framing; eye/glass/steering-hand corrections are visible
+in the recorded clip. Its initial overlap exposed a TDM spawn-spacing defect;
+24-player spacing now passes a dedicated regression.
 
 Software-GL frame rates are real measurements (roughly1fps on earlier high-quality
 1080p views), not the old clamped10fps floor. They do not establish hardware60fps.

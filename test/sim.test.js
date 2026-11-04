@@ -260,3 +260,13 @@ test('removing a player drops their vehicle seat and map entry', () => {
   assert.equal(g.players.has(p.id), false);
   assert.equal(v.occupants.includes(p.id), false);
 });
+test('TDM deployment gives simultaneous teammates separate clear spawn positions', () => {
+  const game = new Game({ mode: 'tdm', seed: 0x51f15e });
+  for (let i = 0; i < 24; i++) game.addPlayer(`Spawn${i}`, i % 2);
+  game.begin();
+  const players = [...game.players.values()];
+  for (let i = 0; i < players.length; i++) for (let j = i + 1; j < players.length; j++) {
+    assert.ok(Math.hypot(players[i].pos[0] - players[j].pos[0], players[i].pos[2] - players[j].pos[2]) >= 1.39,
+      `overlapping deployment ${players[i].id}/${players[j].id}`);
+  }
+});

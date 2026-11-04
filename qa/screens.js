@@ -13,7 +13,7 @@ import path from 'node:path';
 
 const OFFLINE = process.argv.includes('--offline');
 const BASE = process.env.QA_URL || 'http://127.0.0.1:3000/';
-const OUT = path.resolve('qa/shots');
+const OUT = path.resolve(process.env.QA_OUT || 'qa/shots');
 fs.mkdirSync(OUT, { recursive: true });
 
 const checks = [];
@@ -66,7 +66,7 @@ const state = () => page.evaluate(() => {
     world: !!app.world,
     players: app.mode === 'offline'
       ? app.offlineGame?.players.size ?? 0
-      : app.net?.buffer?.snapshots?.length ?? null,
+      : app.net?.cache?.size ?? null,
     fps: Math.round(app.renderer?.fps ?? 0),
     drawCalls: app.renderer?.renderer?.info?.render?.calls ?? null,
     tris: app.renderer?.renderer?.info?.render?.triangles ?? null,

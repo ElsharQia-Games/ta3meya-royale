@@ -13,7 +13,14 @@ const check = (name, pass, detail) => { checks.push({ name, pass: !!pass, detail
 const capture = async name => {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.screenshot({ path: path.join(out, `${name}.png`) });
-  frames.push({ name, fixture: true, ...await frameEvidence(page) });
+  const contacts = await page.evaluate(() => {
+    const a = window.__frontline;
+    return [...a.vehicleViews.values()].map(v => ({ id: v.id, wheelGroundGaps: v.wheels.map(wheel => {
+      const point = wheel.pivot.getWorldPosition(wheel.pivot.position.clone());
+      return point.y - .42 - a.world.terrainHeight(point.x, point.z);
+    }) }));
+  });
+  frames.push({ name, fixture: true, contacts, ...await frameEvidence(page) });
 };
 const steps = async n => page.evaluate(n => {
   const a = window.__frontline;
@@ -85,6 +92,21 @@ try {
   status = await page.evaluate(() => { const a = window.__frontline; return { inVehicle: a.offlinePlayer.inVehicle, occupants: a.offlineGame.vehicles[0].occupants }; });
   check('E exits and releases the seat', status.inVehicle === null && status.occupants.every(id => id === null), status);
   await capture('03-exited');
+  await page.evaluate(() => {
+    const a = window.__frontline, g = a.offlineGame, v = g.vehicles[0];
+    const driver = g.addPlayer('DRIVER FIXTURE', 0, { connected: false, forceSpawn: { x: v.pos[0], z: v.pos[2] } });
+    if (!g.enterVehicle(driver, v)) throw new Error('Driver fixture could not enter');
+    a.offlinePlayer.giveLoadout(['ar', 'pistol']);
+  });
+  await page.keyboard.press('e'); await steps(1);
+  check('occupied driver seat selects a passenger seat', await page.evaluate(() => window.__frontline.offlinePlayer.seat === 1));
+  await page.click('#view'); await page.waitForFunction(() => !!document.pointerLockElement);
+  await page.mouse.down({ button: 'right' }); await steps(1);
+  await page.waitForFunction(() => window.__frontline.renderer.camera.fov < 70);
+  check('passenger can aim with visible equipment', await page.evaluate(() => window.__frontline.viewmodel.root.visible && window.__frontline.offlinePlayer.adsing));
+  await capture('04-passenger-ads'); await page.mouse.up({ button: 'right' });
+  await page.mouse.down(); await steps(12); await page.mouse.up();
+  check('passenger fire consumes authoritative ammo', await page.evaluate(() => window.__frontline.offlinePlayer.inv.ar.mag < 30));
 } finally {
   check('zero browser errors', errors.length === 0, errors);
   writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ rendering: 'SwiftShader software GL', checks, frames, errors }, null, 2));

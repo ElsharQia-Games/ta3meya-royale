@@ -714,6 +714,8 @@ class App {
           if (ev.id === selfId) { this.audio.damage(); this.shake = Math.min(1.2, this.shake + 0.6); }
           break;
         case 'warmup':
+          this.localWeapons = ev.mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
+          this.pendingShots.length = 0;
           this.hud.notify(`Match starts in ${Math.ceil(ev.countdown)}s`);
           break;
         case 'live':
@@ -1088,7 +1090,7 @@ class App {
   }
 
   updateCamera(dt, lp, camera) {
-    const targetAds = lp.ads && !lp.inVehicle && lp.reloadT <= 0 && lp.healT <= 0 ? 1 : 0;
+    const targetAds = lp.ads && !(lp.inVehicle && lp.seat === 0) && lp.reloadT <= 0 && lp.healT <= 0 ? 1 : 0;
     this.adsF = damp(this.adsF, targetAds, 14, dt);
     const W = lp.weapon ? CFG.WEAPONS[lp.weapon] : null;
     const zoom = W ? 1 + (W.adsZoom - 1) * this.adsF : 1;

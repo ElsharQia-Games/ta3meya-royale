@@ -301,6 +301,10 @@ function handleJoin(ws, msg) {
   room.inputQueues.set(player.id, []);
   room.lastHumanAt = Date.now();
 
+  // Starting a round resets loadouts and cover. Welcome/state must describe
+  // that new round, rather than publishing the ended round's inventory first.
+  if (room.game.matchState === MATCH_STATE.LOBBY || room.game.matchState === MATCH_STATE.ENDED) room.start();
+
   sendText(ws, {
     type: 'welcome',
     playerId: player.id,
@@ -321,7 +325,6 @@ function handleJoin(ws, msg) {
   sendLoot(room, client);
   sendState(room, client);
 
-  if (room.game.matchState === MATCH_STATE.LOBBY || room.game.matchState === MATCH_STATE.ENDED) room.start();
   log(`[room ${room.code}] join ${player.name}#${player.id} (${room.game.players.size} players)`);
 }
 
