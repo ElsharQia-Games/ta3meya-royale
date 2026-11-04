@@ -23,7 +23,7 @@
 |---|---|---|
 | A1 | 16+ players smooth at 100–150 ms | `npm run nettest` (simulated latency + real WS bots) + load report |
 | A2 | Hits register fairly | automated rewind test: moving target, 150 ms, hit verdict matches shooter view |
-| A3 | No stuck/tunnel/jitter in 30 min | `npm run simtest` 32 players, 108k ticks, penetration/NaN assertions |
+| A3 | No stuck/tunnel/jitter in 30 min | `npm run stress` 32 players, 108k ticks, penetration/NaN assertions |
 | A4 | Client 60 fps mid-range 1080p | `npm run qa` reports FPS/draw calls (note: CI uses software GL; hardware measurement documented separately) |
 | A5 | Server 32 players at 30 Hz | `npm run loadtest` reports tick ms, snapshot KB/s |
 | A6 | Cohesive look | `qa/shots/*.png` + `qa/clip/*.webm`, reviewed against REFERENCE.md |

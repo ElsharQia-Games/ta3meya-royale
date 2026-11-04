@@ -14,8 +14,8 @@
 
 ## D3. WebSocket transport
 - Universal browser support, works through Cloudflare Tunnel/ngrok, ordered/reliable.
-- 60 Hz inputs (~26 B) + 30 Hz quantised delta snapshots (~0.3–1.2 KB) stay well under 256 kbps/player.
-- WebTransport would remove TCP head-of-line blocking but Safari support and HTTP/3 hosting are not reliable enough for "friends join a link". WebRTC needs TURN for restrictive NATs. Decision can be revisited behind a flag; measured results in `qa/reports/netcode.md`.
+- 60 Hz inputs (~26 B) + 30 Hz quantised delta snapshots (≈30 B with one player, ≈19.6 KB with 32 players) stay under 256 kbps/player at the 32-player measured load (~147 kbit/s). WebTransport would remove TCP head-of-line blocking but Safari support and HTTP/3 hosting are not reliable enough for "friends join a link". WebRTC needs TURN for restrictive NATs. Decision can be revisited behind a flag; measured results are in GAP-ANALYSIS.md.
+- The per-client input ack lives in the snapshot header, which means one 19.6 KB copy per client per snapshot. Broadcasting one shared buffer plus a 5-byte ack frame was tried and reverted: it removes that copy, but reconciliation then depends on two frames arriving together, and the message-loss harness pushed p95 correction from ~12 cm to ~24 cm. Simplicity and one-frame correctness won over the allocation saving.
 
 ## D4. 60 Hz simulation, 30 Hz snapshots
 - 60 Hz matches input cadence and makes movement/replay stable.

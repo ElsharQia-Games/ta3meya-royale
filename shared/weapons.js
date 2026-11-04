@@ -110,7 +110,7 @@ export function solveBallistic(world, origin, dir, W, targets, shooterId, shoote
     }
     if (wh) {
       const point = wh.point;
-      impacts.push({ point, zone: null, targetId: null, damage: 0, dist: dist + wh.t, tag: wh.tag, mat: wh.mat, normal: wh.normal });
+      impacts.push({ point, zone: null, targetId: null, damage: 0, dist: dist + wh.t, tag: wh.tag, mat: wh.mat, normal: wh.normal, box: wh.box });
       segments.push(point);
       // penetration: only thin boxes / glass / wood
       const thickness = (wh.tmax !== undefined && isFinite(wh.tmax) ? wh.tmax - wh.t : Infinity);
@@ -176,6 +176,22 @@ export function tryFire(game, p, input, targets, opts = {}) {
     const end = res.segments[res.segments.length - 1];
     tracerEnds.push([+end[0].toFixed(2), +end[1].toFixed(2), +end[2].toFixed(2)]);
     for (const im of res.impacts) {
+      // Destructible props take structural damage from bullet impacts.
+      if (im.box && im.box.dynamic && !im.box.destroyed) {
+        im.box.hp -= W.dmg * 0.75;
+        if (im.box.hp <= 0) {
+          im.box.destroyed = true;
+          game.events.push({
+            k: 'destroy', id: im.box.id, kind: im.box.kind || im.box.tag,
+            x: +(im.box.min[0] + im.box.max[0]) / 2, y: im.box.min[1],
+            z: +(im.box.min[2] + im.box.max[2]) / 2,
+            sx: +(im.box.max[0] - im.box.min[0]).toFixed(2),
+            sy: +(im.box.max[1] - im.box.min[1]).toFixed(2),
+            sz: +(im.box.max[2] - im.box.min[2]).toFixed(2),
+            mat: im.box.mat,
+          });
+        }
+      }
       if (allImpacts.length >= 12) break;
       allImpacts.push({
         p: [+im.point[0].toFixed(2), +im.point[1].toFixed(2), +im.point[2].toFixed(2)],
@@ -334,6 +350,23 @@ export function stepProjectiles(game, dt) {
 
 export function explode(game, pos, dmg, radius, owner) {
   game.events.push({ k: 'boom', x: pos[0], y: pos[1], z: pos[2], r: radius });
+  // Blast damage to destructible props.
+  const boxes = game.world.queryBoxes(pos[0] - radius, pos[2] - radius, pos[0] + radius, pos[2] + radius);
+  for (const b of boxes) {
+    if (!b.dynamic || b.destroyed) continue;
+    const cx = (b.min[0] + b.max[0]) / 2, cy = (b.min[1] + b.max[1]) / 2, cz = (b.min[2] + b.max[2]) / 2;
+    const d = Math.hypot(cx - pos[0], cy - pos[1], cz - pos[2]);
+    if (d > radius) continue;
+    b.hp -= dmg * (1 - d / radius);
+    if (b.hp <= 0) {
+      b.destroyed = true;
+      game.events.push({
+        k: 'destroy', id: b.id, kind: b.kind || b.tag, x: cx, y: b.min[1], z: cz,
+        sx: +(b.max[0] - b.min[0]).toFixed(2), sy: +(b.max[1] - b.min[1]).toFixed(2),
+        sz: +(b.max[2] - b.min[2]).toFixed(2), mat: b.mat,
+      });
+    }
+  }
   for (const p of game.players.values()) {
     if (!p.alive) continue;
     const chest = [p.pos[0], p.pos[1] + p.height() * 0.55, p.pos[2]];

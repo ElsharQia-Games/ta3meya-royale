@@ -4,7 +4,6 @@
 // ============================================================================
 
 export const CFG = {
-  PROTOCOL_VERSION: 4,
   SIM_HZ: 60,
   SIM_DT: 1 / 60,
   SNAPSHOT_HZ: 30,
@@ -175,7 +174,7 @@ export const CFG = {
   NET: {
     inputHz: 60,
     maxInputsPerTick: 4,
-    maxQueuedInputs: 24,
+    maxQueuedInputs: 64,
     snapshotKeyframeEvery: 30,
     eventRadius: 420,
     maxPlayers: 32,

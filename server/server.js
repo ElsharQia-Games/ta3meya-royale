@@ -742,10 +742,14 @@ function roomInfo(room) {
   };
 }
 function stats() {
+  const mem = process.memoryUsage();
   return {
     ok: true, uptime: +process.uptime().toFixed(1), protocol: PROTOCOL_VERSION,
     simHz: CFG.SIM_HZ, snapshotHz: CFG.SNAPSHOT_HZ,
-    memoryMB: +(process.memoryUsage().rss / 1048576).toFixed(1),
+    memoryMB: +(mem.rss / 1048576).toFixed(1),
+    heapUsedMB: +(mem.heapUsed / 1048576).toFixed(1),
+    heapTotalMB: +(mem.heapTotal / 1048576).toFixed(1),
+    externalMB: +(mem.external / 1048576).toFixed(1),
     rooms: [...rooms.values()].map(roomInfo),
   };
 }
