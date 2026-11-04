@@ -1,3 +1,5 @@
+import { assetUrl } from '../asset.js';
+
 // Decoded once per AudioContext. Missing clips fail individually and callers
 // fall back immediately; no old sound is replayed after an asynchronous load.
 export const SAMPLE_KEYS = [
@@ -8,8 +10,11 @@ export const SAMPLE_KEYS = [
 ];
 
 export class SampleBank {
-  constructor(context, base = '/audio/') {
-    this.context = context; this.base = base; this.buffers = new Map(); this.errors = [];
+  constructor(context, base = assetUrl('audio/')) {
+    this.context = context;
+    this.base = base.endsWith('/') ? base : base + '/';
+    this.buffers = new Map();
+    this.errors = [];
     this.loading = null;
   }
   load() {

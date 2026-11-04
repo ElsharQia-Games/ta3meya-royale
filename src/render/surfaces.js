@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { assetUrl } from '../asset.js';
 
 // A shared photographed surface set per world, including all facade variants.
 // Material instances carry colour; texture ownership stays with WorldRenderer.
@@ -7,7 +8,7 @@ export async function loadCoastalSurfaces(view) {
   const anisotropy = Math.min(8, view.renderer.renderer.capabilities.getMaxAnisotropy());
   await Promise.all(['plaster', 'concrete', 'asphalt', 'brick'].map(async name => {
     const maps = await Promise.all(['albedo', 'normal', 'roughness'].map(async suffix => {
-      const map = await loader.loadAsync(`/textures/coastal/${name}-${suffix}.webp`);
+      const map = await loader.loadAsync(assetUrl(`textures/coastal/${name}-${suffix}.webp`));
       map.wrapS = map.wrapT = THREE.RepeatWrapping;
       map.anisotropy = anisotropy;
       map.colorSpace = suffix === 'albedo' ? THREE.SRGBColorSpace : THREE.NoColorSpace;

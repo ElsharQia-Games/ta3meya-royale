@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { splitInstances } from './geometry.js';
+import { assetUrl } from '../asset.js';
 
 const FILES = ['Pine_1', 'Pine_3', 'CommonTree_1', 'CommonTree_3', 'Bush_Common', 'Fern_1', 'Rock_Medium_1'];
 
@@ -21,7 +22,7 @@ export class NatureDetail {
   async load() {
     const loader = new GLTFLoader();
     const results = await Promise.allSettled(FILES.map(async name => {
-      const asset = await loader.loadAsync(`/models/nature/${name}.gltf`);
+      const asset = await loader.loadAsync(assetUrl(`models/nature/${name}.gltf`));
       asset.scene.updateMatrixWorld(true);
       const parts = [];
       asset.scene.traverse(o => { if (o.isMesh) parts.push(o); });

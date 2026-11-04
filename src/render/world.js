@@ -15,6 +15,7 @@ import { mergeSpatialGeometry, splitGridGeometry } from './geometry.js';
 import { addCoastalDetails } from './coastal-details.js';
 import { FieldAssets } from './field-assets.js';
 import { loadCoastalSurfaces } from './surfaces.js';
+import { assetUrl } from '../asset.js';
 
 const _v = new THREE.Vector3();
 
@@ -161,7 +162,7 @@ export class WorldRenderer {
     this.terrain = tiles[0];
     this.scene.add(...tiles);
     const loader = new THREE.TextureLoader();
-    const load = (file, colour) => loader.loadAsync(`/textures/${file}.webp`).then(tex => {
+    const load = (file, colour) => loader.loadAsync(assetUrl(`textures/${file}.webp`)).then(tex => {
       tex.colorSpace = colour ? THREE.SRGBColorSpace : THREE.NoColorSpace;
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       tex.repeat.set(w.size / 2.5, w.size / 2.5);
