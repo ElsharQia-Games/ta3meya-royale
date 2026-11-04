@@ -335,9 +335,54 @@ function skyGradient() {
   return finish(c, 1);
 }
 
+// Tileable cloud sheet. Value-noise octaves are generated on wrapped lattices so
+// the alpha map repeats without a seam when the sky plane scrolls.
+function clouds() {
+  const size = 256, c = canvas(size), ctx = c.getContext('2d');
+  const r = rng(77);
+  const octaves = [[4, 0.55], [8, 0.25], [16, 0.14], [32, 0.06]];
+  const lattice = new Map();
+  for (const [f] of octaves) {
+    const arr = new Float32Array(f * f);
+    for (let i = 0; i < arr.length; i++) arr[i] = r();
+    lattice.set(f, arr);
+  }
+  const smooth = (t) => t * t * (3 - 2 * t);
+  const sample = (arr, g, x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const fx = x - xi, fy = y - yi;
+    const x0 = ((xi % g) + g) % g, x1 = (x0 + 1) % g;
+    const y0 = ((yi % g) + g) % g, y1 = (y0 + 1) % g;
+    const v00 = arr[y0 * g + x0], v10 = arr[y0 * g + x1];
+    const v01 = arr[y1 * g + x0], v11 = arr[y1 * g + x1];
+    const sx = smooth(fx), sy = smooth(fy);
+    return (v00 * (1 - sx) + v10 * sx) * (1 - sy)
+      + (v01 * (1 - sx) + v11 * sx) * sy;
+  };
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let n = 0;
+      for (const [f, amp] of octaves) {
+        n += sample(lattice.get(f), f, (x / size) * f, (y / size) * f) * amp;
+      }
+      const t = Math.max(0, Math.min(1, (n - 0.48) / 0.24));
+      const a = Math.round(255 * t * t * (3 - 2 * t));
+      const shade = 200 + Math.round(n * 55);
+      const i = (y * size + x) * 4;
+      img.data[i] = shade;
+      img.data[i + 1] = shade;
+      img.data[i + 2] = Math.min(255, shade + 10);
+      img.data[i + 3] = a;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return finish(c, 1);
+}
+
 const FACTORIES = {
   concrete, brick, plaster, wood, metal, sandbag, glass, rock,
-  ground, asphalt, skyGradient,
+  ground, asphalt, skyGradient, clouds,
 };
 
 export function texture(name) {

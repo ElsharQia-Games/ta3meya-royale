@@ -68,19 +68,29 @@ function makeCharacter(color, skin) {
     arm.add(part(new THREE.SphereGeometry(0.08, 8, 6), skinMat, side * 0.03, -0.37, 0));
   }
 
+  // Two-segment legs with a knee joint. Without the knee the crouch/prone
+  // poses lowered the hips while the rigid legs stayed straight, pushing the
+  // boots up to 0.58 m into the terrain.
   const legL = new THREE.Group(), legR = new THREE.Group();
+  const kneeL = new THREE.Group(), kneeR = new THREE.Group();
   legL.position.set(-0.14, -0.02, 0); legR.position.set(0.14, -0.02, 0);
   hips.add(legL, legR);
-  for (const leg of [legL, legR]) {
-    leg.add(part(new THREE.CapsuleGeometry(0.11, 0.6, 3, 8), cloth, 0, -0.42, 0));
-    leg.add(part(new THREE.BoxGeometry(0.2, 0.12, 0.3), bootMat, 0, -0.82, -0.04));
+  for (const [leg, knee] of [[legL, kneeL], [legR, kneeR]]) {
+    leg.add(part(new THREE.CapsuleGeometry(0.11, 0.22, 3, 8), cloth, 0, -0.2, 0));
+    knee.position.set(0, -0.42, 0);
+    leg.add(knee);
+    knee.add(part(new THREE.CapsuleGeometry(0.09, 0.3, 3, 8), cloth, 0, -0.2, 0));
+    knee.add(part(new THREE.BoxGeometry(0.19, 0.12, 0.3), bootMat, 0, -0.42, -0.04));
   }
 
   const gun = rifleModel();
   gun.position.set(0.16, 0.33, -0.3);
   torso.add(gun);
 
-  return { root, hips, torso, head, armL, armR, legL, legR, gun, mats: { cloth, vestMat, teamMat } };
+  return {
+    root, hips, torso, head, armL, armR, legL, legR, kneeL, kneeR, gun,
+    mats: { cloth, vestMat, teamMat },
+  };
 }
 
 class Nameplate {
@@ -105,19 +115,27 @@ class Nameplate {
     this.last = key;
     const c = this.ctx, w = 256, h = 64;
     c.clearRect(0, 0, w, h);
-    c.font = 'bold 26px system-ui, sans-serif';
+    // Use most of the plate height for the name so the text stays legible at
+    // 15-40 m once the sprite is distance-scaled, then shrink only long names.
+    let size = 36;
+    c.font = `bold ${size}px system-ui, sans-serif`;
+    while (size > 18 && c.measureText(name).width > w - 20) {
+      size -= 2;
+      c.font = `bold ${size}px system-ui, sans-serif`;
+    }
+    this.fontSize = size;
     c.textAlign = 'center';
-    c.lineWidth = 5;
-    c.strokeStyle = 'rgba(0,0,0,0.75)';
+    c.lineWidth = 6;
+    c.strokeStyle = 'rgba(0,0,0,0.8)';
     c.fillStyle = dead ? '#8b9099' : (TEAMS[team]?.css || '#fff');
-    c.strokeText(name, w / 2, 28);
-    c.fillText(name, w / 2, 28);
+    c.strokeText(name, w / 2, 42);
+    c.fillText(name, w / 2, 42);
     if (!dead) {
-      c.fillStyle = 'rgba(0,0,0,0.55)';
-      c.fillRect(48, 40, 160, 9);
+      c.fillStyle = 'rgba(0,0,0,0.6)';
+      c.fillRect(40, 48, 176, 10);
       const f = clamp(hp / maxHp, 0, 1);
       c.fillStyle = f > 0.6 ? '#6fe08a' : f > 0.3 ? '#f2c14e' : '#f2635a';
-      c.fillRect(49, 41, 158 * f, 7);
+      c.fillRect(41, 49, 174 * f, 8);
     }
     this.tex.needsUpdate = true;
   }
@@ -154,7 +172,7 @@ export class CharacterView {
     this.team = team;
     this.teamColor.set(TEAMS[team]?.color ?? 0xffffff);
     this.model.mats.teamMat.color.copy(this.teamColor);
-    this.model.mats.teamMat.emissive.copy(this.teamColor).multiplyScalar(0.25);
+    this.model.mats.teamMat.emissive.copy(this.teamColor).multiplyScalar(0.4);
   }
 
   applyState(p) {
@@ -172,48 +190,82 @@ export class CharacterView {
   update(dt, cameraPos) {
     const m = this.model;
     const r = m.root;
+    const prone = this.stance === STANCE.PRONE;
+    const crouch = this.stance === STANCE.CROUCH;
+
     r.position.set(this.pos[0], this.pos[1], this.pos[2]);
     r.rotation.y = this.yaw;
-    this.plate.sprite.position.set(this.pos[0], this.pos[1] + 2.15, this.pos[2]);
+    const plateY = prone ? 0.78 : crouch ? 1.78 : 2.15;
+    this.plateY = damp(this.plateY ?? plateY, plateY, 12, dt);
+    this.plate.sprite.position.set(this.pos[0], this.pos[1] + this.plateY, this.pos[2]);
     this.plate.update(this.name || '', this.team, this.hp ?? 100, 100, !this.alive);
 
     if (!this.alive) {
       this.deathT = Math.min(1, this.deathT + dt * 2.2);
-      r.rotation.x = -this.deathT * Math.PI * 0.48;
-      r.position.y = this.pos[1] + this.deathT * 0.1;
+      // Rotate around the feet, then lift enough that the horizontal torso and
+      // pack do not sink through the terrain. The rifle is dropped: while the
+      // body tips forward its muzzle would sweep ~0.9 m below the feet.
+      r.rotation.x = -this.deathT * Math.PI * 0.5;
+      r.position.y = this.pos[1] + this.deathT * 0.32;
+      m.gun.visible = false;
       this.plate.sprite.visible = false;
       return;
     }
     this.deathT = 0;
     r.rotation.x = 0;
+    m.gun.visible = true;
     this.plate.sprite.visible = true;
 
-    // Stance: lower the hips, tuck the legs; prone folds the whole body down.
-    const targetHip = this.stance === STANCE.PRONE ? 0.28 : this.stance === STANCE.CROUCH ? 0.62 : 0.92;
+    // Stance: lower the hips and fold the knees so the boots stay on the
+    // ground; prone folds the whole body down and extends the legs behind it.
+    const targetHip = prone ? 0.36 : crouch ? 0.55 : 0.92;
     m.hips.position.y = damp(m.hips.position.y, targetHip, 12, dt);
     m.torso.rotation.x = damp(m.torso.rotation.x,
-      this.stance === STANCE.PRONE ? -1.28 : clamp(this.pitch * 0.35, -0.3, 0.3), 10, dt);
-    m.torso.rotation.z = this.stance === STANCE.PRONE ? 0.2 : 0;
+      prone ? -1.28 : clamp(this.pitch * 0.35, -0.3, 0.3), 10, dt);
+    m.torso.rotation.z = prone ? 0.2 : 0;
 
     // Walk cycle from horizontal velocity estimate.
     const speed = Math.hypot(this.vx || 0, this.vz || 0);
     this.walk += dt * (2.2 + speed * 1.35);
     const swing = Math.min(1, speed / 5) * 0.62;
-    m.legL.rotation.x = Math.sin(this.walk) * swing;
-    m.legR.rotation.x = -Math.sin(this.walk) * swing;
+    let thighL = Math.sin(this.walk) * swing;
+    let thighR = -Math.sin(this.walk) * swing;
+    let shin = 0;
+    if (crouch) {
+      // Thigh forward to horizontal, shin back down to vertical: the knee
+      // folds instead of the boots being driven through the ground.
+      thighL = 1.45 + thighL * 0.12;
+      thighR = 1.45 + thighR * 0.12;
+      shin = -1.45;
+    } else if (prone) {
+      thighL = thighR = -1.35;
+      shin = 0.1;
+    }
+    m.legL.rotation.x = damp(m.legL.rotation.x, thighL, 12, dt);
+    m.legR.rotation.x = damp(m.legR.rotation.x, thighR, 12, dt);
+    m.kneeL.rotation.x = damp(m.kneeL.rotation.x, shin, 12, dt);
+    m.kneeR.rotation.x = damp(m.kneeR.rotation.x, shin, 12, dt);
     m.armL.rotation.x = -0.9 + Math.sin(this.walk) * swing * 0.25;
     m.armR.rotation.x = -1.15 - Math.sin(this.walk) * swing * 0.2;
     m.armL.rotation.z = 0.35;
     m.armR.rotation.z = -0.25;
-    m.head.rotation.x = -this.pitch * 0.55;
+    m.head.rotation.x = damp(m.head.rotation.x, prone ? 0.9 : -this.pitch * 0.55, 10, dt);
+    // Keep the rifle level in prone: the torso is pitched ~73 degrees forward,
+    // so an unrotated gun would point its muzzle into the terrain.
+    m.gun.rotation.x = damp(m.gun.rotation.x, prone ? 1.28 : 0, 10, dt);
 
     // Hide our own body and nameplate from the first-person camera by distance.
     // This also prevents the spectated player's nameplate from covering the
     // screen when the camera sits at their eye.
     const d = cameraPos ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[2] - this.pos[2]) : 99;
     const d3 = cameraPos
-      ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + 2.15), cameraPos[2] - this.pos[2])
+      ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2])
       : 99;
+    // Keep the plate at a readable on-screen size out to 40 m. The base sprite
+    // is ~5.6 px tall at 40 m with size attenuation, so scale up with distance
+    // and cap the growth to avoid giant plates in the far field.
+    const plateScale = clamp(d3 / 8, 1, 4);
+    this.plate.sprite.scale.set(1.7 * plateScale, 0.42 * plateScale, 1);
     r.visible = d > 0.9;
     this.plate.sprite.visible = this.alive && d3 > 1.6;
   }

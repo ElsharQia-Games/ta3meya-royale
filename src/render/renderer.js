@@ -8,9 +8,13 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { qualityPreset } from '../settings.js';
 import { CFG } from '../../shared/config.js';
+import { texture } from './textures.js';
 
 const SUN_DIR = new THREE.Vector3(-0.42, 0.66, 0.32).normalize();
 const LIGHT_DIR = SUN_DIR.clone().negate();
+
+// Sky-only highlight shoulder (see _buildSky). gain=1/knee=0 is the stock shader.
+const SKY_ROLLOFF = { gain: 1.0, knee: 0.32 };
 
 export class GameRenderer {
   constructor(canvas, settings) {
@@ -35,6 +39,7 @@ export class GameRenderer {
     this.camera.rotation.order = 'YXZ';
 
     this._buildSky();
+    this._buildClouds();
     this._buildLights();
 
     this.composer = null;
@@ -59,11 +64,89 @@ export class GameRenderer {
     u.mieCoefficient.value = 0.0028;
     u.mieDirectionalG.value = 0.78;
     u.sunPosition.value.copy(SUN_DIR).multiplyScalar(1000);
+
+    // The stock Sky shader pushes the horizon toward white when the camera
+    // looks anywhere near the sun, so ACES clips large parts of the upper
+    // frame. Apply a soft Reinhard shoulder to the sky radiance only (terrain
+    // and characters are untouched). Gain lifts the mid-tone blue back up so
+    // the gradient survives the compression. The patch is applied to the
+    // ShaderMaterial source before its first compile, and the uniforms below
+    // let QA prove the patched program is live.
+    u.uSkyGain = { value: SKY_ROLLOFF.gain };
+    u.uSkyKnee = { value: SKY_ROLLOFF.knee };
+    const mat = this.sky.material;
+    const marker = 'gl_FragColor = vec4( retColor, 1.0 );';
+    if (!mat.fragmentShader.includes('uSkyKnee')) {
+      mat.fragmentShader = mat.fragmentShader
+        .replace('uniform vec3 up;', 'uniform vec3 up;\n\t\tuniform float uSkyGain;\n\t\tuniform float uSkyKnee;')
+        .replace(marker, 'retColor = uSkyGain * retColor / (1.0 + uSkyKnee * retColor);\n\t\t\tgl_FragColor = vec4( retColor, 1.0 );');
+    }
+    this.skyRolloffApplied = mat.fragmentShader.includes('uSkyKnee')
+      && mat.fragmentShader.includes('retColor = uSkyGain');
+    mat.needsUpdate = true;
     this.scene.add(this.sky);
   }
 
+  // A single camera-following cloud sheet above the playable map. It is one
+  // draw call and one texture fetch per pixel; the alpha map is procedural.
+  _buildClouds() {
+    const map = texture('clouds');
+    if (!map) return;
+    map.wrapS = map.wrapT = THREE.RepeatWrapping;
+    const geo = new THREE.CircleGeometry(1100, 64);
+    geo.rotateX(-Math.PI / 2);
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uMap: { value: map },
+        uOffset: { value: new THREE.Vector2(0, 0) },
+        uColor: { value: new THREE.Color(0xe8eef4) },
+        uShadow: { value: new THREE.Color(0xa7b4c1) },
+        uOpacity: { value: 0.5 },
+      },
+      vertexShader: /* glsl */`
+        varying vec2 vUv;
+        varying float vR;
+        void main() {
+          vUv = uv;
+          vR = length(position.xz) / 1100.0;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform sampler2D uMap;
+        uniform vec2 uOffset;
+        uniform vec3 uColor, uShadow;
+        uniform float uOpacity;
+        varying vec2 vUv;
+        varying float vR;
+        void main() {
+          float a = texture2D(uMap, vUv * 3.0 + uOffset).a;
+          a = smoothstep(0.05, 0.62, a);
+          float fade = 1.0 - smoothstep(0.45, 0.98, vR);
+          a *= uOpacity * fade;
+          if (a < 0.004) discard;
+          vec3 col = mix(uShadow, uColor, smoothstep(0.1, 0.75, a));
+          gl_FragColor = vec4(col, a);
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = 260;
+    mesh.name = 'clouds';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 1;
+    this.scene.add(mesh);
+    this.clouds = mesh;
+  }
+
   _buildLights() {
-    this.hemi = new THREE.HemisphereLight(0xa8c8ff, 0x4a4032, 1.0);
+    // Strong unshadowed sky/ground fill keeps shadowed terrain readable. The
+    // sun is lifted alongside it so lit surfaces keep their contrast instead of
+    // flattening into the fill.
+    this.hemi = new THREE.HemisphereLight(0xa8c8ff, 0x74624a, 3.0);
     this.scene.add(this.hemi);
 
     const q = this.quality;
@@ -75,7 +158,7 @@ export class GameRenderer {
       mode: 'practical',
       shadowMapSize: q.shadowMap,
       lightDirection: LIGHT_DIR.clone(),
-      lightIntensity: 3.2,
+      lightIntensity: 3.6,
       lightNear: 0.5,
       lightFar: 600,
       lightMargin: 220,
@@ -87,7 +170,7 @@ export class GameRenderer {
       l.castShadow = this.renderer.shadowMap.enabled;
       l.shadow.normalBias = 0.035;
     }
-    this.ambient = new THREE.AmbientLight(0x8ea2b8, 0.3);
+    this.ambient = new THREE.AmbientLight(0x8ea2b8, 0.6);
     this.scene.add(this.ambient);
   }
 
@@ -141,6 +224,14 @@ export class GameRenderer {
   render(dt) {
     this.renderer.info.reset();
     if (this.csm) this.csm.update();
+    if (this.clouds) {
+      const c = this.camera.position;
+      this.clouds.position.x = c.x;
+      this.clouds.position.z = c.z;
+      const u = this.clouds.material.uniforms;
+      u.uOffset.value.x += dt * 0.0016;
+      u.uOffset.value.y += dt * 0.0007;
+    }
     if (this.composer) this.composer.render(dt);
     else this.renderer.render(this.scene, this.camera);
 
