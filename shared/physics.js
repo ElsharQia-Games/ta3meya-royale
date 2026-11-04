@@ -256,11 +256,13 @@ export function movePlayer(world, p, input, dt) {
     }
     resolveHorizontal(world, p, height, p.grounded);
   }
-  // Ground snap after horizontal movement (stairs / slopes).
+  // Ground snap after horizontal movement (stairs / slopes). This must also
+  // snap *down* within a step: with Math.max only, walking downhill left the
+  // capsule floating at its old height until it fell off the slope.
   if (p.grounded) {
     const support = supportHeight(world, p.pos[0], p.pos[2], p.pos[1] + 0.1, radius);
     if (support >= p.pos[1] - 0.55 && support <= p.pos[1] + P.STEP_HEIGHT + 0.06) {
-      p.pos[1] = Math.max(p.pos[1], support);
+      p.pos[1] = support;
     }
   }
 

@@ -48,6 +48,86 @@ test('two identical games stay deterministic under identical inputs', () => {
   assert.equal(a.time, b.time);
 });
 
+// A replay-style determinism check: build the full input stream up front, then
+// feed the same recorded inputs to two independently constructed games. This
+// exercises weapons (spread/recoil/ammo), stances, damage, respawns and events,
+// not just movement.
+test('600-tick recorded replay matches quantised state and event stream', () => {
+  function makeTdm() {
+    const g = new Game({ mode: 'tdm', seed: 424242 });
+    g.addPlayer('Alpha', 0);
+    g.addPlayer('Bravo', 1);
+    g.begin();
+    g.matchState = MATCH_STATE.LIVE;
+    const [a, b] = [...g.players.values()];
+    const x = -200, z = 0;
+    a.pos = [x, g.world.terrainHeight(x, z) + 0.05, z];
+    a.vel = [0, 0, 0];
+    b.pos = [x, g.world.terrainHeight(x, z - 8) + 0.05, z - 8];
+    b.vel = [0, 0, 0];
+    return g;
+  }
+  const ga = makeTdm(), gb = makeTdm();
+  const ids = [...ga.players.keys()];
+
+  const recorded = [];
+  for (let tick = 0; tick < 600; tick++) {
+    const frame = new Map();
+    for (let n = 0; n < ids.length; n++) {
+      const i = emptyInput();
+      i.yaw = n === 0 ? 0 : Math.PI; // face each other along -Z/+Z
+      i.pitch = -0.1;
+      i.shoot = true;
+      i.reload = tick % 120 === 60 + n * 15;
+      i.jump = tick % 150 === 0;
+      i.f = tick % 200 < 18;
+      i.sprint = i.f && tick % 200 < 8;
+      i.stance = tick % 180 < 60 ? STANCE.CROUCH : tick % 180 < 90 ? STANCE.PRONE : STANCE.STAND;
+      frame.set(ids[n], i);
+    }
+    recorded.push(frame);
+  }
+
+  const cloneFrame = frame => {
+    const m = new Map();
+    for (const [id, i] of frame) m.set(id, { ...i });
+    return m;
+  };
+  for (let tick = 0; tick < 600; tick++) {
+    ga.step(cloneFrame(recorded[tick]), CFG.SIM_DT);
+    gb.step(cloneFrame(recorded[tick]), CFG.SIM_DT);
+  }
+
+  const q = v => Math.round(v * 1e6) / 1e6;
+  assert.equal(ga.tick, gb.tick);
+  assert.equal(q(ga.time), q(gb.time));
+  assert.deepEqual(ga.score, gb.score);
+  assert.deepEqual(ga.stats, gb.stats);
+  for (const [id, pa] of ga.players) {
+    const pb = gb.players.get(id);
+    assert.ok(pb);
+    for (let k = 0; k < 3; k++) {
+      assert.equal(q(pa.pos[k]), q(pb.pos[k]), `player ${id} pos axis ${k}`);
+      assert.equal(q(pa.vel[k]), q(pb.vel[k]), `player ${id} vel axis ${k}`);
+    }
+    assert.equal(pa.stance, pb.stance, `player ${id} stance`);
+    assert.equal(pa.alive, pb.alive, `player ${id} alive`);
+    assert.equal(q(pa.health), q(pb.health), `player ${id} health`);
+    assert.equal(q(pa.armor), q(pb.armor), `player ${id} armor`);
+    assert.equal(pa.kills, pb.kills);
+    assert.equal(pa.deaths, pb.deaths);
+    for (let slot = 0; slot < 2; slot++) {
+      const wa = pa.weapons[slot], wb = pb.weapons[slot];
+      assert.equal(wa, wb);
+      if (wa) {
+        assert.deepEqual(pa.inv[wa], pb.inv[wb], `player ${id} slot ${slot} ammo`);
+      }
+    }
+  }
+  assert.deepEqual(ga.events, gb.events, 'event streams must match');
+  assert.ok(ga.events.some(e => e.k === 'shot'), 'expected recorded shot events');
+});
+
 test('movement keeps the player on the terrain and inside the map bounds', () => {
   const g = makeGame();
   for (let tick = 0; tick < 600; tick++) {

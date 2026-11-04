@@ -168,7 +168,7 @@ export const CFG = {
     reaction: 0.18,
     aimError: 0.028,           // radians at 100m, scaled
     burst: [3, 7],
-    navCell: 6,
+    navCell: 2,                // metres; fine enough to resolve doorways
   },
 
   NET: {
