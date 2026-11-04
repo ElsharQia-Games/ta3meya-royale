@@ -280,11 +280,11 @@ function rock() {
 function ground() {
   const size = 256, c = canvas(size), ctx = c.getContext('2d');
   const r = rng(97);
-  ctx.fillStyle = '#7a8060';
+  ctx.fillStyle = '#b8b59f';
   ctx.fillRect(0, 0, size, size);
   for (let i = 0; i < 5200; i++) {
-    const g = 70 + r() * 80;
-    ctx.fillStyle = `rgba(${g * 0.86},${g},${g * 0.62},${0.05 + r() * 0.16})`;
+    const g = 130 + r() * 80;
+    ctx.fillStyle = `rgba(${g * .98},${g},${g * .86},${.04 + r() * .16})`;
     const x = r() * size, y = r() * size, s = 1 + r() * 4;
     ctx.fillRect(x, y, s, s * 1.6);
   }
@@ -292,8 +292,8 @@ function ground() {
   for (let i = 0; i < 24; i++) {
     const x = r() * size, y = r() * size, rad = 8 + r() * 30;
     const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
-    g.addColorStop(0, `rgba(112,98,60,${0.10 + r() * 0.16})`);
-    g.addColorStop(1, 'rgba(112,98,60,0)');
+    g.addColorStop(0, `rgba(133,123,94,${.10 + r() * .16})`);
+    g.addColorStop(1, 'rgba(133,123,94,0)');
     ctx.fillStyle = g; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
   }
   grain(ctx, size, r, 20, 0.06);
@@ -380,9 +380,53 @@ function clouds() {
   return finish(c, 1);
 }
 
+function grainHeight() {
+  const c = canvas(256), ctx = c.getContext('2d'), r = rng(4507);
+  const data = ctx.createImageData(256, 256);
+  for (let i = 0; i < data.data.length; i += 4) {
+    const value = 105 + r() * 50;
+    data.data[i] = data.data[i + 1] = data.data[i + 2] = value;
+    data.data[i + 3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+  const map = finish(c);
+  map.colorSpace = THREE.NoColorSpace;
+  return map;
+}
+
+function fabric() {
+  const c = canvas(256), ctx = c.getContext('2d'), r = rng(914);
+  ctx.fillStyle = '#c9c6ae'; ctx.fillRect(0, 0, 256, 256);
+  const colours = ['#a4a587', '#ddd4b0', '#8a947a', '#bcb895'];
+  for (let i = 0; i < 120; i++) {
+    const x = r() * 256, y = r() * 256;
+    ctx.fillStyle = colours[i % colours.length];
+    ctx.beginPath(); ctx.moveTo(x, y);
+    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, d = 6 + r() * 20; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
+    ctx.fill();
+  }
+  ctx.strokeStyle = '#202c2015'; ctx.lineWidth = .6;
+  for (let i = 0; i < 256; i += 3) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(256, i); ctx.stroke(); }
+  grain(ctx, 256, r, 9);
+  return finish(c);
+}
+
+function bark() {
+  const c = canvas(256), ctx = c.getContext('2d'), r = rng(5601);
+  ctx.fillStyle = '#9e9480'; ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 240; i++) {
+    const x = r() * 256, y = r() * 256;
+    ctx.strokeStyle = i % 3 ? '#4d493948' : '#e8dcc35a';
+    ctx.lineWidth = 1 + r() * 3;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + r() * 8 - 4, y + 14 + r() * 64); ctx.stroke();
+  }
+  grain(ctx, 256, r, 15);
+  return finish(c);
+}
+
 const FACTORIES = {
   concrete, brick, plaster, wood, metal, sandbag, glass, rock,
-  ground, asphalt, skyGradient, clouds,
+  ground, asphalt, skyGradient, clouds, grainHeight, fabric, bark,
 };
 
 export function texture(name) {

@@ -9,8 +9,10 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { qualityPreset } from '../settings.js';
 import { CFG } from '../../shared/config.js';
 import { texture } from './textures.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { BLACKSHORE } from './style.js';
 
-const SUN_DIR = new THREE.Vector3(-0.42, 0.66, 0.32).normalize();
+const SUN_DIR = new THREE.Vector3(...BLACKSHORE.sunDirection).normalize();
 const LIGHT_DIR = SUN_DIR.clone().negate();
 
 // Sky-only highlight shoulder (see _buildSky). gain=1/knee=0 is the stock shader.
@@ -28,12 +30,12 @@ export class GameRenderer {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this.quality.pixelRatio));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.95;
+    this.renderer.toneMappingExposure = BLACKSHORE.exposure;
     this.renderer.shadowMap.enabled = settings.shadows && this.quality.shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0xa9b7c6, this.quality.fogDensity);
+    this.scene.fog = new THREE.FogExp2(BLACKSHORE.fogColor, this.quality.fogDensity);
 
     this.camera = new THREE.PerspectiveCamera(settings.fov, 1, CFG.GRAPHICS.near, this.quality.viewDistance);
     this.camera.rotation.order = 'YXZ';
@@ -41,6 +43,13 @@ export class GameRenderer {
     this._buildSky();
     this._buildClouds();
     this._buildLights();
+    const environment = new RoomEnvironment();
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.environmentTarget = pmrem.fromScene(environment, .04);
+    this.scene.environment = this.environmentTarget.texture;
+    this.scene.environmentIntensity = BLACKSHORE.environmentIntensity;
+    environment.dispose();
+    pmrem.dispose();
 
     this.composer = null;
     this.bloom = null;
@@ -130,6 +139,8 @@ export class GameRenderer {
           if (a < 0.004) discard;
           vec3 col = mix(uShadow, uColor, smoothstep(0.1, 0.75, a));
           gl_FragColor = vec4(col, a);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });
@@ -146,7 +157,7 @@ export class GameRenderer {
     // Strong unshadowed sky/ground fill keeps shadowed terrain readable. The
     // sun is lifted alongside it so lit surfaces keep their contrast instead of
     // flattening into the fill.
-    this.hemi = new THREE.HemisphereLight(0xa8c8ff, 0x74624a, 3.0);
+    this.hemi = new THREE.HemisphereLight(BLACKSHORE.skyFill, BLACKSHORE.groundFill, BLACKSHORE.fillIntensity);
     this.scene.add(this.hemi);
 
     const q = this.quality;
@@ -158,7 +169,7 @@ export class GameRenderer {
       mode: 'practical',
       shadowMapSize: q.shadowMap,
       lightDirection: LIGHT_DIR.clone(),
-      lightIntensity: 3.6,
+      lightIntensity: BLACKSHORE.sunIntensity,
       lightNear: 0.5,
       lightFar: 600,
       lightMargin: 220,
@@ -167,10 +178,11 @@ export class GameRenderer {
     this.csm.fade = false;
     this.sun = this.csm.lights[0];
     for (const l of this.csm.lights) {
+      l.color.setHex(BLACKSHORE.sunColor);
       l.castShadow = this.renderer.shadowMap.enabled;
       l.shadow.normalBias = 0.035;
     }
-    this.ambient = new THREE.AmbientLight(0x8ea2b8, 0.6);
+    this.ambient = new THREE.AmbientLight(BLACKSHORE.ambientColor, BLACKSHORE.ambientIntensity);
     this.scene.add(this.ambient);
   }
 
@@ -182,7 +194,7 @@ export class GameRenderer {
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.32, 0.55, 0.88);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), .17, .42, 1.05);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
   }
@@ -191,7 +203,21 @@ export class GameRenderer {
     if (!material || this._materials.has(material)) return material;
     this._materials.add(material);
     if (this.csm) this.csm.setupMaterial(material);
+    const disposed = () => {
+      this._materials.delete(material);
+      this.csm?.shaders.delete(material);
+      material.removeEventListener('dispose', disposed);
+    };
+    material.addEventListener('dispose', disposed);
     return material;
+  }
+
+  registerObject(object) {
+    object.traverse(child => {
+      if (!child.isMesh) return;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) if (material?.isMeshStandardMaterial) this.registerMaterial(material);
+    });
   }
 
   setQuality(name) {
@@ -204,7 +230,12 @@ export class GameRenderer {
     this.scene.fog.density = this.quality.fogDensity;
     const bloomWanted = this.settings.bloom && this.quality.bloom;
     if (bloomWanted && !this.composer) this._buildComposer();
-    if (!bloomWanted) this.composer = null;
+    if (!bloomWanted && this.composer) {
+      for (const pass of this.composer.passes) pass.dispose?.();
+      this.composer.dispose();
+      this.composer = null;
+      this.bloom = null;
+    }
     this.resize();
   }
 
@@ -216,6 +247,7 @@ export class GameRenderer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     if (this.composer) {
+      this.composer.setPixelRatio(this.renderer.getPixelRatio());
       this.composer.setSize(w, h);
       this.bloom?.setSize(w, h);
     }
@@ -235,7 +267,12 @@ export class GameRenderer {
     if (this.composer) this.composer.render(dt);
     else this.renderer.render(this.scene, this.camera);
 
-    this._fpsAcc += dt; this._fpsFrames++;
+    // Animation dt is clamped by the app. Measure real frame intervals instead
+    // of reporting a fictitious 10fps floor during slow software rendering.
+    const now = performance.now();
+    const elapsed = this._lastFrameAt === undefined ? dt : (now - this._lastFrameAt) / 1000;
+    this._lastFrameAt = now;
+    this._fpsAcc += elapsed; this._fpsFrames++;
     if (this._fpsAcc >= 0.5) {
       this.fps = this._fpsFrames / this._fpsAcc;
       this._fpsAcc = 0; this._fpsFrames = 0;

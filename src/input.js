@@ -35,7 +35,7 @@ export class Input {
 
   _bind() {
     addEventListener('keydown', (e) => {
-      if (e.code === 'Tab') e.preventDefault();
+      if (e.code === 'Tab' && this.enabled && !this.textMode) e.preventDefault();
       // OS key repeat must never re-trigger edge actions (reload, stance, ...).
       if (e.repeat) return;
       if (this.textMode) return;

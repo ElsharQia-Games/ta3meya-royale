@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="description" content="Frontline — a browser-based tactical shooter with an authoritative server.">
-<title>Frontline — Tactical Shooter</title>
+<meta name="description" content="Frontline: Blackshore. A contested coast. Tactical multiplayer combat, in your browser.">
+<meta name="theme-color" content="#0b1416">
+<title>FRONTLINE / BLACKSHORE</title>
 <style>
   :root{
     --bg:#080b0e; --panel:#0e141a; --panel2:#121a22; --line:#22303c;
@@ -256,6 +257,7 @@
     .util{bottom:56px}
   }
 </style>
+<link rel="stylesheet" href="/src/ui/design.css">
 </head>
 <body>
 <div id="app"><canvas id="view"></canvas></div>
@@ -265,54 +267,70 @@
 
 <!-- Lobby -->
 <div id="lobby">
-  <div class="lobby-inner">
-    <div class="brand">
-      <div class="kicker">BROWSER · SERVER-AUTHORITATIVE · 32 PLAYERS</div>
-      <h1>FRONT<em>LINE</em></h1>
-      <p>A 1 km² tactical battlefield. Ballistic gunplay, destructible cover, vehicles and a
-         shrinking zone. Runs in your browser — no download, no plugins.</p>
-      <div class="meta">
-        <span><b>60</b> Hz SIM</span>
-        <span><b>30</b> Hz NET</span>
-        <span><b>1</b> km² MAP</span>
-        <span><b>7</b> WEAPONS</span>
-      </div>
-      <div class="controls">
-        <b>WASD</b> move · <b>Shift</b> sprint<br>
-        <b>C</b> crouch · <b>X</b> prone · <b>Space</b> jump<br>
-        <b>LMB</b> fire · <b>RMB</b> aim · <b>R</b> reload<br>
-        <b>E</b> interact · <b>F</b> heal · <b>G</b> frag · <b>T</b> smoke<br>
-        <b>Tab</b> scoreboard · <b>Enter</b> chat · <b>Esc</b> menu
-      </div>
-      <div class="fine">Original code, procedural art and audio. No commercial game assets,
-        names or maps are used.</div>
-    </div>
+  <div class="lobby-shell">
+    <header class="lobby-topbar">
+      <a class="wordmark" href="/" aria-label="Frontline home">
+        <svg class="brand-mark" viewBox="0 0 32 36" aria-hidden="true"><path d="M2 4h27l-5 7H10v6h11l-5 7h-6v8H2z" fill="currentColor"/><path d="M25 15h5v17H19z" fill="currentColor" opacity=".45"/></svg>
+        <span>FRONTLINE<small>TACTICAL OPERATIONS</small></span>
+      </a>
+      <nav class="lobby-nav" aria-label="Game menu">
+        <button class="nav-button selected" id="nav-deploy">PLAY</button>
+        <button class="nav-button" id="nav-manual">FIELD MANUAL <span>↗</span></button>
+        <button class="nav-button" id="nav-settings">SETTINGS</button>
+      </nav>
+      <div class="build-tag"><i></i> DEVELOPMENT BUILD <span>0.2</span></div>
+    </header>
+    <main class="lobby-main">
+      <section class="operation-copy" aria-labelledby="operation-name">
+        <div class="eyebrow"><span class="section-index">01 /</span> ACTIVE THEATRE <span class="eyebrow-line"></span></div>
+        <h1 id="operation-name">BLACK<span>SHORE</span><i aria-hidden="true">01</i></h1>
+        <div class="operation-subtitle">EVERY METRE MATTERS.</div>
+        <p class="operation-description">An exposed coast. A closing perimeter.<br>Make your next move count.</p>
+        <div class="operation-facts">
+          <div><b>1 KM²</b><span>OPEN BATTLEFIELD</span></div>
+          <div><b>07</b><span>WEAPON CLASSES</span></div>
+          <div><b>60 HZ</b><span>SIMULATION</span></div>
+        </div>
+        <div class="terrain-caption"><span class="cross-icon">+</span><span id="lobby-location">BLACKSHORE / NORTHERN APPROACH</span></div>
+      </section>
+      <aside class="deployment-panel panel" aria-labelledby="lobby-title">
+        <div class="panel-heading"><span class="panel-serial">FL—01</span><span class="ready-indicator"><i></i> OPERATIONS</span></div>
+        <h2 id="lobby-title">YOUR NEXT MOVE.</h2>
+        <p class="panel-description">Choose a mode. Bring your friends.</p>
+        <div class="mode-options" role="radiogroup" aria-label="Game mode">
+          <button class="mode-option active" data-mode="br" role="radio" aria-checked="true"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11"/><circle cx="16" cy="16" r="5"/><path d="M16 1v7m0 16v7M1 16h7m16 0h7"/></svg><span><b>BATTLE ROYALE</b><small>ONE LIFE. LAST ONE STANDING.</small></span><i></i></button>
+          <button class="mode-option" data-mode="tdm" role="radio" aria-checked="false"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m5 5 9 9-4 4-9-9m26 18-9-9 4-4 9 9M5 27 27 5M3 21l8 8M21 3l8 8"/></svg><span><b>TEAM DEATHMATCH</b><small>TWO TEAMS. ONE FRONT.</small></span><i></i></button>
+        </div>
+        <label class="sr-only" for="in-mode">Game mode</label>
+        <select id="in-mode" class="mode-native" tabindex="-1" aria-hidden="true"><option value="br">Battle Royale</option><option value="tdm">Team Deathmatch</option></select>
+        <div class="deployment-divider"><span>OPERATOR DETAILS</span><span id="mode-capacity">32 MAX</span></div>
+        <div class="field"><label for="in-name">CALLSIGN <span>01</span></label><input id="in-name" maxlength="16" autocomplete="off" spellcheck="false" value="Soldier" placeholder="Your callsign"></div>
+        <div class="field room-field"><label for="in-room">ROOM CODE <span>02</span></label><input id="in-room" maxlength="12" autocomplete="off" spellcheck="false" value="ALPHA01" placeholder="Enter a room code"><button id="copy-link" aria-label="Copy room invite link" title="Copy invite link">↗</button></div>
+        <button id="join" class="btn primary deploy-button"><span>DEPLOY TO BLACKSHORE</span><span class="button-arrow">↗</span></button>
+        <button id="battest" class="btn ghost training-button"><span>ENTER TRAINING</span><span>OFFLINE ↗</span></button>
+        <div id="lobby-status" class="status" role="status">Enter a callsign and room code.</div>
+        <div id="lobby-roster" class="roster"></div>
+      </aside>
+    </main>
+    <footer class="lobby-footer">
+      <div class="footer-identity"><span class="signal-bars"><i></i><i></i><i></i><i></i></span> BROWSER MULTIPLAYER <span class="footer-dot">/</span> ORIGINAL BATTLEFIELD</div>
+      <div class="quick-controls"><span><kbd>W A S D</kbd> MOVE</span><span><kbd>LMB</kbd> FIRE</span><span><kbd>RMB</kbd> AIM</span><span><kbd>ESC</kbd> MENU</span></div>
+    </footer>
+  </div>
+</div>
 
-    <div class="panel">
-      <h2 id="lobby-title">DEPLOYMENT</h2>
-      <div class="field">
-        <label for="in-name">CALLSIGN</label>
-        <input id="in-name" maxlength="16" autocomplete="off" spellcheck="false" value="Soldier">
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label for="in-room">ROOM CODE</label>
-          <input id="in-room" maxlength="12" autocomplete="off" spellcheck="false" value="ALPHA01">
-        </div>
-        <div class="field">
-          <label for="in-mode">MODE</label>
-          <select id="in-mode">
-            <option value="br">Battle Royale</option>
-            <option value="tdm">Team Deathmatch</option>
-          </select>
-        </div>
-      </div>
-      <button id="join" class="btn primary">DEPLOY</button>
-      <button id="battest" class="btn ghost">OFFLINE TRAINING</button>
-      <button id="copy-link" class="btn ghost">COPY INVITE LINK</button>
-      <div id="lobby-status" class="status">Enter a callsign and room code.</div>
-      <div id="lobby-roster" class="roster"></div>
+<div id="manual-panel" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manual-title">
+  <div class="panel manual-panel">
+    <div class="panel-heading"><span class="panel-serial">FL / FIELD MANUAL</span><button id="manual-close" class="icon-button" aria-label="Close field manual">×</button></div>
+    <h2 id="manual-title">KNOW YOUR KIT.</h2>
+    <p class="panel-description">Stay mobile. Use cover. Watch the perimeter.</p>
+    <div class="manual-grid">
+      <section><h3>MOVEMENT</h3><p><kbd>WASD</kbd> Move</p><p><kbd>SHIFT</kbd> Sprint</p><p><kbd>SPACE</kbd> Jump</p><p><kbd>C / X / V</kbd> Crouch / prone / stand</p></section>
+      <section><h3>COMBAT</h3><p><kbd>LMB / RMB</kbd> Fire / aim</p><p><kbd>R</kbd> Reload</p><p><kbd>1 / 2 / Q</kbd> Equip / cycle weapon</p><p><kbd>G / T</kbd> Frag / smoke</p></section>
+      <section><h3>FIELDCRAFT</h3><p><kbd>E</kbd> Pick up / vehicle</p><p><kbd>F</kbd> Heal</p><p><kbd>TAB</kbd> Scoreboard</p><p><kbd>ENTER</kbd> Chat</p></section>
+      <section><h3>PLAY TOGETHER</h3><p>Use the same server link and room code.</p><p>Battle Royale is last-one-standing. Team Deathmatch assigns two teams.</p><p>Training runs locally with bots.</p></section>
     </div>
+    <button id="manual-done" class="btn primary">READY TO DEPLOY <span>↗</span></button>
   </div>
 </div>
 

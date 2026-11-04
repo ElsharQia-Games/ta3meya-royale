@@ -4,8 +4,8 @@
 **Reference bar:** PUBG (scale, ballistics, BR pacing), Battlefield (combined arms, destruction, audio), The Finals (movement feel, destruction spectacle, UI polish).
 
 ## Architecture (current)
-- **Client:** Three.js r170 + WebGL2. Procedural PBR-ish world, CSM shadows, post-processing, WebAudio synthesis. No external art assets (see ASSETS.md).
-- **Shared deterministic simulation:** plain ES modules imported by both client and server. Fixed 60 Hz step. Custom kinematic capsule controller over heightfield + AABB world. This is intentionally *not* Rapier: identical code on both sides gives exact prediction/replay, no WASM boot cost, and full control of step/slope/ground behaviour. Justified in DECISIONS.md.
+- **Client:** Three.js r170 + WebGL2. Original procedural equipment/world, CC0 terrain PBR maps, local OFL fonts, CSM, generated IBL, post-processing and WebAudio synthesis (see ASSETS.md).
+- **Shared simulation:** plain ES modules imported by both client and server, fixed 60 Hz, custom kinematic capsule controller over heightfield + AABB world. Identical-input replay is tested in Node; cross-browser bitwise determinism is not established. The Rapier decision and corrected determinism evidence are in DECISIONS.md.
 - **Server:** Node.js 20+, `ws`, 60 Hz simulation, 30 Hz snapshots. Authoritative movement, weapons, loot, zone, vehicles, destruction, modes. Lag-compensated hit resolution.
 - **Transport:** WebSocket over TCP (universal, tunnel-friendly, ordered/reliable). 60 Hz small binary inputs up, 30 Hz quantised/delta binary snapshots down. Evaluated WebTransport/WebRTC in DECISIONS.md.
 
@@ -57,7 +57,7 @@ evidence of the reference games' measured performance. `REFERENCE.md` records
 their provenance and the concrete visual observations.
 
 ## Working rules
-- Commit after every working slice; `main` always runnable.
+- Commit after every working slice; `master` always runnable.
 - Keep PROGRESS.md current (done / doing / bugs / gaps / next).
 - Never claim a measurement that was not run. Software-GL numbers are labelled as such.
-- All tuning lives in `shared/config.js`.
+- Gameplay tuning lives in `shared/config.js`; visual tokens/contracts are in `src/render/style.js`, `src/ui/design.css` and DESIGN.md.

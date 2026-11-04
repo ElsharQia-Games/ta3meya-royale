@@ -6,9 +6,31 @@ pre-agent baseline, not to the combined candidate. See
 
 ## Status
 
-The pre-agent baseline runs online and offline. The expanded acceptance criteria
-are **not complete**. The four original specialist sessions have produced changes;
-controller review and screenshot-driven iteration are in progress.
+The Blackshore design foundation is implemented and undergoing direct visual
+iteration. The expanded acceptance criteria are **not complete**. On 2026-11-04
+the user re-enabled the same four Big Pickle sessions; their worktrees are retained.
+
+### Current design checkpoint
+
+- Merged renderer `b8a71e3` and client `f486a67` groundwork into master.
+- New deployment/mode/manual/settings/HUD theme, live 3D lobby, shared weapon
+  geometry/anchors, seven equipment profiles, two-bone grip IK and reload phases,
+  articulated tactical characters, material/lighting corrections and close foliage.
+- Local CC0 grass PBR maps, facade trim/serials and distant coastal scenery added.
+- Current `npm test`: **66/66**; current production build passes, JS 772.92 kB
+  (215.53 kB gzip). Pass3 captured seven 1080p scenes with **zero browser errors**;
+  deployment, hip, ADS and reload images were read directly.
+- Pass1 and pass2 actual 1920×1080 screenshots had no browser errors. Direct
+  review identified bulky foreground equipment, sparse scenery and small type;
+  pass3 improves the ground and framing but reload hands remain low in frame,
+  equipment surfaces are too plain, and trees/distant land remain stylized.
+  Full reload/animation/gameplay coverage is ongoing.
+- Correct real frame timing now reports roughly **0.9–3 fps on SwiftShader** in
+  pass2, not the old clamped 10 fps floor. This is not hardware performance evidence.
+- Quaternius free Standard archive downloaded and its CC0 license read; selected
+  nature assets are being evaluated. No paid assets or external server deployed.
+
+The following baseline notes are historical until the combined checks are rerun.
 
 - `npm install && npm run build && npm start` → open `http://localhost:3000`,
   enter a room code, deploy. Friends join the same URL/room.

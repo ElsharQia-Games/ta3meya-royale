@@ -3,27 +3,24 @@
 import * as THREE from 'three';
 import { CFG } from '../../shared/config.js';
 import { clamp, damp } from '../../shared/math.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { createWeaponModel } from './weapon-model.js';
+import { solveTwoBone } from './animation.js';
 
-const PROFILES = {
-  pistol:   { len: 0.26, body: 0x2a2d31, wood: 0x3a2f26, mag: 0.12, sight: false, scale: 0.85 },
-  smg:      { len: 0.42, body: 0x26292d, wood: 0x2f3236, mag: 0.22, sight: true, scale: 0.95 },
-  ar:       { len: 0.56, body: 0x22262a, wood: 0x3d3a32, mag: 0.26, sight: true, scale: 1.0 },
-  dmr:      { len: 0.62, body: 0x2b2f33, wood: 0x3b3229, mag: 0.24, sight: true, scale: 1.0 },
-  shotgun:  { len: 0.58, body: 0x2a2622, wood: 0x6b4a2c, mag: 0.18, sight: false, scale: 1.05 },
-  sniper:   { len: 0.74, body: 0x25292c, wood: 0x3a3d35, mag: 0.2, sight: true, scale: 1.05 },
-  lmg:      { len: 0.66, body: 0x23272b, wood: 0x35383c, mag: 0.34, sight: true, scale: 1.1 },
-};
+const UP = new THREE.Vector3(0, 1, 0);
+const smooth = x => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
 
 export class ViewModel {
-  constructor(camera, scene) {
+  constructor(camera, scene, renderer = null) {
     this.camera = camera;
+    this.renderer = renderer;
     this.root = new THREE.Group();
     this.root.name = 'viewmodel';
     this.root.position.set(0.24, -0.22, -0.5);
     this.camera.add(this.root);
     scene.add(camera);
-    this.gun = new THREE.Group();
-    this.root.add(this.gun);
+    this.gun = null;
+    this.model = null;
     this.weapon = null;
     this.kick = 0;
     this.kickYaw = 0;
@@ -34,46 +31,58 @@ export class ViewModel {
     this.ads = 0;
     this.lastLook = [0, 0];
     this._mats = {
-      body: new THREE.MeshStandardMaterial({ color: 0x24282c, roughness: 0.42, metalness: 0.72 }),
-      wood: new THREE.MeshStandardMaterial({ color: 0x5a4229, roughness: 0.75, metalness: 0.05 }),
-      dark: new THREE.MeshStandardMaterial({ color: 0x141618, roughness: 0.5, metalness: 0.5 }),
-      accent: new THREE.MeshStandardMaterial({ color: 0xf2b63a, roughness: 0.4, metalness: 0.3, emissive: 0x3a2a08 }),
+      sleeve: new THREE.MeshStandardMaterial({ color: 0x657056, roughness: .95 }),
+      glove: new THREE.MeshStandardMaterial({ color: 0x414c3c, roughness: .87 }),
+      trim: new THREE.MeshStandardMaterial({ color: 0x222f29, roughness: .65 }),
     };
+    this.arms = [this.makeArm(-1), this.makeArm(1)];
     this.build('ar');
   }
 
   build(key) {
     if (this.weapon === key) return;
+    this.model?.dispose();
     this.weapon = key;
-    const P = PROFILES[key] || PROFILES.ar;
-    while (this.gun.children.length) {
-      const c = this.gun.children.pop();
-      c.geometry?.dispose();
+    this.model = createWeaponModel(key, true);
+    this.gun = this.model.root;
+    this.root.add(this.gun);
+    this.renderer?.registerObject(this.root);
+    this.basePos = new THREE.Vector3(key === 'pistol' ? .2 : .27, -.24, key === 'pistol' ? -.55 : -.68);
+    this.adsPos = new THREE.Vector3(0, -this.model.profile.sightY, -.55);
+  }
+
+  makeArm(side) {
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(.072, .087, 1, 10), this._mats.sleeve);
+    const lower = new THREE.Mesh(new THREE.CylinderGeometry(.053, .07, 1, 10), this._mats.sleeve);
+    const elbow = new THREE.Mesh(new THREE.SphereGeometry(.071, 10, 6), this._mats.sleeve);
+    const hand = new THREE.Group();
+    hand.name = side < 0 ? 'support_hand' : 'trigger_hand';
+    const palm = new THREE.Mesh(new RoundedBoxGeometry(.07, .065, .092, 1, .018), this._mats.glove);
+    hand.add(palm);
+    for (let i = 0; i < 4; i++) {
+      const finger = new THREE.Mesh(new RoundedBoxGeometry(.012, .045, .048, 1, .005), this._mats.glove);
+      finger.position.set(-.023 + i * .015, .011, -.043); hand.add(finger);
     }
-    const add = (w, h, d, x, y, z, mat = 'body') => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), this._mats[mat]);
-      m.position.set(x, y, z);
-      m.castShadow = false; m.receiveShadow = false;
-      this.gun.add(m);
-      return m;
+    const strap = new THREE.Mesh(new RoundedBoxGeometry(.076, .015, .08, 1, .004), this._mats.trim);
+    strap.position.set(0, -.025, .015); hand.add(strap);
+    this.root.add(upper, lower, elbow, hand);
+    return { side, upper, lower, elbow, hand };
+  }
+
+  poseArm(arm, target) {
+    const shoulder = arm.side < 0 ? [-.25, -.39, .22] : [.28, -.35, .26];
+    const pole = [arm.side * .6, -.5, -.08];
+    const pose = solveTwoBone(shoulder, target.toArray(), pole, .38, .38);
+    const start = new THREE.Vector3(...shoulder), elbow = new THREE.Vector3(...pose.elbow), end = new THREE.Vector3(...pose.hand);
+    const place = (mesh, a, b) => {
+      const dir = new THREE.Vector3().subVectors(b, a);
+      mesh.position.copy(a).add(b).multiplyScalar(.5);
+      mesh.scale.y = dir.length();
+      mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
     };
-    const L = P.len;
-    add(0.06, 0.085, L, 0, 0, -L / 2 + 0.04);
-    add(0.028, 0.028, L * 0.55, 0, 0.008, -L * 0.78);
-    add(0.052, 0.075, L * 0.32, 0, -0.055, L * 0.18, 'wood');
-    add(0.05, 0.15, 0.07, 0, -0.11, -L * 0.16, 'dark');
-    add(0.055, 0.11, P.mag, 0, -0.12, -L * 0.34, 'dark');
-    add(0.02, 0.045, 0.02, 0, 0.075, -L * 0.42, 'dark');
-    if (P.sight) {
-      add(0.035, 0.035, 0.1, 0, 0.075, -L * 0.42, 'dark');
-      add(0.012, 0.012, 0.012, 0, 0.09, -L * 0.47, 'accent');
-    } else {
-      add(0.008, 0.02, 0.01, 0, 0.062, -L * 0.88, 'accent');
-    }
-    add(0.05, 0.05, 0.16, 0, -0.02, L * 0.38, 'body');
-    this.gun.scale.setScalar(P.scale);
-    this.basePos = new THREE.Vector3(0.24, -0.22, -0.5);
-    this.adsPos = new THREE.Vector3(0, -0.115, -0.36);
+    place(arm.upper, start, elbow); place(arm.lower, elbow, end);
+    arm.elbow.position.copy(elbow); arm.hand.position.copy(end);
+    arm.hand.rotation.set(arm.side < 0 ? -.35 : -.1, arm.side < 0 ? -.2 : .12, arm.side < 0 ? .45 : -.1);
   }
 
   fire(strength = 1) {
@@ -100,25 +109,42 @@ export class ViewModel {
 
     const hip = this.basePos || new THREE.Vector3(0.24, -0.22, -0.5);
     const aim = this.adsPos || new THREE.Vector3(0, -0.115, -0.36);
-    const px = hip.x + (aim.x - hip.x) * this.ads + bx + this.swayX;
-    const py = hip.y + (aim.y - hip.y) * this.ads + by + this.swayY;
+    const free = 1 - this.ads * .96;
+    const px = hip.x + (aim.x - hip.x) * this.ads + (bx + this.swayX) * free;
+    const py = hip.y + (aim.y - hip.y) * this.ads + (by + this.swayY) * free;
     const pz = hip.z + (aim.z - hip.z) * this.ads + this.kick * 0.055;
     this.root.position.set(px, py, pz);
 
-    let rx = this.kick * 0.12 + this.swayY * 2.4;
-    let ry = this.kickYaw + this.swayX * 2.2;
+    let rx = this.kick * 0.09 + this.swayY * 2.4 * free;
+    let ry = this.kickYaw + this.swayX * 2.2 * free;
     let rz = 0;
 
-    // reload: drop and rotate the weapon out of frame
+    const support = this.model.leftGrip.position.clone();
+    this.model.magazine.position.copy(this.model.magRest);
+    this.model.magazine.rotation.set(0, 0, 0);
+    this.model.magazine.visible = this.weapon !== 'shotgun';
+    if (this.model.reticle) this.model.reticle.visible = this.ads > .6;
+    if (this.weapon === 'pistol') this.model.slide.position.z = this.kick * .025;
+
+    // Magazine out -> replacement in -> settle. The pose is derived solely
+    // from authoritative reload time; it never changes ammunition itself.
     if (reloadT > 0) {
       const w = ctx.weapon ? CFG.WEAPONS[ctx.weapon] : null;
       const dur = w?.reload || 2;
       const t = 1 - clamp(reloadT / dur, 0, 1);
-      const s = Math.sin(Math.min(1, t * 1.6) * Math.PI);
-      rx += s * 0.55;
-      ry += s * 0.35;
-      rz += s * 0.5;
-      this.root.position.y -= s * 0.12;
+      const s = Math.sin(t * Math.PI);
+      rx += s * .16; ry += s * .25; rz += s * .38;
+      this.root.position.y += s * .065;
+      const handToMag = smooth(t / .17) * (1 - smooth((t - .81) / .19));
+      const extract = smooth((t - .15) / .23) * (1 - smooth((t - .56) / .25));
+      if (this.weapon !== 'shotgun') {
+        this.model.magazine.position.y -= extract * .23;
+        this.model.magazine.rotation.z = extract * -.18;
+        support.lerp(this.model.magazine.position.clone().add(new THREE.Vector3(-.025, -.045, .015)), handToMag);
+      } else {
+        support.y -= .035 + Math.sin(t * Math.PI * 4) * .035;
+        support.z += .12 * s;
+      }
     }
     if (switchT > 0) {
       const s = clamp(switchT / 0.5, 0, 1);
@@ -126,12 +152,13 @@ export class ViewModel {
       rx += s * 0.5;
     }
     this.root.rotation.set(rx, ry, rz);
+    this.poseArm(this.arms[0], support);
+    this.poseArm(this.arms[1], this.model.rightGrip.position);
     this.root.visible = !ctx.hide;
   }
 
   muzzleWorld() {
-    const v = new THREE.Vector3(0, 0.01, -(this.weapon ? (PROFILES[this.weapon]?.len || 0.5) * 1.1 : 0.5));
-    this.gun.localToWorld(v);
-    return v;
+    this.root.updateWorldMatrix(true, true);
+    return this.model.muzzle.getWorldPosition(new THREE.Vector3());
   }
 }

@@ -84,6 +84,9 @@ class App {
     this.last = performance.now();
     this.time = 0;
     this.endShown = false;
+    this.manualOpen = false;
+    this.preparing = false;
+    this.previewSoldier = null;
     this.hadLock = false;
     this.spectateId = null;
     this.spectateT = 0;
@@ -103,6 +106,7 @@ class App {
     this.initLobby();
     this.bindWindow();
     requestAnimationFrame((t) => this.frame(t));
+    setTimeout(() => this.initBackdrop(), 40);
   }
 
   // -------------------------------------------------------------------------
@@ -115,6 +119,32 @@ class App {
     $('in-name').value = name.slice(0, 16);
     $('in-room').value = room.slice(0, 12);
     $('in-mode').value = this.settings.mode || 'br';
+    const selectMode = mode => {
+      $('in-mode').value = mode;
+      document.querySelectorAll('.mode-option').forEach(button => {
+        const selected = button.dataset.mode === mode;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-checked', String(selected));
+        button.tabIndex = selected ? 0 : -1;
+      });
+      $('mode-capacity').textContent = `${CFG.MODES[mode].maxPlayers} MAX`;
+    };
+    selectMode($('in-mode').value);
+    $('in-mode').addEventListener('change', () => selectMode($('in-mode').value));
+    document.querySelectorAll('.mode-option').forEach(button => {
+      button.addEventListener('click', () => selectMode(button.dataset.mode));
+      button.addEventListener('keydown', e => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+        e.preventDefault();
+        const next = button.dataset.mode === 'br' ? 'tdm' : 'br';
+        selectMode(next);
+        document.querySelector(`[data-mode="${next}"]`).focus();
+      });
+    });
+    $('nav-deploy').onclick = () => $('in-name').focus();
+    $('nav-settings').onclick = () => this.hud.toggleSettings(true);
+    $('nav-manual').onclick = () => this.toggleManual(true);
+    $('manual-close').onclick = $('manual-done').onclick = () => this.toggleManual(false);
 
     $('join').addEventListener('click', () => this.joinOnline());
     $('battest').addEventListener('click', () => this.joinOffline());
@@ -124,6 +154,50 @@ class App {
 
     const mode = $('in-mode').value;
     this.hud.setLobbyRoster([], mode, MATCH_STATE.LOBBY);
+    this.setLobbyStatus('Use the same room code to play together.');
+  }
+
+  toggleManual(open) {
+    this.manualOpen = open;
+    $('manual-panel').classList.toggle('hidden', !open);
+    this.input.clearHeld();
+    if (open) { this.input.releaseLock(); $('manual-close').focus(); }
+    else $('nav-manual').focus();
+    this.syncInputMode();
+  }
+
+  initBackdrop() {
+    if (this.active || this.world) return;
+    this.buildSession(CFG.MAP.SEED);
+    this.previewSoldier = new CharacterView(this.renderer.scene, -7, this.world);
+    this.renderer.registerObject(this.previewSoldier.model.root);
+    this.previewSoldier.applyState({
+      x: 20.85, y: this.world.terrainHeight(20.85, -164.3), z: -164.3,
+      yaw: Math.PI + 0.3, pitch: -0.08, stance: STANCE.STAND,
+      alive: true, hp: 100, name: '', team: 0,
+    });
+    this.previewReady = true;
+  }
+
+  updateBackdrop(dt) {
+    if (!this.world) return;
+    const camera = this.renderer.camera;
+    const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    camera.position.set(20 + (motion ? Math.sin(this.time * 0.07) * 0.12 : 0), this.world.terrainHeight(20, -160) + 1.65, -160);
+    camera.rotation.set(-0.025, motion ? Math.sin(this.time * 0.055) * 0.012 : 0, 0);
+    if (camera.fov !== 56) { camera.fov = 56; camera.updateProjectionMatrix(); }
+    if (this.previewSoldier) {
+      this.previewSoldier.update(dt, camera.position.toArray());
+      this.previewSoldier.plate.sprite.visible = false;
+    }
+    this.worldView.update(dt, this.time);
+    if (this.viewmodel) this.viewmodel.root.visible = false;
+  }
+
+  finishBackdrop() {
+    if (this.previewSoldier) { this.previewSoldier.dispose(); this.previewSoldier = null; }
+    this.renderer.camera.fov = this.settings.fov;
+    this.renderer.camera.updateProjectionMatrix();
   }
 
   readLobby() {
@@ -196,11 +270,12 @@ class App {
     this.audio.setVolume(this.settings.volume);
     this.audio.setMuted(this.settings.muted);
 
-    const first = !this.world;
+    const first = !this.active;
     if (first) {
       this.setLobbyStatus('Generating the battlefield…');
       setTimeout(() => {
         this.buildSession(msg.mapSeed ?? CFG.MAP.SEED);
+        this.finishBackdrop();
         this.localWeapons = msg.mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
         this.active = true;
         this.input.enabled = true;
@@ -250,6 +325,8 @@ class App {
   // Offline session
   // -------------------------------------------------------------------------
   joinOffline() {
+    if (this.active || this.preparing || this.net) return;
+    this.preparing = true;
     const { name, mode } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
@@ -257,6 +334,7 @@ class App {
     this.setLobbyStatus('Generating the battlefield…');
     setTimeout(() => {
       this.buildSession(CFG.MAP.SEED);
+      this.finishBackdrop();
       const game = new Game({ mode, mapSeed: CFG.MAP.SEED, seed: 0x51f15e });
       this.offlineGame = game;
       const me = game.addPlayer(name, 0, { connected: true });
@@ -268,6 +346,7 @@ class App {
       this.offlineInputs.clear();
       this.mode = 'offline';
       this.active = true;
+      this.preparing = false;
       this.input.enabled = true;
       this.localWeapons = mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
       this.hud.setLobbyVisible(false);
@@ -283,7 +362,7 @@ class App {
     this.world = new World(seed);
     this.worldView = new WorldRenderer(this.renderer, this.world);
     this.effects = new Effects(this.renderer, this.renderer.camera);
-    this.viewmodel = new ViewModel(this.renderer.camera, this.renderer.scene);
+    this.viewmodel = new ViewModel(this.renderer.camera, this.renderer.scene, this.renderer);
     this.prediction = new Prediction(this.world);
     this.hud.world = this.world;
     // Frame the camera somewhere sensible while the first snapshot lands.
@@ -308,6 +387,10 @@ class App {
 
   syncInputMode() {
     this.input.textMode = this.uiBlocked();
+    if (this.hud.settingsOpen) {
+      $('settings-resume').textContent = this.active ? 'RESUME OPERATION' : 'BACK TO DEPLOYMENT';
+      $('settings-leave').classList.toggle('hidden', !this.active);
+    }
   }
 
   forceReconnect() {
@@ -348,7 +431,7 @@ class App {
   // Input / simulation stepping
   // -------------------------------------------------------------------------
   uiBlocked() {
-    return !this.active || this.hud.chatOpen || this.hud.settingsOpen || this.endShown;
+    return !this.active || this.manualOpen || this.hud.chatOpen || this.hud.settingsOpen || this.endShown;
   }
 
   frame(now) {
@@ -730,7 +813,7 @@ class App {
       vx: pred.vel[0], vz: pred.vel[2],
       yaw: pred.yaw, pitch: pred.pitch,
       stance: pred.stance, grounded: pred.grounded, inWater: pred.inWater,
-      alive: snap.alive !== 0, hp: snap.hp ?? 100, armor: snap.armor ?? 0,
+      alive: snap.alive === undefined ? true : !!snap.alive, hp: snap.hp ?? 100, armor: snap.armor ?? 0,
       weapon: w, weapons: this.localWeapons.slice(), slot: snap.slot ?? 0,
       mag: snap.mag ?? 0, reserve: snap.res ?? 0,
       grenades: snap.gren ?? 0, smokes: snap.smoke ?? 0,
@@ -744,7 +827,7 @@ class App {
   }
 
   respawnIn(snap, pred) {
-    if (snap.alive !== 0 || this.state?.mode !== 'tdm') return 0;
+    if (snap.alive === undefined || snap.alive || this.state?.mode !== 'tdm') return 0;
     if (!this.deadAt) this.deadAt = this.time;
     return Math.max(0, CFG.MODES.tdm.respawn - (this.time - this.deadAt));
   }
@@ -778,6 +861,7 @@ class App {
   // -------------------------------------------------------------------------
   render(dt) {
     if (!this.world) { this.renderer.render(dt); return; }
+    if (!this.active) { this.updateBackdrop(dt); this.renderer.render(dt); return; }
     const camera = this.renderer.camera;
     const lp = this.active ? this.getLocalPlayer() : null;
     const camLp = this.spectateCamera(lp);
@@ -820,7 +904,8 @@ class App {
         seen.add(id);
         let view = this.characters.get(id);
         if (!view) {
-          view = new CharacterView(this.renderer.scene, id);
+          view = new CharacterView(this.renderer.scene, id, this.world);
+          this.renderer.registerObject(view.model.root);
           this.characters.set(id, view);
         }
         view.applyState({
@@ -851,7 +936,8 @@ class App {
         seen.add(p.id);
         let view = this.characters.get(p.id);
         if (!view) {
-          view = new CharacterView(this.renderer.scene, p.id);
+          view = new CharacterView(this.renderer.scene, p.id, this.world);
+          this.renderer.registerObject(view.model.root);
           this.characters.set(p.id, view);
         }
         view.applyState({
@@ -1091,9 +1177,18 @@ class App {
   bindWindow() {
     addEventListener('resize', () => this.renderer.resize());
     addEventListener('keydown', (e) => {
+      if (this.manualOpen) {
+        if (e.code === 'Escape') { e.preventDefault(); this.toggleManual(false); }
+        if (e.code === 'Tab') this.trapModalFocus(e, $('manual-panel'));
+        return;
+      }
+      if (this.hud.settingsOpen && e.code === 'Tab') {
+        this.trapModalFocus(e, $('settings-panel'));
+        return;
+      }
+      if (e.repeat) return;
       if (e.code === 'Tab') {
-        e.preventDefault();
-        if (this.active && !this.hud.chatOpen) this.hud.toggleScoreboard(true);
+        if (this.active && !this.uiBlocked()) { e.preventDefault(); this.hud.toggleScoreboard(true); }
       }
       if (e.code === 'Enter' && this.active && !this.hud.chatOpen
         && !this.hud.settingsOpen && !this.endShown) {
@@ -1143,6 +1238,13 @@ class App {
         this.syncInputMode();
       }
     });
+  }
+
+  trapModalFocus(e, root) {
+    const items = [...root.querySelectorAll('button:not(:disabled), input, select, [tabindex="0"]')];
+    const first = items[0], last = items.at(-1);
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
   }
 }
 

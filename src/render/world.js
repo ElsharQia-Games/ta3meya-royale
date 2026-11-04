@@ -6,6 +6,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { CFG, MATERIALS } from '../../shared/config.js';
 import { texture, TILE } from './textures.js';
 import { clamp, smoothstep } from '../../shared/math.js';
+import { BLACKSHORE } from './style.js';
+import { pineGeometry, GroundCover } from './foliage.js';
 
 const _v = new THREE.Vector3();
 
@@ -77,10 +79,12 @@ export class WorldRenderer {
     this._buildTerrain();
     this._buildRoads();
     this._buildBoxes();
+    this._buildArchitecture();
     this._buildTrees();
     this._buildRocks();
     this._buildWater();
     this._buildBoundaryFog();
+    this.groundCover = new GroundCover(renderer, world);
   }
 
   // -------------------------------------------------------------------------
@@ -92,11 +96,11 @@ export class WorldRenderer {
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
-    const grass = new THREE.Color(0x76855a);
-    const dry = new THREE.Color(0x8d8259);
-    const rock = new THREE.Color(0x767b78);
-    const sand = new THREE.Color(0x9c9169);
-    const dark = new THREE.Color(0x54613f);
+    const grass = new THREE.Color(BLACKSHORE.terrain.grass);
+    const dry = new THREE.Color(BLACKSHORE.terrain.dry);
+    const rock = new THREE.Color(BLACKSHORE.terrain.rock);
+    const sand = new THREE.Color(BLACKSHORE.terrain.sand);
+    const dark = new THREE.Color(BLACKSHORE.terrain.shade);
     const c = new THREE.Color();
 
     for (let i = 0; i < pos.count; i++) {
@@ -116,19 +120,39 @@ export class WorldRenderer {
       }
       // Town pads read as worn ground.
       if (w.nearTown(x, z, 1.0)) c.lerp(new THREE.Color(0x7e7a62), 0.35);
+      // The photographed albedo supplies the fine colour detail; vertex colour
+      // is a gentle macro tint, not a second dark albedo multiplied over it.
+      c.lerp(new THREE.Color(0xffffff), .72);
       colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
     const map = texture('ground');
     map.repeat.set(140, 140);
+    const bumpMap = texture('grainHeight');
+    bumpMap.repeat.set(450, 450);
     const mat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
-      map, vertexColors: true, roughness: 1, metalness: 0,
+      map, bumpMap, bumpScale: .035, vertexColors: true, roughness: .97, metalness: 0,
     }));
     this.terrain = new THREE.Mesh(geo, mat);
     this.terrain.receiveShadow = true;
     this.terrain.name = 'terrain';
     this.scene.add(this.terrain);
+    const loader = new THREE.TextureLoader();
+    const load = (file, colour) => loader.loadAsync(`/textures/${file}.webp`).then(tex => {
+      tex.colorSpace = colour ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(150, 150);
+      tex.anisotropy = Math.min(8, this.renderer.renderer.capabilities.getMaxAnisotropy());
+      return tex;
+    });
+    this.assetsReady = Promise.all([
+      load('grass-albedo', true), load('grass-normal', false), load('grass-roughness', false),
+    ]).then(([albedo, normal, roughness]) => {
+      mat.map = albedo; mat.normalMap = normal; mat.normalScale.set(.5, .5);
+      mat.bumpMap = null; mat.roughnessMap = roughness; mat.needsUpdate = true;
+      this.assetsLoaded = true;
+    }).catch(error => { this.assetError = String(error); this.assetsLoaded = true; console.error('Terrain texture load failed', error); });
   }
 
   // -------------------------------------------------------------------------
@@ -230,6 +254,62 @@ export class WorldRenderer {
     this.dynamicMeshes.delete(id);
   }
 
+  _buildArchitecture() {
+    // Thin trim/paint follows existing wall colliders. It creates no apparent
+    // extra cover or traversable structure that the simulation does not know.
+    const trim = [], bands = [];
+    const add = (list, x, y, z, w, h, d) => {
+      const geometry = new THREE.BoxGeometry(w, h, d);
+      geometry.translate(x, y, z); list.push(geometry);
+    };
+    for (const b of this.world.boxes) {
+      if (b.tag !== 'wall' || !b.render) continue;
+      const w = b.max[0] - b.min[0], h = b.max[1] - b.min[1], d = b.max[2] - b.min[2];
+      if (h < .65 || Math.max(w, d) < 1.0) continue;
+      const x = (b.min[0] + b.max[0]) / 2, z = (b.min[2] + b.max[2]) / 2;
+      add(bands, x, b.min[1] + .24, z, w + .013, .17, d + .013);
+    }
+    const labels = document.createElement('canvas'); labels.width = 1024; labels.height = 512;
+    const ctx = labels.getContext('2d');
+    const signGeometries = [];
+    this.world.buildings.forEach((b, i) => {
+      const top = b.y0 + b.floors * b.floorH;
+      for (const side of [-1, 1]) {
+        add(trim, b.x, top - .12, b.z + side * b.d / 2, b.w + .16, .13, .3);
+        add(trim, b.x + side * b.w / 2, top - .12, b.z, .3, .13, b.d + .16);
+        for (const end of [-1, 1]) {
+          add(trim, b.x + side * (b.w / 2 - .08), b.y0 + (top - b.y0) / 2, b.z + end * b.d / 2, .13, top - b.y0, .27);
+        }
+      }
+      const column = i % 8, row = Math.floor(i / 8) % 8;
+      ctx.fillStyle = '#263c37'; ctx.fillRect(column * 128, row * 64, 128, 64);
+      ctx.fillStyle = '#d1d9b9'; ctx.font = 'bold 31px monospace'; ctx.textAlign = 'left';
+      ctx.fillText(String(i + 1).padStart(2, '0'), column * 128 + 9, row * 64 + 35);
+      ctx.font = '8px monospace'; ctx.fillText('BLACKSHORE', column * 128 + 9, row * 64 + 51);
+      ctx.fillStyle = '#d7a866'; ctx.fillRect(column * 128 + 90, row * 64 + 12, 26, 4);
+      for (const side of [-1, 1]) {
+        const sign = new THREE.PlaneGeometry(.95, .46);
+        if (side < 0) sign.rotateY(Math.PI);
+        sign.translate(b.x + b.w * .26, b.y0 + 2.68, b.z + side * (b.d / 2 + .131));
+        const uv = sign.attributes.uv;
+        for (let n = 0; n < uv.count; n++) uv.setXY(n, (column + uv.getX(n)) / 8, 1 - (row + 1 - uv.getY(n)) / 8);
+        signGeometries.push(sign);
+      }
+    });
+    const atlas = new THREE.CanvasTexture(labels); atlas.colorSpace = THREE.SRGBColorSpace;
+    for (const [geometries, material, name] of [
+      [trim, new THREE.MeshStandardMaterial({ color: 0xada98b, roughness: .9 }), 'architecture_trim'],
+      [bands, new THREE.MeshStandardMaterial({ color: 0x667366, roughness: .93 }), 'painted_plinths'],
+      [signGeometries, new THREE.MeshStandardMaterial({ map: atlas, roughness: .85 }), 'building_serials'],
+    ]) {
+      if (!geometries.length) continue;
+      const merged = mergeGeometries(geometries, false); geometries.forEach(g => g.dispose());
+      const mesh = new THREE.Mesh(merged, this.renderer.registerMaterial(material));
+      mesh.name = name; mesh.receiveShadow = true; mesh.castShadow = false;
+      this.scene.add(mesh); this.staticMeshes.push(mesh);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Vegetation
   // -------------------------------------------------------------------------
@@ -240,24 +320,30 @@ export class WorldRenderer {
     const trunkGeo = new THREE.CylinderGeometry(0.62, 1, 1, 7, 1, false);
     trunkGeo.translate(0, 0.5, 0);
     const trunkMat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
-      map: texture('wood'), color: 0x6b5236, roughness: 0.95,
+      map: texture('bark'), color: 0xb9b7a1, roughness: 0.95,
     }));
     const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
     trunkMesh.castShadow = true; trunkMesh.receiveShadow = true;
     trunkMesh.name = 'tree_trunks';
 
-    const pineGeo = new THREE.ConeGeometry(1, 1, 8, 1, false);
-    pineGeo.translate(0, 0.5, 0);
+    const pineGeo = pineGeometry();
     const pineMat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
-      color: 0x2f4a30, roughness: 0.92, metalness: 0,
+      color: 0xffffff, roughness: 0.95, metalness: 0, side: THREE.DoubleSide,
     }));
-    const pineMesh = new THREE.InstancedMesh(pineGeo, pineMat, pines.length * 3);
+    const pineMesh = new THREE.InstancedMesh(pineGeo, pineMat, pines.length);
     pineMesh.castShadow = true; pineMesh.receiveShadow = true;
     pineMesh.name = 'pine_canopy';
 
     const oakGeo = new THREE.IcosahedronGeometry(1, 1);
+    const oakPos = oakGeo.attributes.position;
+    for (let i = 0; i < oakPos.count; i++) {
+      const x = oakPos.getX(i), y = oakPos.getY(i), z = oakPos.getZ(i);
+      const f = 1 + .1 * Math.sin(x * 11 + y * 8 + z * 17);
+      oakPos.setXYZ(i, x * f, y * f, z * f);
+    }
+    oakGeo.computeVertexNormals();
     const oakMat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
-      color: 0x46603a, roughness: 0.9, flatShading: true,
+      color: 0xffffff, roughness: 0.95, flatShading: true,
     }));
     const oakMesh = new THREE.InstancedMesh(oakGeo, oakMat, oaks.length * 3);
     oakMesh.castShadow = true; oakMesh.receiveShadow = true;
@@ -277,24 +363,16 @@ export class WorldRenderer {
       s.set(t.r, trunkH, t.r);
       m.compose(p, q, s);
       trunkMesh.setMatrixAt(ti, m);
-      color.setHSL(0.08, 0.18, 0.26 + (ti % 7) * 0.008);
+      color.setHex(0x8c826b).lerp(new THREE.Color(0xb8ac8d), (ti % 7) * .045);
       trunkMesh.setColorAt(ti, color);
       ti++;
       if (t.type === 'pine') {
-        const base = t.y + trunkH * 0.55;
-        for (let k = 0; k < 3; k++) {
-          const f = k / 2;
-          const rad = t.scale * (2.0 - f * 1.15);
-          const hgt = t.h * (0.46 - f * 0.09);
-          p.set(t.x, base + t.h * 0.16 * k, t.z);
-          e.set(0, t.rot + k * 0.7, 0); q.setFromEuler(e);
-          s.set(rad, hgt, rad);
-          m.compose(p, q, s);
-          pineMesh.setMatrixAt(pi, m);
-          color.setHSL(0.31, 0.28, 0.16 + k * 0.022 + (pi % 5) * 0.004);
-          pineMesh.setColorAt(pi, color);
-          pi++;
-        }
+        p.set(t.x, t.y + t.h * .22, t.z);
+        e.set(.015 * Math.sin(t.rot), t.rot, .018 * Math.cos(t.rot)); q.setFromEuler(e);
+        s.set(t.scale * 2.15, t.h * .75, t.scale * 2.15);
+        m.compose(p, q, s); pineMesh.setMatrixAt(pi, m);
+        color.setHex(BLACKSHORE.foliage[pi % BLACKSHORE.foliage.length]);
+        pineMesh.setColorAt(pi++, color);
       } else {
         const base = t.y + trunkH * 0.82;
         for (let k = 0; k < 3; k++) {
@@ -306,7 +384,8 @@ export class WorldRenderer {
           s.set(rad, rad * 0.82, rad);
           m.compose(p, q, s);
           oakMesh.setMatrixAt(oi, m);
-          color.setHSL(0.24 + k * 0.01, 0.3, 0.19 + (oi % 6) * 0.006);
+          color.setHex(BLACKSHORE.foliage[oi % BLACKSHORE.foliage.length]);
+          color.lerp(new THREE.Color(0xada570), k * .12);
           oakMesh.setColorAt(oi, color);
           oi++;
         }
@@ -324,9 +403,9 @@ export class WorldRenderer {
 
   _buildRocks() {
     const rocks = this.world.rocks;
-    const geo = new THREE.DodecahedronGeometry(1, 0);
+    const geo = new THREE.DodecahedronGeometry(1, 1);
     const mat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
-      map: texture('rock'), color: 0x8d9094, roughness: 0.96, metalness: 0.02, flatShading: true,
+      map: texture('rock'), color: 0xffffff, roughness: 0.96, metalness: 0.02, flatShading: true,
     }));
     const mesh = new THREE.InstancedMesh(geo, mat, rocks.length);
     mesh.castShadow = true; mesh.receiveShadow = true;
@@ -338,7 +417,7 @@ export class WorldRenderer {
       s.set(r.r * 0.9, r.h * 0.62, r.r * 0.9);
       m.compose(p, q, s);
       mesh.setMatrixAt(i, m);
-      color.setHSL(0.6, 0.02, 0.4 + (i % 9) * 0.008);
+      color.setHex(0xa8aea3).lerp(new THREE.Color(0xc9bca2), (i % 9) * .035);
       mesh.setColorAt(i, color);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -360,7 +439,7 @@ export class WorldRenderer {
       depthWrite: false,
       uniforms: {
         uTime: { value: 0 },
-        uSun: { value: new THREE.Vector3(-0.42, 0.66, 0.32).normalize() },
+        uSun: { value: new THREE.Vector3(...BLACKSHORE.sunDirection).normalize() },
         uShallow: { value: new THREE.Color(0x3f7a78) },
         uDeep: { value: new THREE.Color(0x12333c) },
         uSky: { value: new THREE.Color(0x9dc4dd) },
@@ -401,6 +480,8 @@ export class WorldRenderer {
           spec += pow(max(dot(N, H), 0.0), 18.0) * 0.12;
           col += vec3(1.0, 0.96, 0.88) * spec;
           gl_FragColor = vec4(col, 0.9);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });
@@ -413,19 +494,34 @@ export class WorldRenderer {
   }
 
   _buildBoundaryFog() {
-    // A ring of low-poly hills hides the hard map edge without new collision.
-    const geo = new THREE.CylinderGeometry(CFG.MAP.BOUNDS + 40, CFG.MAP.BOUNDS + 40, 60, 96, 1, true);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x6d7f8c, side: THREE.BackSide, transparent: true, opacity: 0.35, fog: true,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.y = 20;
-    mesh.name = 'boundary';
-    this.scene.add(mesh);
+    // Distant landforms and sea occupy the scenery outside the playable bounds.
+    // A height-varying silhouette replaces the old flat cylindrical fog wall.
+    for (let ring = 0; ring < 2; ring++) {
+      const vertices = [], count = 112;
+      const ridge = i => {
+        const a = i / count * Math.PI * 2;
+        const radius = 710 + ring * 250 + Math.sin(a * 7) * 42;
+        const height = 35 + ring * 24 + Math.pow(Math.sin(a * 3.5 + ring), 2) * 90 + Math.pow(Math.cos(a * 8.5), 6) * 55;
+        return [[Math.cos(a) * radius, -14, Math.sin(a) * radius], [Math.cos(a) * (radius + 80), height, Math.sin(a) * (radius + 80)]];
+      };
+      for (let i = 0; i < count; i++) {
+        const [a, b] = ridge(i), [c, d] = ridge(i + 1);
+        vertices.push(...a, ...b, ...c, ...c, ...b, ...d);
+      }
+      const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geo.computeVertexNormals();
+      const mat = new THREE.MeshBasicMaterial({ color: ring ? 0x8e9f98 : 0x73897f, side: THREE.DoubleSide, fog: true });
+      const mesh = new THREE.Mesh(geo, mat); mesh.name = `distant_ridge_${ring}`; this.scene.add(mesh);
+    }
+    const sea = new THREE.Shape(); sea.moveTo(-2200, -2200); sea.lineTo(2200, -2200); sea.lineTo(2200, 2200); sea.lineTo(-2200, 2200); sea.closePath();
+    const island = new THREE.Path(); island.moveTo(-500, -500); island.lineTo(-500, 500); island.lineTo(500, 500); island.lineTo(500, -500); island.closePath(); sea.holes.push(island);
+    const geo = new THREE.ShapeGeometry(sea); geo.rotateX(-Math.PI / 2);
+    const ocean = new THREE.Mesh(geo, this.water.material); ocean.position.y = this.world.lake.level;
+    ocean.name = 'distant_coast'; ocean.renderOrder = 2; this.scene.add(ocean);
   }
 
   update(dt, time) {
     if (this.water) this.water.material.uniforms.uTime.value = time;
+    this.groundCover?.update(this.renderer.camera);
   }
 
   // Loot rendering is driven by the server's interest-filtered list.

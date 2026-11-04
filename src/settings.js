@@ -11,8 +11,8 @@ export const DEFAULTS = {
   quality: 'high',        // high | medium | low
   shadows: true,
   bloom: true,
-  showFps: true,
-  crosshair: '#7dffb0',
+  showFps: false,
+  crosshair: '#e7efc9',
   minimap: true,
   name: 'Soldier',
   room: 'ALPHA01',

@@ -1,20 +1,34 @@
 # Integration and direct visual review
 
-Updated 2026-11-04. Controller baseline: `master` at `5d1b021` before this
-documentation update. Acceptance remains open.
+Updated 2026-11-04. Renderer/client groundwork merged into `master` at `a3ca041`;
+the Blackshore foundation follows that merge. Acceptance remains open.
 
 ## Existing sessions and ownership
 
 | Session | Worktree / branch | Current handoff |
 |---|---|---|
-| `ses_e5bae678dffeRgNbTB4vQ8kXQT` | `.worktrees/net` / `agent/net` | Commits `0f788a4`, `331fed1`, `d4ee71f`; review corrections interrupted by quota |
-| `ses_e5bae678cffdqo3wG66w3GOibU` | `.worktrees/sim` / `agent/sim` | Commit `e9f878f`; corrected map-seed test remains uncommitted and fails 2/18 routes |
-| `ses_e5bae678cffen92zXaGvC4HMOR` | `.worktrees/render` / `agent/render` | Renderer/character/texture/visual-QA edits saved; quota interruption |
-| `ses_e5bae678cffcwx4bTDiE2utGaU` | `.worktrees/client` / `agent/client` | Client/HUD/input/audio/browser-QA edits saved; quota interruption |
+| `ses_e5bae678dffeRgNbTB4vQ8kXQT` | `.worktrees/net` / `agent/net` | Resumed original Big Pickle session for ACK/continuity/timer/protocol/metric corrections |
+| `ses_e5bae678cffdqo3wG66w3GOibU` | `.worktrees/sim` / `agent/sim` | Resumed with saved controller hybrid-nav changes; last route fixture 17/18 |
+| `ses_e5bae678cffen92zXaGvC4HMOR` | `.worktrees/render` / `agent/render` | Groundwork `b8a71e3` merged; next: scenery/asset/performance refinement |
+| `ses_e5bae678cffcwx4bTDiE2utGaU` | `.worktrees/client` / `agent/client` | Groundwork `f486a67` merged; next: full player-journey QA and UX corrections |
 
 No replacement agent sessions are needed. The controller continues local fixes
 in stopped worktrees and records them as controller work. Do not overwrite saved
 changes or attribute controller verification to an agent.
+
+## Blackshore controller checkpoint
+
+- Current source builds (772.92 kB JS / 215.53 kB gzip), **66/66 tests pass**.
+- `qa/shots/blackshore-pass3/`: seven 1920×1080 screenshots, zero browser errors.
+  Controller directly read deployment, hip, ADS and reload. Current defects:
+  stylized/sparse scenery, plain equipment surfaces, support hand low in reload.
+- Pass3 SwiftShader: 319 deployment calls / 1.82M triangles; 375–380 carbine
+  calls / 1.81M triangles. Actual software frame rate approximately0.5–1.9fps.
+  CPU contention and software rasterization prevent hardware conclusions.
+- User explicitly requests all-player-journey validation, especially vehicle
+  entry/driving/exit. Track observable behavior and gaps in a dedicated report.
+- Asset reuse authorized. Poly Haven terrain maps are local CC0 conversions.
+  Quaternius Standard archive downloaded; included CC0 notice read directly.
 
 ## Reviewed evidence and confirmed findings
 

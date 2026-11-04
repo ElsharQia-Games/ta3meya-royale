@@ -78,15 +78,22 @@ export class HUD {
 
     // ---- vitals ----
     const vitals = el('div', 'vitals', root);
+    const vitalHeading = el('div', 'vital-heading', vitals);
+    const operator = el('div', 'operator-mark', vitalHeading);
+    operator.innerHTML = '<svg viewBox="0 0 20 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 2h14v13l-7 7-7-7z"/><path d="M10 6v9M6 10h8"/></svg>';
+    const vitalLabel = el('label', '', vitalHeading);
+    vitalLabel.innerHTML = 'OPERATOR STATUS<b>FRONTLINE</b>';
+    this.hpText = el('span', 'vital-value', vitalHeading, '100');
     const hpRow = el('div', 'bar-row', vitals);
     this.hpBar = el('div', 'bar hp', hpRow);
     this.hpFill = el('i', '', this.hpBar);
-    this.hpText = el('span', 'bar-text', this.hpBar, '100');
     const arRow = el('div', 'bar-row', vitals);
     this.arBar = el('div', 'bar armor', arRow);
     this.arFill = el('i', '', this.arBar);
-    this.arText = el('span', 'bar-text', this.arBar, '0');
-    this.stanceText = el('div', 'stance', vitals, 'STANDING');
+    const vitalFooter = el('div', 'vital-footer', vitals);
+    this.stanceText = el('div', 'stance', vitalFooter, 'STANDING');
+    const armorLabel = el('div', 'armor-readout', vitalFooter, 'ARMOUR / ');
+    this.arText = el('span', '', armorLabel, '0');
 
     // ---- ammo ----
     const ammo = el('div', 'ammo', root);
@@ -96,6 +103,8 @@ export class HUD {
     this.reserveText = el('span', 'reserve', ammoRow, '/ 0');
     this.fireMode = el('div', 'firemode', ammo, 'AUTO');
     this.reloadTag = el('div', 'reload-tag', ammo, 'RELOADING');
+    this.reloadTrack = el('div', 'reload-track', ammo);
+    this.reloadFill = el('i', '', this.reloadTrack);
 
     // ---- inventory ----
     this.inv = el('div', 'inventory', root);
@@ -293,6 +302,7 @@ export class HUD {
       this._syncSettingsInputs();
       this._syncSettingLabels();
       this._openedAt = performance.now();
+      queueMicrotask(() => this.sensInput.focus());
     }
     this.settingsPanel.classList.toggle('hidden', !v);
     if (v) this.releasePointer?.();
@@ -321,7 +331,7 @@ export class HUD {
       else if (winner.team !== null && winner.team !== undefined) youWon = winner.team === this.localTeam;
     }
     this.endTitle.textContent = youWon ? 'VICTORY' : (winner?.name ? `${winner.name} WINS` : 'MATCH OVER');
-    this.endTitle.className = youWon ? 'win' : 'lose';
+    this.endTitle.className = `end-title ${youWon ? 'win' : 'lose'}`;
     const s = Array.isArray(score) ? score : [0, 0];
     this.endSub.textContent = mode === 'tdm'
       ? `${TEAMS[0]?.name ?? 'Team 1'} ${s[0] ?? 0} : ${s[1] ?? 0} ${TEAMS[1]?.name ?? 'Team 2'}`
@@ -400,7 +410,9 @@ export class HUD {
     if (this._last.reloading !== reloading) {
       this._last.reloading = reloading;
       this.reloadTag.classList.toggle('show', reloading);
+      this.reloadTrack.classList.toggle('show', reloading);
     }
+    if (reloading) this.reloadFill.style.width = `${(1 - clamp(player.reloadT / (W?.reload || 1), 0, 1)) * 100}%`;
 
     // inventory slots
     const weapons = player.weapons || [];
@@ -445,7 +457,15 @@ export class HUD {
     }
 
     // zone countdown / warning
-    if (state?.zone) {
+    if (state?.mode === 'tdm') {
+      const left = Math.max(0, Math.ceil(CFG.MODES.tdm.timeLimit - (state.roundTime || 0)));
+      const score = state.score || [0, 0];
+      this.zoneInfo.textContent = `${TEAMS[0].name.toUpperCase()} ${score[0]} : ${score[1]} ${TEAMS[1].name.toUpperCase()} · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+      this.zoneWarn.classList.remove('show');
+      this.zoneInfo.classList.remove('closing');
+      this.zoneTimer.textContent = 'TDM';
+      this._last.zoneInfo = null;
+    } else if (state?.zone) {
       const z = state.zone;
       const ph = CFG.ZONE.phases[z.phase];
       let phaseTxt, left;
