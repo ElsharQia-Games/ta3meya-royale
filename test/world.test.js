@@ -18,6 +18,19 @@ test('world generation is deterministic for the same seed', () => {
   }
 });
 
+test('loot on three maps is outside solid furniture and walls after placement repair', () => {
+  for (const seed of [CFG.MAP.SEED, 63162945, 1356337147]) {
+    const map = new World(seed);
+    assert.equal(map.lootPlacementFailures, 0, `unresolved loot on seed${seed}`);
+    for (const item of map.lootSpawns) {
+      const buried = map.boxes.find(b => b.tag !== 'glass' && b.tag !== 'void' &&
+        item.x > b.min[0] && item.x < b.max[0] && item.z > b.min[2] && item.z < b.max[2] &&
+        item.y + .12 > b.min[1] && item.y + .12 < b.max[1]);
+      assert.equal(buried, undefined, `loot embedded in box${buried?.id} on seed${seed}`);
+    }
+  }
+});
+
 test('different seeds produce different terrain', () => {
   const a = new World(1), b = new World(2);
   let diff = 0;

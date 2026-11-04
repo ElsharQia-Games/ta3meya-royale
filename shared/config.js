@@ -154,6 +154,12 @@ export const CFG = {
     engineForce: 11500, brakeForce: 16000, maxSpeed: 27, reverseMax: 8,
     steerMax: 0.62, steerSpeed: 3.2, grip: 9.5, drag: 0.42,
     enterRange: 3.4, seats: 4, health: 450,
+    wheelMountHeight: .3, suspensionTravel: .42, minClearance: .26,
+    floodDepth: .95, impactDamage: 5,
+    bodies: {
+      car: { width: 1.9, length: 4.2, height: 1.8, wheelBase: 2.9, track: 1.72 },
+      truck: { width: 2.2, length: 5.6, height: 2.55, wheelBase: 3.5, track: 2.0 },
+    },
   },
 
   MODES: {
@@ -168,7 +174,9 @@ export const CFG = {
     reaction: 0.18,
     aimError: 0.028,           // radians at 100m, scaled
     burst: [3, 7],
-    navCell: 6,
+    navCell: 6,                // coarse outdoor route grid
+    interiorNavCell: 0.4,      // capsule-clearance grid around each building
+    doorwayTolerance: 0.22,    // reach precise indoor corners before turning
   },
 
   NET: {

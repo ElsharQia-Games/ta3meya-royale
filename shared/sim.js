@@ -5,7 +5,8 @@
 import { CFG, STANCE, MATCH_STATE, TEAMS } from './config.js';
 import { RNG, clamp, yawTo, TAU, lerp } from './math.js';
 import { World } from './world.js';
-import { movePlayer, stanceHeight, stanceEye, supportHeight } from './physics.js';
+import { movePlayer, stanceHeight, stanceEye, supportHeight, capsuleBlocked } from './physics.js';
+import { vehicleShape, vehicleRideHeight, vehicleAxes, vehicleFootprint, vehicleBoxContact, vehiclePairContact, vehiclePlayerContact, packVehicle } from './vehicle.js';
 import {
   tryFire, tryReload, finishReload, switchWeapon, throwGrenade, stepProjectiles,
   tryInteract, spawnWorldLoot, dropInventory, hitboxesFor, applyDamage, explode,
@@ -71,8 +72,8 @@ export class Player {
     this.spectate = null;
     this.zoneT = 0;
   }
-  height() { return stanceHeight(this.stance); }
-  eyeHeight() { return stanceEye(this.stance); }
+  height() { return this.inVehicle ? CFG.PLAYER.CROUCH_HEIGHT : stanceHeight(this.stance); }
+  eyeHeight() { return this.inVehicle ? .95 : stanceEye(this.stance); }
   curWeapon() { return this.weapons[this.curSlot]; }
   hasWeapon() { return !!this.curWeapon(); }
   giveLoadout(loadout) {
@@ -104,6 +105,8 @@ export class Vehicle {
     this.wheelComp = [0, 0, 0, 0];
     this.airTime = 0;
     this.lastDriverInput = null;
+    this.grounded = true;
+    this.submerged = false;
   }
 }
 
@@ -114,6 +117,7 @@ export class Game {
     this.rng = new RNG((opts.seed ?? 1337) ^ 0x5f3759df);
     this.players = new Map();
     this.vehicles = [];
+    this.world.vehicles = this.vehicles;
     this.projectiles = [];
     this.pendingDamage = [];
     this.loot = [];
@@ -167,6 +171,7 @@ export class Game {
   }
 
   spawnPlayer(p, force = null) {
+    if (p.inVehicle) this.exitVehicle(p, true);
     let s = force;
     if (!s) {
       if (this.mode === 'tdm') {
@@ -218,9 +223,10 @@ export class Game {
     this.smokes.length = 0;
     this.stats = { shots: 0, hits: 0, kills: 0, damage: 0 };
     this.destroyedBoxes.clear();
-    for (const b of this.world.boxes) b.destroyed = false;
+    for (const b of this.world.boxes) { b.destroyed = false; b.hp = b.maxHp; }
     for (const p of this.players.values()) {
       this.spawnPlayer(p);
+      p.smokes = 0; p.medkits = 0;
       if (this.mode === 'tdm') {
         p.giveLoadout(['ar', 'pistol']);
         p.armor = 50; p.grenades = 1; p.bandages = 2;
@@ -279,6 +285,7 @@ export class Game {
     }
 
     for (const v of this.vehicles) this.stepVehicle(v, inputs, dt);
+    this.resolveVehiclePairs();
     stepProjectiles(this, dt);
     this.stepPendingDamage();
     this.stepSmokes(dt);
@@ -355,7 +362,7 @@ export class Game {
     if (input.reload) tryReload(this, p);
 
     // healing
-    if (input.heal && p.healT <= 0 && p.health < CFG.PLAYER.MAX_HEALTH) {
+    if (input.heal && p.healT <= 0 && p.reloadT <= 0 && p.switchT <= 0 && p.health < CFG.PLAYER.MAX_HEALTH) {
       if (p.bandages > 0 && p.health < CFG.HEAL.bandage.cap) {
         p.bandages--; p.healT = CFG.HEAL.bandage.time; p.healItem = 'bandage';
         this.events.push({ k: 'healstart', id: p.id, item: 'bandage' });
@@ -369,8 +376,10 @@ export class Game {
     if (input.interact) tryInteract(this, p);
 
     // grenades
-    if (input.grenade) throwGrenade(this, p, false);
-    if (input.smoke) throwGrenade(this, p, true);
+    if (!(p.inVehicle && p.seat === 0)) {
+      if (input.grenade) throwGrenade(this, p, false);
+      if (input.smoke) throwGrenade(this, p, true);
+    }
 
     // vehicle entry/exit
     if (input.enterVehicle !== undefined && input.enterVehicle !== null) {
@@ -382,7 +391,7 @@ export class Game {
     }
 
     // shooting
-    if (key && p.alive && this.matchState === MATCH_STATE.LIVE) {
+    if (key && p.alive && this.matchState === MATCH_STATE.LIVE && !(p.inVehicle && p.seat === 0)) {
       const W = CFG.WEAPONS[key];
       const wantFire = W.auto ? input.shoot : (input.shoot && !p.prevShoot);
       if (wantFire) {
@@ -416,6 +425,7 @@ export class Game {
   kill(victim, killerId, weapon = '?', zone = 'torso', dist = 0) {
     if (!victim.alive) return;
     victim.alive = false;
+    if (victim.inVehicle) this.exitVehicle(victim, true);
     victim.health = 0;
     victim.deaths++;
     const killer = this.players.get(killerId);
@@ -442,6 +452,7 @@ export class Game {
         p.armor = 50;
         p.giveLoadout(['ar', 'pistol']);
         p.grenades = 1; p.bandages = 2;
+        p.smokes = 0; p.medkits = 0;
         this.events.push({ k: 'respawn', id: p.id });
       }
     }
@@ -521,140 +532,191 @@ export class Game {
   // Vehicles (raycast suspension, simplified 6-DOF)
   // --------------------------------------------------------------------------
   enterVehicle(p, v) {
-    if (p.inVehicle) return false;
+    if (!p.alive || p.inVehicle || v.health <= 0 || v.submerged) return false;
     const seat = v.occupants.findIndex(o => o === null);
     if (seat < 0) return false;
-    if (Math.hypot(v.pos[0] - p.pos[0], v.pos[2] - p.pos[2]) > CFG.VEHICLE.enterRange) return false;
+    if (Math.hypot(v.pos[0] - p.pos[0], v.pos[2] - p.pos[2]) > CFG.VEHICLE.enterRange || Math.abs(v.pos[1] - p.pos[1]) > 2) return false;
+    const from = [p.pos[0], p.pos[1] + .8, p.pos[2]], to = [v.pos[0], v.pos[1] + .4, v.pos[2]];
+    const delta = to.map((value, i) => value - from[i]), distance = Math.hypot(...delta);
+    if (distance > .1 && this.world.raycast(from, delta.map(value => value / distance), distance - .1, { ignoreVehicle: v.id })) return false;
     v.occupants[seat] = p.id;
     p.inVehicle = v.id; p.seat = seat;
     p.vel = [0, 0, 0];
+    p.reloadT = 0; p.reloadKey = null; p.healT = 0; p.healItem = null;
     this.events.push({ k: 'enterVehicle', id: p.id, vid: v.id, seat });
     return true;
   }
 
   exitVehicle(p, silent = false) {
-    if (!p.inVehicle) return;
+    if (!p.inVehicle) return false;
     const v = this.vehicles.find(vv => vv.id === p.inVehicle);
     if (v) {
       const seat = v.occupants.indexOf(p.id);
+      if (!silent) {
+        const { right, forward } = vehicleAxes(v.yaw), shape = vehicleShape(v.type);
+        const side = shape.width / 2 + CFG.PLAYER.RADIUS + .24;
+        const end = shape.length / 2 + CFG.PLAYER.RADIUS + .24;
+        const preferred = seat % 2 === 0 ? 1 : -1;
+        const options = [[preferred * side, 0], [-preferred * side, 0],
+          [preferred * side, -1], [-preferred * side, -1], [0, -end], [0, end]];
+        let exit = null;
+        for (const [sx, fz] of options) {
+          const x = v.pos[0] + right[0] * sx + forward[0] * fz;
+          const z = v.pos[2] + right[1] * sx + forward[1] * fz;
+          if (Math.abs(x) > CFG.MAP.BOUNDS - CFG.PLAYER.RADIUS || Math.abs(z) > CFG.MAP.BOUNDS - CFG.PLAYER.RADIUS) continue;
+          const y = supportHeight(this.world, x, z, v.pos[1] - vehicleRideHeight(), CFG.PLAYER.RADIUS) + .02;
+          if (capsuleBlocked(this.world, x, y, z, stanceHeight(p.stance))) continue;
+          // Test the static path from the door, outside our own hull.
+          const from = [v.pos[0] + right[0] * sx * .7, v.pos[1] + .6, v.pos[2] + right[1] * sx * .7];
+          const to = [x, y + .8, z], delta = to.map((n, i) => n - from[i]), distance = Math.hypot(...delta);
+          if (distance > 0 && this.world.raycast(from, delta.map(n => n / distance), distance, { ignoreVehicle: v.id })) continue;
+          exit = [x, y, z]; break;
+        }
+        if (!exit) { this.events.push({ k: 'vehicleblocked', id: p.id }); return false; }
+        p.pos = exit;
+        p.vel = [v.vel[0] * .3, 0, v.vel[2] * .3];
+      }
       if (seat >= 0) v.occupants[seat] = null;
-      const right = [Math.cos(v.yaw), 0, -Math.sin(v.yaw)];
-      const side = seat % 2 === 0 ? 1.8 : -1.8;
-      p.pos = [v.pos[0] + right[0] * side, this.world.terrainHeight(v.pos[0] + right[0] * side, v.pos[2] + right[2] * side) + 0.1, v.pos[2] + right[2] * side];
-      p.vel = [v.vel[0] * 0.3, 0, v.vel[2] * 0.3];
     }
     p.inVehicle = null; p.seat = -1;
     if (!silent) this.events.push({ k: 'exitVehicle', id: p.id, vid: v ? v.id : -1 });
+    return true;
   }
 
   stepVehicle(v, inputs, dt) {
     const V = CFG.VEHICLE;
+    const shape = vehicleShape(v.type);
+    for (let i = 0; i < v.occupants.length; i++) {
+      const p = this.players.get(v.occupants[i]);
+      if (!p || !p.alive || p.inVehicle !== v.id) v.occupants[i] = null;
+    }
     const driverId = v.occupants[0];
     const driver = driverId ? this.players.get(driverId) : null;
-    const input = driver ? inputs.get(driverId) : null;
+    const input = driver?.connected && v.health > 0 ? inputs.get(driverId) : null;
     if (driver) driver.lastVehicleInput = input;
-    const forward = [-Math.sin(v.yaw), 0, -Math.cos(v.yaw)];
-    const right = [Math.cos(v.yaw), 0, -Math.sin(v.yaw)];
+    const oldForward = [-Math.sin(v.yaw), 0, -Math.cos(v.yaw)];
+    const fwdSpeed = v.vel[0] * oldForward[0] + v.vel[2] * oldForward[2];
+    const speed = Math.hypot(v.vel[0], v.vel[2]);
+    v.submerged = this.world.waterDepth(v.pos[0], v.pos[2]) > V.floodDepth &&
+      v.pos[1] < this.world.lake.level + .1;
 
-    // Steering
+    // Bicycle steering uses signed forward speed. Reverse therefore turns the
+    // other way; stationary/airborne steering cannot spin the chassis in place.
     let steerTarget = 0;
     if (input) {
       if (input.l) steerTarget += 1;
       if (input.r) steerTarget -= 1;
     }
-    v.steer += (steerTarget - v.steer) * Math.min(1, 6 * dt);
-    const speed = Math.hypot(v.vel[0], v.vel[2]);
-    const speedFactor = clamp(speed / 8, 0, 1);
-    v.yaw += v.steer * V.steerMax * speedFactor * Math.sign(Math.max(0.1, v.vel[0] * forward[0] + v.vel[2] * forward[2])) * dt * 3.2;
+    v.steer += (steerTarget - v.steer) * Math.min(1, V.steerSpeed * dt);
+    const steeringAngle = v.steer * V.steerMax / (1 + speed * .055);
+    const yawRate = clamp(fwdSpeed * Math.tan(steeringAngle) / shape.wheelBase, -1.6, 1.6);
+    v.yaw += yawRate * dt * (v.grounded ? 1 : 0);
+    const forward = [-Math.sin(v.yaw), 0, -Math.cos(v.yaw)];
+    const right = [Math.cos(v.yaw), 0, -Math.sin(v.yaw)];
 
     // Engine / brake
-    const fwdSpeed = v.vel[0] * forward[0] + v.vel[2] * forward[2];
     let accel = 0;
-    v.braking = false;
-    if (input && input.f) accel = V.engineForce;
+    v.braking = !!input?.jump;
+    if (input && input.f) { accel = fwdSpeed < -1 ? V.brakeForce : V.engineForce; v.braking ||= fwdSpeed < -1; }
     else if (input && input.b) {
       if (fwdSpeed > 1) { accel = -V.brakeForce; v.braking = true; }
       else accel = -V.engineForce * 0.45;
     }
+    if (v.submerged || v.health <= 0 || input?.jump) accel = 0;
     v.engine += (accel - v.engine) * Math.min(1, 8 * dt);
-    v.vel[0] += forward[0] * (v.engine / V.mass) * dt;
-    v.vel[2] += forward[2] * (v.engine / V.mass) * dt;
+    const traction = v.grounded && !v.submerged ? 1 : 0;
+    v.vel[0] += forward[0] * (v.engine / V.mass) * dt * traction;
+    v.vel[2] += forward[2] * (v.engine / V.mass) * dt * traction;
 
     // Lateral grip
     const lat = v.vel[0] * right[0] + v.vel[2] * right[2];
-    v.vel[0] -= right[0] * lat * Math.min(1, V.grip * dt);
-    v.vel[2] -= right[2] * lat * Math.min(1, V.grip * dt);
+    v.vel[0] -= right[0] * lat * Math.min(1, V.grip * dt) * traction;
+    v.vel[2] -= right[2] * lat * Math.min(1, V.grip * dt) * traction;
     // Drag
     const drag = 1 - Math.min(0.6, V.drag * dt * (0.4 + speed / V.maxSpeed));
     v.vel[0] *= drag; v.vel[2] *= drag;
+    if (input?.jump || v.submerged) {
+      const brake = Math.exp(-(v.submerged ? 3.5 : 7) * dt);
+      v.vel[0] *= brake; v.vel[2] *= brake;
+    }
     // Speed cap
-    if (speed > V.maxSpeed) { const k = V.maxSpeed / speed; v.vel[0] *= k; v.vel[2] *= k; }
+    const updatedSpeed = Math.hypot(v.vel[0], v.vel[2]);
+    const speedLimit = v.vel[0] * forward[0] + v.vel[2] * forward[2] < 0 ? V.reverseMax : V.maxSpeed;
+    if (updatedSpeed > speedLimit) { const k = speedLimit / updatedSpeed; v.vel[0] *= k; v.vel[2] *= k; }
 
     // Wheel suspension: 4 raycasts.
     const wheelPositions = [
-      [V.wheelBase / 2, V.track / 2], [V.wheelBase / 2, -V.track / 2],
-      [-V.wheelBase / 2, V.track / 2], [-V.wheelBase / 2, -V.track / 2],
+      [shape.wheelBase / 2, shape.track / 2], [shape.wheelBase / 2, -shape.track / 2],
+      [-shape.wheelBase / 2, shape.track / 2], [-shape.wheelBase / 2, -shape.track / 2],
     ];
-    let totalSpring = 0, frontSpring = 0, backSpring = 0, leftSpring = 0, rightSpring = 0;
+    let totalSpring = 0;
     let groundCount = 0;
+    const grounds = [];
     for (let i = 0; i < 4; i++) {
       const [fz, rx] = wheelPositions[i];
       const wx = v.pos[0] + forward[0] * fz + right[0] * rx;
       const wz = v.pos[2] + forward[2] * fz + right[2] * rx;
-      const ground = this.vehicleGround(wx, wz, v.pos[1] + 0.7);
-      const rayLen = 1.15;
-      let comp = 0;
-      if (ground !== null && v.pos[1] + 0.7 - ground < rayLen) {
-        const dist = v.pos[1] + 0.7 - ground;
-        comp = clamp(V.suspensionRest - (dist - V.wheelRadius), -0.12, 0.42);
-        groundCount++;
-      }
+      const ground = this.vehicleGround(wx, wz, v.pos[1] + V.wheelMountHeight);
+      grounds.push(ground);
+      const suspensionLength = v.pos[1] + V.wheelMountHeight - ground - V.wheelRadius;
+      const comp = clamp(V.suspensionRest - suspensionLength, 0, V.suspensionTravel);
+      if (comp > 0) groundCount++;
       v.wheelComp[i] = comp;
       const spring = comp * V.suspensionK;
       totalSpring += spring;
-      if (i < 2) frontSpring += spring; else backSpring += spring;
-      if (i % 2 === 0) rightSpring += spring; else leftSpring += spring;
-      v.wheelSpin += (fwdSpeed / V.wheelRadius) * dt;
     }
+    v.wheelSpin = (v.wheelSpin + (fwdSpeed / V.wheelRadius) * dt) % TAU;
     // Vertical dynamics
     const gravity = -9.81 * V.mass;
-    const damping = -v.vel[1] * V.suspensionD;
+    const damping = -v.vel[1] * V.suspensionD * groundCount / 4;
     v.vel[1] += ((totalSpring + gravity + damping) / V.mass) * dt;
     if (groundCount === 0) v.airTime += dt; else v.airTime = 0;
+    v.grounded = groundCount > 0;
     v.pos[1] += v.vel[1] * dt;
     // terrain/box floor clamp
-    const floor = this.vehicleGround(v.pos[0], v.pos[2], v.pos[1] + 0.7);
-    if (floor !== null && v.pos[1] < floor + 0.35) {
-      v.pos[1] = floor + 0.35;
-      if (v.vel[1] < 0) v.vel[1] *= -0.15;
+    const floor = this.vehicleGround(v.pos[0], v.pos[2], v.pos[1] + V.wheelMountHeight);
+    if (v.pos[1] < floor + V.minClearance) {
+      v.pos[1] = floor + V.minClearance;
+      if (v.vel[1] < 0) v.vel[1] = 0;
     }
 
     // Pitch/roll visual from suspension
-    const targetPitch = clamp((frontSpring - backSpring) / (V.suspensionK * 0.6), -0.22, 0.22);
-    const targetRoll = clamp((rightSpring - leftSpring) / (V.suspensionK * 0.6), -0.22, 0.22);
+    const targetPitch = groundCount ? clamp(Math.atan2((grounds[0] + grounds[1] - grounds[2] - grounds[3]) / 2, shape.wheelBase), -.32, .32) : v.pitch;
+    const targetRoll = groundCount ? clamp(Math.atan2((grounds[0] + grounds[2] - grounds[1] - grounds[3]) / 2, shape.track), -.3, .3) : v.roll;
     v.pitch += (targetPitch - v.pitch) * Math.min(1, 8 * dt);
     v.roll += (targetRoll - v.roll) * Math.min(1, 8 * dt);
 
     // Horizontal integration + collision
-    const px = v.pos[0], pz = v.pos[2];
-    v.pos[0] += v.vel[0] * dt;
-    v.pos[2] += v.vel[2] * dt;
-    this.collideVehicle(v);
-    // crude collision response
-    if (Math.abs(v.pos[0] - px) < Math.abs(v.vel[0] * dt) * 0.5) v.vel[0] *= -0.15;
-    if (Math.abs(v.pos[2] - pz) < Math.abs(v.vel[2] * dt) * 0.5) v.vel[2] *= -0.15;
+    const steps = Math.max(1, Math.ceil(Math.hypot(v.vel[0], v.vel[2]) * dt / .2));
+    for (let i = 0; i < steps; i++) {
+      v.pos[0] += v.vel[0] * dt / steps;
+      v.pos[2] += v.vel[2] * dt / steps;
+      this.collideVehicle(v);
+    }
+    const footprint = vehicleFootprint(v);
+    for (const [axis, extent] of [[0, footprint.x], [2, footprint.z]]) {
+      const bound = CFG.MAP.BOUNDS - extent;
+      if (v.pos[axis] > bound) { v.pos[axis] = bound; v.vel[axis] = Math.min(0, v.vel[axis]); }
+      if (v.pos[axis] < -bound) { v.pos[axis] = -bound; v.vel[axis] = Math.max(0, v.vel[axis]); }
+    }
 
     // Auto-right if badly tilted (arcade forgiveness)
     if (Math.abs(v.roll) > 1.1) v.roll *= 0.9;
 
-    // Carry occupants
+    this.carryVehicleOccupants(v);
+  }
+
+  carryVehicleOccupants(v) {
+    const forward = [-Math.sin(v.yaw), 0, -Math.cos(v.yaw)];
+    const right = [Math.cos(v.yaw), 0, -Math.sin(v.yaw)];
+    // Carry occupants after both integration and any vehicle-pair correction.
     for (let i = 0; i < v.occupants.length; i++) {
       const pid = v.occupants[i];
       if (!pid) continue;
       const occ = this.players.get(pid);
       if (!occ) continue;
-      const seatF = i === 0 ? 0.15 : i === 1 ? -0.25 : i === 2 ? -0.7 : -0.9;
-      const seatR = i % 2 === 0 ? 0.34 : -0.34;
+      const seatF = i < 2 ? (v.type === 'truck' ? 1.05 : .15) : -.8;
+      const seatR = i % 2 === 0 ? .43 : -.43;
       occ.pos = [
         v.pos[0] + forward[0] * seatF + right[0] * seatR,
         v.pos[1] + 0.15,
@@ -663,6 +725,47 @@ export class Game {
       occ.vel = [v.vel[0], v.vel[1], v.vel[2]];
       occ.grounded = false;
       // The driver/passengers keep their own look direction (set from input).
+    }
+  }
+
+  resolveVehiclePairs() {
+    for (let i = 0; i < this.vehicles.length; i++) for (let j = i + 1; j < this.vehicles.length; j++) {
+      const a = this.vehicles[i], b = this.vehicles[j], contact = vehiclePairContact(a, b);
+      if (!contact) continue;
+      const [nx, nz] = contact.normal, half = (contact.depth + .01) / 2;
+      a.pos[0] += nx * half; a.pos[2] += nz * half;
+      b.pos[0] -= nx * half; b.pos[2] -= nz * half;
+      const velocity = (a.vel[0] - b.vel[0]) * nx + (a.vel[2] - b.vel[2]) * nz;
+      if (velocity < 0) {
+        const impulse = -velocity * .55;
+        a.vel[0] += nx * impulse; a.vel[2] += nz * impulse;
+        b.vel[0] -= nx * impulse; b.vel[2] -= nz * impulse;
+        if (-velocity > 9) {
+          this.damageVehicle(a, (-velocity - 9) * 2.5, b.occupants[0] ?? -1);
+          this.damageVehicle(b, (-velocity - 9) * 2.5, a.occupants[0] ?? -1);
+        }
+      }
+      this.collideVehicle(a); this.collideVehicle(b);
+    }
+    for (const v of this.vehicles) {
+      const footprint = vehicleFootprint(v);
+      v.pos[0] = clamp(v.pos[0], -CFG.MAP.BOUNDS + footprint.x, CFG.MAP.BOUNDS - footprint.x);
+      v.pos[2] = clamp(v.pos[2], -CFG.MAP.BOUNDS + footprint.z, CFG.MAP.BOUNDS - footprint.z);
+      this.carryVehicleOccupants(v);
+      for (const p of this.players.values()) {
+        if (!p.alive || p.inVehicle) continue;
+        const contact = vehiclePlayerContact(v, p.pos, CFG.PLAYER.RADIUS, p.height());
+        if (!contact) continue;
+        const [nx, nz] = contact.normal;
+        const impactSpeed = v.vel[0] * nx + v.vel[2] * nz;
+        p.pos[0] += nx * (contact.depth + .01); p.pos[2] += nz * (contact.depth + .01);
+        p.pos[0] = clamp(p.pos[0], -CFG.MAP.BOUNDS, CFG.MAP.BOUNDS);
+        p.pos[2] = clamp(p.pos[2], -CFG.MAP.BOUNDS, CFG.MAP.BOUNDS);
+        p.pos[1] = Math.max(p.pos[1], this.world.terrainHeight(p.pos[0], p.pos[2]));
+        // Contact normal points out of the car; velocity toward the player is
+        // positive along it. Slow contact pushes rather than causing damage.
+        if (impactSpeed > 5) applyDamage(this, p, (impactSpeed - 5) * 7, v.occupants[0] ?? -1, 'torso', p.pos, 'vehicle');
+      }
     }
   }
 
@@ -680,22 +783,34 @@ export class Game {
   }
 
   collideVehicle(v) {
-    const r = 1.15;
+    const shape = vehicleShape(v.type), r = Math.hypot(shape.width, shape.length) / 2;
     const boxes = this.world.queryBoxes(v.pos[0] - r - 1, v.pos[2] - r - 1, v.pos[0] + r + 1, v.pos[2] + r + 1);
-    for (const b of boxes) {
+    for (let iteration = 0; iteration < 3; iteration++) for (const b of boxes) {
       if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;
-      if (v.pos[1] + 1.4 < b.min[1] || v.pos[1] > b.max[1]) continue;
-      const cx = clamp(v.pos[0], b.min[0], b.max[0]);
-      const cz = clamp(v.pos[2], b.min[2], b.max[2]);
-      const dx = v.pos[0] - cx, dz = v.pos[2] - cz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < r * r) {
-        const d = Math.sqrt(d2) || 0.001;
-        v.pos[0] += (dx / d) * (r - d + 0.01);
-        v.pos[2] += (dz / d) * (r - d + 0.01);
-        const vn = v.vel[0] * (dx / d) + v.vel[2] * (dz / d);
-        if (vn < 0) { v.vel[0] -= 1.4 * vn * (dx / d); v.vel[2] -= 1.4 * vn * (dz / d); }
+      const contact = vehicleBoxContact(v, b);
+      if (!contact) continue;
+      const [nx, nz] = contact.normal;
+      v.pos[0] += nx * (contact.depth + .005);
+      v.pos[2] += nz * (contact.depth + .005);
+      const vn = v.vel[0] * nx + v.vel[2] * nz;
+      if (vn < 0) {
+        v.vel[0] -= 1.1 * vn * nx; v.vel[2] -= 1.1 * vn * nz;
+        if (-vn > 9) this.damageVehicle(v, (-vn - 9) * CFG.VEHICLE.impactDamage, v.occupants[0] ?? -1);
       }
+    }
+  }
+
+  damageVehicle(v, amount, owner = -1) {
+    if (!v || v.health <= 0 || amount <= 0) return;
+    v.health = Math.max(0, v.health - amount);
+    if (v.health > 0) return;
+    v.engine = 0;
+    const occupants = v.occupants.slice();
+    this.events.push({ k: 'vehicleDestroyed', vid: v.id, x: v.pos[0], y: v.pos[1], z: v.pos[2] });
+    explode(this, v.pos.slice(), 90, 5, owner);
+    for (const id of occupants) {
+      const p = this.players.get(id);
+      if (p?.alive && p.inVehicle === v.id) this.exitVehicle(p);
     }
   }
 
@@ -749,6 +864,7 @@ export class Game {
       countdown: this.countdown, roundTime: this.roundTime,
       winner: this.winner ? { id: this.winner.id ?? null, team: this.winner.team ?? null, name: this.winner.name } : null,
       score: this.score.slice(),
+      destroyed: [...this.destroyedBoxes],
       zone: {
         cx: this.zone.cx, cz: this.zone.cz, r: this.zone.r, phase: this.zone.phase,
         phaseT: this.zone.phaseT, shrinking: this.zone.shrinking, dps: this.zone.dps,
@@ -767,11 +883,7 @@ export class Game {
         reload: p.reloadT, heal: p.healT, switchT: p.switchT,
         inWater: p.inWater, connected: p.connected,
       })),
-      vehicles: this.vehicles.map(v => ({
-        id: v.id, x: v.pos[0], y: v.pos[1], z: v.pos[2], yaw: v.yaw,
-        pitch: v.pitch, roll: v.roll, speed: Math.hypot(v.vel[0], v.vel[2]),
-        type: v.type, occupants: v.occupants.slice(), health: v.health,
-      })),
+      vehicles: this.vehicles.map(packVehicle),
       projectiles: this.projectiles.map(pr => ({ id: pr.id || 0, type: pr.type, x: pr.pos[0], y: pr.pos[1], z: pr.pos[2], fuse: pr.fuse })),
     };
   }

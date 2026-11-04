@@ -9,6 +9,7 @@
 import { Game } from '../shared/sim.js';
 import { CFG } from '../shared/config.js';
 import { spawnBots, stepBots } from '../server/bots.js';
+import { writeFileSync } from 'node:fs';
 
 const SECONDS = Number(process.env.STRESS_SECONDS || 30 * 60);
 const TICKS = Math.round(SECONDS * CFG.SIM_HZ);
@@ -18,7 +19,9 @@ const BOUND = CFG.MAP.BOUNDS + 1;
 
 const game = new Game({ mode: 'br', mapSeed: CFG.MAP.SEED, seed: 0x5eed });
 const human = game.addPlayer('Stress', 0, { connected: true });
+const navStart = performance.now();
 spawnBots(game, BOTS, false);
+const navigationBootMs = performance.now() - navStart;
 game.begin();
 game.matchState = 2; // LIVE
 
@@ -34,6 +37,8 @@ let teleports = 0, penetrations = 0, nonFinite = 0, outOfBounds = 0;
 let maxStep = 0, totalTicks = 0;
 let respawns = 0;
 const tickTimes = [];
+const overBudget = [];
+let vehicleNonFinite = 0, vehicleOutOfBounds = 0, vehicleGroundPenetrations = 0;
 const t0 = performance.now();
 
 for (let tick = 0; tick < TICKS; tick++) {
@@ -49,8 +54,12 @@ for (let tick = 0; tick < TICKS; tick++) {
   if (human.alive) inputs.set(human.id, humanInput);
   const simStart = performance.now();
   stepBots(game, DT, inputs);
+  const afterBots = performance.now();
   game.step(inputs, DT);
-  tickTimes.push(performance.now() - simStart);
+  const elapsed = performance.now() - simStart;
+  tickTimes.push(elapsed);
+  if (elapsed > 1000 / CFG.SIM_HZ) overBudget.push({ tick, ms: +elapsed.toFixed(3),
+    botMs: +(afterBots - simStart).toFixed(3), gameMs: +(performance.now() - afterBots).toFixed(3) });
   totalTicks++;
 
   for (const p of game.players.values()) {
@@ -65,8 +74,14 @@ for (let tick = 0; tick < TICKS; tick++) {
     }
     if (p.alive) {
       const ground = game.world.terrainHeight(x, z);
-      if (y < ground - 1.2) penetrations++;
+      if (y < ground - .08) penetrations++;
     }
+  }
+
+  for (const v of game.vehicles) {
+    if (![...v.pos, ...v.vel, v.yaw, v.pitch, v.roll, ...v.wheelComp].every(Number.isFinite)) vehicleNonFinite++;
+    if (Math.abs(v.pos[0]) > BOUND || Math.abs(v.pos[2]) > BOUND) vehicleOutOfBounds++;
+    if (v.pos[1] < game.world.terrainHeight(v.pos[0], v.pos[2]) - .03) vehicleGroundPenetrations++;
   }
 
   // Keep every player in the match so the whole 30 simulated minutes runs with
@@ -88,7 +103,7 @@ const live = [...game.players.values()].filter(p => p.alive).length;
 const sorted = [...tickTimes].sort((a, b) => a - b);
 const pct = (q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] ?? 0;
 console.log('\n');
-console.table({
+const report = {
   simulatedMinutes: +(SECONDS / 60).toFixed(1),
   ticks: totalTicks,
   wallSeconds: +wall.toFixed(2),
@@ -100,17 +115,26 @@ console.table({
   simMsP95: +pct(0.95).toFixed(4),
   simMsP99: +pct(0.99).toFixed(4),
   simMsMax: +sorted.at(-1).toFixed(3),
+  navigationBootMs: +navigationBootMs.toFixed(3),
+  ticksOverBudget: overBudget.length,
   tickBudgetMs: +(1000 / CFG.SIM_HZ).toFixed(2),
   nonFinite,
   outOfBounds,
   groundPenetrations: penetrations,
+  groundToleranceMetres: .08,
+  vehicleNonFinite, vehicleOutOfBounds, vehicleGroundPenetrations,
   teleportsOver2_5m: teleports,
   maxStepMetres: +maxStep.toFixed(3),
   zoneRadius: +game.zone.r.toFixed(1),
   matchState: game.matchState,
-});
+};
+console.table(report);
+const slowestTicks = overBudget.sort((a, b) => b.ms - a.ms).slice(0, 16);
+console.log('Slowest over-budget ticks:', slowestTicks);
+if (process.env.STRESS_REPORT) writeFileSync(process.env.STRESS_REPORT,
+  JSON.stringify({ ...report, slowestTicks, capturedAt: new Date().toISOString() }, null, 2));
 
-if (nonFinite || outOfBounds || penetrations || teleports) {
+if (nonFinite || outOfBounds || penetrations || teleports || vehicleNonFinite || vehicleOutOfBounds || vehicleGroundPenetrations) {
   console.error('STRESS FAILED');
   process.exitCode = 1;
 } else {

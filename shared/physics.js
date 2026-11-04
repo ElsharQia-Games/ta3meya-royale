@@ -4,6 +4,7 @@
 // ============================================================================
 import { CFG } from './config.js';
 import { clamp } from './math.js';
+import { vehiclePlayerContact } from './vehicle.js';
 
 const P = CFG.PLAYER;
 const MAX_SUBSTEP = 0.16;
@@ -53,7 +54,7 @@ function resolveHorizontal(world, p, height, grounded) {
         const oldY = p.pos[1];
         p.pos[1] = b.max[1] + 0.001;
         // check headroom at lifted position
-        if (!headBlocked(world, p.pos[0], p.pos[1], p.pos[2], height)) {
+        if (!capsuleBlocked(world, p.pos[0], p.pos[1], p.pos[2], height)) {
           stepped = true;
           continue;
         }
@@ -83,7 +84,7 @@ function resolveHorizontal(world, p, height, grounded) {
   return stepped;
 }
 
-function headBlocked(world, x, y, z, height) {
+export function capsuleBlocked(world, x, y, z, height) {
   const r = P.RADIUS;
   const boxes = world.queryBoxes(x - r - 0.2, z - r - 0.2, x + r + 0.2, z + r + 0.2);
   for (const b of boxes) {
@@ -93,6 +94,7 @@ function headBlocked(world, x, y, z, height) {
     const dx = x - cx, dz = z - cz;
     if (dx * dx + dz * dz < r * r) return true;
   }
+  for (const v of world.vehicles || []) if (vehiclePlayerContact(v, [x, y, z], r, height)) return true;
   return false;
 }
 
@@ -133,19 +135,18 @@ function resolveVertical(world, p, height, dt) {
 }
 
 export function movePlayer(world, p, input, dt) {
-  const height = p.height();
   const radius = P.RADIUS;
 
   // ---- stance ----
   if (input.stance !== undefined && input.stance !== null && input.stance !== p.stance) {
     const want = input.stance;
-    if (want === 0 && p.stance !== 0) {
-      // Only stand if there is headroom.
-      if (!headBlocked(world, p.pos[0], p.pos[1], p.pos[2], P.HEIGHT)) p.stance = 0;
-    } else if (want < p.stance || want === 2 || want === 1) {
+    const valid = Number.isInteger(want) && want >= 0 && want <= 2;
+    const growing = valid && stanceHeight(want) > p.height();
+    if (valid && (!growing || !capsuleBlocked(world, p.pos[0], p.pos[1], p.pos[2], stanceHeight(want)))) {
       p.stance = want;
     }
   }
+  const height = p.height();
   p.stanceT = Math.min(1, (p.stanceT || 0) + dt / P.STANCE_TIME);
 
   // ---- environment ----
@@ -255,12 +256,23 @@ export function movePlayer(world, p, input, dt) {
       break;
     }
     resolveHorizontal(world, p, height, p.grounded);
+    for (const v of world.vehicles || []) {
+      const contact = vehiclePlayerContact(v, p.pos, radius, height);
+      if (!contact) continue;
+      const [nx, nz] = contact.normal;
+      p.pos[0] += nx * (contact.depth + .001);
+      p.pos[2] += nz * (contact.depth + .001);
+      const toward = p.vel[0] * nx + p.vel[2] * nz;
+      if (toward < 0) { p.vel[0] -= nx * toward; p.vel[2] -= nz * toward; }
+    }
   }
-  // Ground snap after horizontal movement (stairs / slopes).
+  // Ground snap after horizontal movement (stairs / slopes). This must also
+  // snap *down* within a step: with Math.max only, walking downhill left the
+  // capsule floating at its old height until it fell off the slope.
   if (p.grounded) {
     const support = supportHeight(world, p.pos[0], p.pos[2], p.pos[1] + 0.1, radius);
     if (support >= p.pos[1] - 0.55 && support <= p.pos[1] + P.STEP_HEIGHT + 0.06) {
-      p.pos[1] = Math.max(p.pos[1], support);
+      p.pos[1] = support;
     }
   }
 
