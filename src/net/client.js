@@ -2,7 +2,8 @@
 // snapshot delta cache and the interpolation buffer. No rendering here.
 import {
   MSG, encodeInput, decodeSnapshot, applySnapshot, decodeEvents, decodeLoot,
-  decodeControl, encodePing, decodePong, decodePing, encodePong, PROTOCOL_VERSION,
+  decodeControl, encodePing, decodePong, decodePing, encodePong, decodeAck,
+  PROTOCOL_VERSION,
 } from '../../shared/protocol.js';
 import { SnapshotBuffer } from '../prediction.js';
 
@@ -26,6 +27,12 @@ export class NetClient {
     this.lastSnapshot = null;
     this.lastServerTime = 0;
     this.ackInput = 0;
+    // Acks are keyed by snapshot sequence. A frame may be lost, so never use
+    // an ack that belongs to a different tick than the snapshot being applied.
+    this.acks = new Map();
+    this.lastAckSeq = -1;
+    this.lastAckInput = 0;
+    this.ackMisses = 0;
     this.rtt = 0;
     this.jitter = 0;
     this.rttSamples = [];
@@ -187,14 +194,19 @@ export class NetClient {
     if (!buf || buf.byteLength < 1) return;
     this.bytesWindow += buf.byteLength;
     const type = new DataView(buf).getUint8(0);
-    if (type === MSG.SNAPSHOT) {
+    if (type === MSG.ACK) {
+      const ack = decodeAck(buf);
+      if (ack) this._onAck(ack);
+    } else if (type === MSG.SNAPSHOT) {
       const snap = decodeSnapshot(buf);
       if (!snap) return;
       this.snapshotCount++;
       if (snap.seq < this.lastSnapshot?.seq && snap.seq > 60000) return;
       this.lastSnapshot = snap;
       this.lastServerTime = snap.serverTime;
-      this.ackInput = Math.max(this.ackInput, snap.ackInput);
+      // Attach the ack that belongs to this exact snapshot. main.js and the
+      // prediction layer keep reading snap.ackInput, so the API is unchanged.
+      snap.ackInput = this._ackFor(snap.seq);
       applySnapshot(this.cache, snap);
       this.buffer.push(snap, this.cache);
       if (this.onSnapshot) this.onSnapshot(snap);
@@ -211,6 +223,29 @@ export class NetClient {
       const pong = decodePong(buf);
       if (pong) this._onPong(pong, now);
     }
+  }
+
+  _onAck(ack) {
+    const seq = ack.seq >>> 0;
+    const value = ack.ackInput >>> 0;
+    this.acks.set(seq, value);
+    // 256 entries is ~8.5 s at 30 Hz; older snapshots can no longer be applied.
+    while (this.acks.size > 256) this.acks.delete(this.acks.keys().next().value);
+    if (seq >= this.lastAckSeq) this.lastAckSeq = seq;
+    // lastConsumedSeq only increases (until u32 wrap), so a max is safe across
+    // the 16-bit snapshot-sequence wrap.
+    this.lastAckInput = Math.max(this.lastAckInput, value);
+    this.ackInput = Math.max(this.ackInput, value);
+  }
+
+  // Return the ack for this exact snapshot, or null when its ack frame was
+  // lost. Guessing an older ack would replay an extra input tick and roughly
+  // double the visible correction, so the caller skips reconciliation instead.
+  _ackFor(seq) {
+    const exact = this.acks.get(seq >>> 0);
+    if (exact !== undefined) return exact;
+    this.ackMisses++;
+    return null;
   }
 
   _onPong(pong, now) {

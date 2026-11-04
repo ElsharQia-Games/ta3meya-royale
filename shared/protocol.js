@@ -15,12 +15,13 @@ import { CFG } from './config.js';
 import { WEAPON_KEYS } from './weapons.js';
 import { clamp, wrapAngle, TAU } from './math.js';
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export const MSG = {
   INPUT: 0x10,
   PING: 0x11,
   PONG: 0x12,
+  ACK: 0x13,
   SNAPSHOT: 0x14,
   EVENTS: 0x15,
   LOOT: 0x16,
@@ -100,6 +101,39 @@ export function decodeInput(buf) {
   };
 }
 
+// Server-side input gate. Rejects replays/out-of-order frames and normalises
+// every client-controlled field before it reaches the simulation. The server
+// never trusts a client position; only buttons, view angles and item/vehicle
+// requests cross this boundary.
+const BUTTON_MASK = BTN.F | BTN.B | BTN.L | BTN.R | BTN.JUMP | BTN.SPRINT | BTN.ADS | BTN.SHOOT;
+const ACTION_MASK = ACT.RELOAD | ACT.GRENADE | ACT.SMOKE | ACT.HEAL | ACT.INTERACT | ACT.CYCLE;
+
+export function sanitizeWireInput(w, lastSeq = 0) {
+  if (!w || !Number.isFinite(w.seq)) return null;
+  const seq = w.seq >>> 0;
+  // Input sequences start at 1 and must strictly increase. This drops
+  // duplicates, replays and reordered frames at the door instead of letting
+  // them occupy queue space.
+  if (seq === 0 || seq <= (lastSeq >>> 0)) return null;
+  if (!Number.isFinite(w.yaw) || !Number.isFinite(w.pitch)) return null;
+  let enterVehicle = Number.isInteger(w.enterVehicle) ? w.enterVehicle : 0;
+  if (enterVehicle < -1 || enterVehicle > 65535) enterVehicle = 0;
+  // Rebuild from known wire fields only: never forward an unknown property to
+  // the simulation, even if a future decoder accidentally exposes one.
+  return {
+    seq,
+    clientTime: Number.isFinite(w.clientTime) && w.clientTime >= 0 ? w.clientTime : 0,
+    viewTime: Number.isFinite(w.viewTime) && w.viewTime >= 0 ? w.viewTime : 0,
+    yaw: wrapAngle(w.yaw),
+    pitch: clamp(w.pitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH),
+    buttons: (w.buttons | 0) & BUTTON_MASK,
+    actions: (w.actions | 0) & ACTION_MASK,
+    slot: w.slot >= 0 && w.slot <= 1 ? w.slot : -1,
+    stance: w.stance >= 0 && w.stance <= 2 ? w.stance : -1,
+    enterVehicle,
+  };
+}
+
 // Convert a decoded wire input into the simulation input shape.
 export function wireToSimInput(w, previous = null) {
   const b = w.buttons, a = w.actions;
@@ -141,6 +175,28 @@ export function decodePong(buf) {
   const v = new DataView(buf);
   if (v.getUint8(0) !== MSG.PONG) return null;
   return { clientTime: v.getFloat64(1, true), serverTime: v.getFloat64(9, true) };
+}
+
+// ---------------------------------------------------------------------------
+// Input acknowledgement
+//
+// Acks are decoupled from snapshots so one snapshot buffer can be broadcast to
+// every client. Each ack names the snapshot sequence it belongs to; the client
+// only applies it to that exact snapshot. This keeps acks correct when a frame
+// is lost: an ack from a different tick is never used for reconciliation.
+// ---------------------------------------------------------------------------
+export function encodeAck(seq, ackInput) {
+  const b = new ArrayBuffer(9); const v = new DataView(b);
+  v.setUint8(0, MSG.ACK);
+  v.setUint32(1, seq >>> 0, true);
+  v.setUint32(5, ackInput >>> 0, true);
+  return b;
+}
+export function decodeAck(buf) {
+  if (buf.byteLength < 9) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.ACK) return null;
+  return { seq: v.getUint32(1, true), ackInput: v.getUint32(5, true) };
 }
 
 // ---------------------------------------------------------------------------
@@ -280,15 +336,16 @@ function writePlayer(v, off, cur, mask) {
 }
 
 // Encode a snapshot. `prev` is the previous state map (null => keyframe).
-// Returns { buffer, states }.
-export function encodeSnapshot(states, prev, seq, serverTime, ackInput, forceKeyframe = false) {
+// Returns { buffer, states }. Acks are a separate MSG.ACK frame so this buffer
+// is identical for every client in the room.
+export function encodeSnapshot(states, prev, seq, serverTime, forceKeyframe = false) {
   const keyframe = forceKeyframe || !prev;
   const ids = [...states.keys()].sort((a, b) => a - b);
   const removed = [];
   if (!keyframe && prev) {
     for (const id of prev.keys()) if (!states.has(id)) removed.push(id);
   }
-  let size = 20 + removed.length * 2 + 64;
+  let size = 16 + removed.length * 2 + 64;
   const blocks = [];
   for (const id of ids) {
     const cur = states.get(id);
@@ -304,7 +361,6 @@ export function encodeSnapshot(states, prev, seq, serverTime, ackInput, forceKey
   v.setUint8(off++, keyframe ? 1 : 0);
   v.setUint16(off, seq & 0xffff, true); off += 2;
   v.setFloat64(off, serverTime, true); off += 8;
-  v.setUint32(off, ackInput >>> 0, true); off += 4;
   v.setUint16(off, keyframe ? 0 : (seq - 1) & 0xffff, true); off += 2;
   v.setUint8(off++, blocks.length);
   v.setUint8(off++, removed.length);
@@ -359,17 +415,16 @@ function readPlayer(v, off) {
 }
 
 export function decodeSnapshot(buf) {
-  if (buf.byteLength < 20) return null;
+  if (buf.byteLength < 16) return null;
   const v = new DataView(buf);
   if (v.getUint8(0) !== MSG.SNAPSHOT) return null;
   const keyframe = !!(v.getUint8(1) & 1);
   const seq = v.getUint16(2, true);
   const serverTime = v.getFloat64(4, true);
-  const ackInput = v.getUint32(12, true);
-  const baseSeq = v.getUint16(16, true);
-  const count = v.getUint8(18);
-  const removedCount = v.getUint8(19);
-  let off = 20;
+  const baseSeq = v.getUint16(12, true);
+  const count = v.getUint8(14);
+  const removedCount = v.getUint8(15);
+  let off = 16;
   const removed = [];
   for (let i = 0; i < removedCount; i++) { removed.push(v.getUint16(off, true)); off += 2; }
   const players = [];
@@ -377,7 +432,7 @@ export function decodeSnapshot(buf) {
     const r = readPlayer(v, off); off = r.off;
     players.push(r.player);
   }
-  return { keyframe, seq, serverTime, ackInput, baseSeq, players, removed, bytes: buf.byteLength };
+  return { keyframe, seq, serverTime, baseSeq, players, removed, bytes: buf.byteLength };
 }
 
 // Apply a decoded snapshot to a client-side cache Map.

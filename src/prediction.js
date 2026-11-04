@@ -65,8 +65,12 @@ export class Prediction {
   }
 
   // Reconcile with the authoritative local player state from a snapshot.
+  // ackSeq === null means the ack frame for this snapshot was lost; do not
+  // guess which inputs the server had applied. The next snapshot with a known
+  // ack corrects the prediction instead.
   reconcile(snapshot, ackSeq) {
     if (!snapshot) return;
+    if (ackSeq === null || ackSeq === undefined) return;
     const p = this.player;
     const old = p.pos.slice();
     const inVehicle = snapshot.vehicle || 0;

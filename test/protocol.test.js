@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MSG, BTN, ACT, F, PROTOCOL_VERSION, encodeInput, decodeInput, wireToSimInput,
-  encodePing, decodePing, encodePong, decodePong, encodeSnapshot, decodeSnapshot,
-  applySnapshot, encodeEvents, decodeEvents, encodeLoot, decodeLoot,
-  encodeControl, decodeControl, sanitizeName, sanitizeRoom, filterEvents,
-  weaponIndex, weaponKey,
+  encodePing, decodePing, encodePong, decodePong, encodeAck, decodeAck,
+  encodeSnapshot, decodeSnapshot, applySnapshot, encodeEvents, decodeEvents,
+  encodeLoot, decodeLoot, encodeControl, decodeControl, sanitizeName,
+  sanitizeRoom, filterEvents, sanitizeWireInput, weaponIndex, weaponKey,
 } from '../shared/protocol.js';
 import { WEAPON_KEYS } from '../shared/weapons.js';
 
@@ -21,9 +21,34 @@ function state(id, over = {}) {
 
 test('protocol version and message ids are stable', () => {
   assert.equal(typeof PROTOCOL_VERSION, 'number');
+  assert.ok(PROTOCOL_VERSION >= 6);
   assert.equal(MSG.INPUT, 0x10);
+  assert.equal(MSG.ACK, 0x13);
   assert.equal(MSG.SNAPSHOT, 0x14);
   assert.notEqual(MSG.INPUT, MSG.SNAPSHOT);
+  assert.notEqual(MSG.ACK, MSG.SNAPSHOT);
+});
+
+test('ack frames carry the snapshot sequence they belong to', () => {
+  const buf = encodeAck(1234, 987654);
+  assert.equal(buf.byteLength, 9);
+  const ack = decodeAck(buf);
+  assert.equal(ack.seq, 1234);
+  assert.equal(ack.ackInput, 987654);
+  assert.equal(decodeAck(new ArrayBuffer(8)), null);
+  const wrong = new ArrayBuffer(9);
+  new DataView(wrong).setUint8(0, MSG.SNAPSHOT);
+  assert.equal(decodeAck(wrong), null);
+});
+
+test('snapshot header no longer carries a per-client ack', () => {
+  const s = new Map([[1, state(1)]]);
+  const { buffer } = encodeSnapshot(s, null, 1, 1, true);
+  const d = decodeSnapshot(buffer);
+  assert.equal(d.ackInput, undefined);
+  assert.equal(d.seq, 1);
+  // 16-byte header + 4-byte player header + one full player block.
+  assert.ok(buffer.byteLength > 16);
 });
 
 test('input frames round-trip every field', () => {
@@ -63,6 +88,31 @@ test('input decoding rejects malformed frames', () => {
   assert.equal(decodeInput(bad), null);
 });
 
+test('server input gate rejects replays and normalises hostile fields', () => {
+  const base = {
+    seq: 10, clientTime: 1, yaw: 10, pitch: 9,
+    buttons: 0xffff, actions: 0xff, slot: 7, stance: 9,
+    enterVehicle: 999999, viewTime: -5,
+  };
+  assert.equal(sanitizeWireInput(null, 0), null);
+  assert.equal(sanitizeWireInput({ ...base, seq: 0 }, 0), null, 'seq 0 is invalid');
+  assert.equal(sanitizeWireInput({ ...base, seq: 5 }, 5), null, 'duplicate seq');
+  assert.equal(sanitizeWireInput({ ...base, seq: 5 }, 9), null, 'out-of-order seq');
+  assert.equal(sanitizeWireInput({ ...base, yaw: NaN }, 0), null);
+  assert.equal(sanitizeWireInput({ ...base, pitch: Infinity }, 0), null);
+
+  const out = sanitizeWireInput(base, 9);
+  assert.equal(out.seq, 10);
+  assert.ok(Math.abs(out.yaw) <= Math.PI);
+  assert.ok(Math.abs(out.pitch) <= 1.5);
+  assert.equal(out.buttons, 0x00ff, 'only defined button bits survive');
+  assert.equal(out.actions, 0x3f, 'only defined action bits survive');
+  assert.equal(out.slot, -1);
+  assert.equal(out.stance, -1);
+  assert.equal(out.enterVehicle, 0);
+  assert.equal(out.viewTime, 0);
+});
+
 test('ping and pong round-trip', () => {
   const ping = decodePing(encodePing(1234.5));
   assert.equal(ping.clientTime, 1234.5);
@@ -73,12 +123,11 @@ test('ping and pong round-trip', () => {
 
 test('snapshot keyframe and delta apply to a client cache', () => {
   const s1 = new Map([[1, state(1)], [2, state(2, { x: 9 })] , [3, state(3)]]);
-  const kf = encodeSnapshot(s1, null, 1, 10.5, 7, true);
+  const kf = encodeSnapshot(s1, null, 1, 10.5, true);
   const dk = decodeSnapshot(kf.buffer);
   assert.equal(dk.keyframe, true);
   assert.equal(dk.seq, 1);
   assert.equal(dk.serverTime, 10.5);
-  assert.equal(dk.ackInput, 7);
   assert.equal(dk.players.length, 3);
   assert.equal(dk.players[0].id, 1);
   assert.ok(Math.abs(dk.players[0].x - 1.25) < 0.021);
@@ -93,7 +142,7 @@ test('snapshot keyframe and delta apply to a client cache', () => {
     [1, state(1, { x: 6, hp: 20 })],
     [2, state(2, { x: 9 })],
   ]);
-  const delta = encodeSnapshot(s2, kf.states, 2, 10.53, 9, false);
+  const delta = encodeSnapshot(s2, kf.states, 2, 10.53, false);
   const dd = decodeSnapshot(delta.buffer);
   assert.equal(dd.keyframe, false);
   assert.equal(dd.seq, 2);
@@ -113,8 +162,8 @@ test('snapshot keyframe and delta apply to a client cache', () => {
 
 test('unchanged snapshots are very small', () => {
   const s = new Map([[1, state(1)], [2, state(2)]]);
-  const kf = encodeSnapshot(s, null, 1, 1, 1, true);
-  const delta = encodeSnapshot(s, kf.states, 2, 1.03, 2, false);
+  const kf = encodeSnapshot(s, null, 1, 1, true);
+  const delta = encodeSnapshot(s, kf.states, 2, 1.03, false);
   assert.ok(delta.buffer.byteLength <= 24, `idle delta ${delta.buffer.byteLength} bytes`);
   const d = decodeSnapshot(delta.buffer);
   assert.equal(d.players.length, 0);
