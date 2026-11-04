@@ -579,6 +579,13 @@ export function sanitizeRoom(code) {
   return s || 'ALPHA01';
 }
 
+export function randomRoom() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < 5; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
 // Interest filter for events: keep events near the viewer or involving them.
 export function filterEvents(events, viewer, radius = CFG.NET.eventRadius) {
   if (!events.length) return events;

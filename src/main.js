@@ -7,7 +7,7 @@
 //             used for training without a server.
 import * as THREE from 'three';
 import { CFG, MATCH_STATE, TEAMS, STANCE, combatKit } from '../shared/config.js';
-import { weaponKey } from '../shared/protocol.js';
+import { weaponKey, randomRoom } from '../shared/protocol.js';
 import { Game } from '../shared/sim.js';
 import { spawnBots, stepBots } from '../server/bots.js';
 import { clamp, damp, lerpAngle } from '../shared/math.js';
@@ -25,6 +25,7 @@ import { loadSettings, saveSettings } from './settings.js';
 import { HUD } from './ui/hud.js';
 import { AudioEngine } from './audio/audio.js';
 import { NetClient, defaultUrl } from './net/client.js';
+import { joinPeerSession } from './net/peer.js';
 import { Prediction, remoteRenderTime } from './prediction.js';
 import { World } from '../shared/world.js';
 
@@ -78,6 +79,9 @@ class App {
     this.pendingShots = [];
     this.adsF = 0;
 
+    this.host = null;
+    this.relay = null;
+    this.netMode = 'peer';
     this.offlineGame = null;
     this.offlinePlayer = null;
     this.offlineInputs = new Map();
@@ -181,6 +185,45 @@ class App {
     $('nav-manual').onclick = () => this.toggleManual(true);
     $('manual-close').onclick = $('manual-done').onclick = () => this.toggleManual(false);
 
+    const serverParam = params.get('server') || params.get('s');
+    const netParam = params.get('net');
+    if (serverParam) {
+      this.netMode = 'server';
+      if ($('in-server')) $('in-server').value = serverParam;
+    } else if (netParam === 'server') {
+      this.netMode = 'server';
+    } else if (netParam === 'peer') {
+      this.netMode = 'peer';
+    } else if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      this.netMode = 'server';
+    } else {
+      this.netMode = 'peer';
+    }
+    const selectNetMode = (mode) => {
+      this.netMode = mode;
+      document.querySelectorAll('.net-opt').forEach(btn => {
+        const active = btn.dataset.net === mode;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', String(active));
+      });
+      $('server-url-wrap')?.classList.toggle('hidden', mode !== 'server');
+    };
+    selectNetMode(this.netMode);
+    document.querySelectorAll('.net-opt').forEach(btn => {
+      btn.addEventListener('click', () => selectNetMode(btn.dataset.net));
+    });
+
+    $('btn-new-room')?.addEventListener('click', () => {
+      const code = randomRoom();
+      $('in-room').value = code;
+      this.audio.init();
+      this.audio.ui('select');
+      this.copyLink();
+      const currentMode = $('in-mode').value === 'tdm' ? 'Team Deathmatch' : 'Battle Royale';
+      this.setLobbyStatus(`New room ${code} (${currentMode}) created! Invite link copied to clipboard.`);
+    });
+    $('settings-share')?.addEventListener('click', () => this.copyLink());
+
     $('join').addEventListener('click', () => this.joinOnline());
     $('battest').addEventListener('click', () => this.joinOffline());
     $('copy-link').addEventListener('click', () => this.copyLink());
@@ -189,7 +232,12 @@ class App {
 
     const mode = $('in-mode').value;
     this.hud.setLobbyRoster([], mode, MATCH_STATE.LOBBY);
-    this.setLobbyStatus('Use the same room code to play together.');
+    if (params.get('room') || params.get('r')) {
+      const modeName = mode === 'tdm' ? 'Team Deathmatch' : 'Battle Royale';
+      this.setLobbyStatus(`Room ${room} (${modeName}) loaded. Click DEPLOY to enter combat!`);
+    } else {
+      this.setLobbyStatus('Choose mode, or generate a new room code to play with friends.');
+    }
   }
 
   toggleManual(open) {
@@ -248,27 +296,36 @@ class App {
     const name = ($('in-name').value || 'Soldier').trim().slice(0, 16) || 'Soldier';
     const room = ($('in-room').value || 'ALPHA01').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'ALPHA01';
     const mode = $('in-mode').value === 'tdm' ? 'tdm' : 'br';
+    const server = ($('in-server')?.value || '').trim();
     this.settings.name = name;
     this.settings.room = room;
     this.settings.mode = mode;
     this.settings.kit = this.selectedKit;
     saveSettings(this.settings);
-    return { name, room, mode, kit: this.selectedKit };
+    return { name, room, mode, kit: this.selectedKit, server };
   }
 
   setLobbyStatus(text, error = false) {
     const el = $('lobby-status');
+    if (!el) return;
     el.textContent = text;
     el.classList.toggle('error', !!error);
   }
 
   copyLink() {
-    const { room, mode } = this.readLobby();
-    const url = `${location.origin}${location.pathname}?room=${encodeURIComponent(room)}&mode=${mode}`;
+    const { room, mode, server } = this.readLobby();
+    let query = `room=${encodeURIComponent(room)}&mode=${mode}`;
+    if (this.netMode === 'server' && server && server !== defaultUrl()) {
+      query += `&server=${encodeURIComponent(server)}`;
+    }
+    const url = `${location.origin}${location.pathname}?${query}`;
     const copied = navigator.clipboard?.writeText(url);
     if (!copied) { this.setLobbyStatus(url); return; }
     copied.then(
-      () => this.setLobbyStatus(`Invite link copied: ${url}`),
+      () => {
+        this.setLobbyStatus(`Invite link copied: ${url}`);
+        this.hud?.notify?.('Invite link copied to clipboard');
+      },
       () => this.setLobbyStatus(url),
     );
   }
@@ -276,16 +333,51 @@ class App {
   // -------------------------------------------------------------------------
   // Online session
   // -------------------------------------------------------------------------
-  joinOnline() {
+  async joinOnline() {
     if (this.net) return;
-    const { name, room, mode, kit } = this.readLobby();
+    const { name, room, mode, kit, server } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
     this.audio.setMuted(this.settings.muted);
-    this.setLobbyStatus('Connecting to the server…');
     $('join').disabled = true;
 
-    const net = new NetClient({ name, room, mode, kit, url: defaultUrl() });
+    if (this.netMode === 'peer') {
+      this.setLobbyStatus(`Connecting to room ${room}…`);
+      try {
+        const session = await joinPeerSession({
+          name, room, mode, kit,
+          WebSocket: globalThis.WebSocket,
+          onStatus: (st) => {
+            if (st === 'probing-room') this.setLobbyStatus(`Searching for room ${room}…`);
+            else if (st === 'hosting') this.setLobbyStatus(`Hosting room ${room} (${mode.toUpperCase()}) · Share invite link with friends!`);
+            else if (st === 'connecting-guest') this.setLobbyStatus(`Connecting to host in room ${room}…`);
+            else if (st === 'connecting-p2p') this.setLobbyStatus(`Establishing P2P link with host…`);
+          },
+          onError: (err) => {
+            this.setLobbyStatus(`Connection error: ${err}`, true);
+            $('join').disabled = false;
+          },
+        });
+
+        this.host = session.host;
+        this.relay = session.relay;
+        this._wireNetClient(session.net);
+        session.net.connect();
+      } catch (err) {
+        this.setLobbyStatus(`Connection failed: ${err.message || err}`, true);
+        $('join').disabled = false;
+      }
+      return;
+    }
+
+    this.setLobbyStatus('Connecting to the server…');
+    const url = server || defaultUrl();
+    const net = new NetClient({ name, room, mode, kit, url });
+    this._wireNetClient(net);
+    net.connect();
+  }
+
+  _wireNetClient(net) {
     this.net = net;
     net.onStatus = (state, extra) => {
       if (state === 'connecting') this.setLobbyStatus('Connecting…');
@@ -297,6 +389,7 @@ class App {
       else if (state === 'error' && !this.active) {
         net.disconnect();
         if (this.net === net) this.net = null;
+        if (this.host) { this.host.close(); this.host = null; }
         $('join').disabled = false;
       }
       else if (state === 'closed') { /* intentional */ }
@@ -320,7 +413,6 @@ class App {
       this.syncVehicles(this.state.vehicles);
     };
     net.onChat = (msg) => this.hud.addChat(msg.name, msg.text, msg.team);
-    net.connect();
   }
 
   onWelcome(msg) {
@@ -488,6 +580,8 @@ class App {
     this.active = false;
     this.input.enabled = false;
     this.input.releaseLock();
+    if (this.host) { this.host.close(); this.host = null; }
+    if (this.relay) { this.relay.close(); this.relay = null; }
     if (this.net) { this.net.leave(); this.net = null; }
     location.reload();
   }
@@ -522,6 +616,10 @@ class App {
     this.last = now;
     const dt = Math.min(0.1, Math.max(0, raw));
     this.time += dt;
+
+    if (this.host) {
+      this.host.step(dt);
+    }
 
     if (this.active) {
       this.tick(dt);
@@ -1446,9 +1544,12 @@ class App {
         this.applySettings(this.settings);
         this.hud.notify(this.settings.muted ? 'AUDIO MUTED' : 'AUDIO ON');
       }
-      if (e.code === 'KeyP' && this.active && !this.hud.chatOpen && !this.hud.settingsOpen
-        && this.net && !this.net.connected) {
-        this.forceReconnect();
+      if (e.code === 'KeyP' && this.active && !this.hud.chatOpen && !this.hud.settingsOpen) {
+        if (this.net && !this.net.connected) {
+          this.forceReconnect();
+        } else {
+          this.copyLink();
+        }
       }
       if (e.code === 'KeyQ' && this.active && !this.hud.chatOpen && !this.hud.settingsOpen) {
         this.cycleSpectate();

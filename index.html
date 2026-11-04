@@ -315,7 +315,28 @@
         <select id="in-mode" class="mode-native" tabindex="-1" aria-hidden="true"><option value="br">Battle Royale</option><option value="tdm">Team Deathmatch</option></select>
         <div class="deployment-divider"><span>OPERATOR DETAILS</span><span id="mode-capacity">32 MAX</span></div>
         <div class="field"><label for="in-name">CALLSIGN <span>01</span></label><input id="in-name" maxlength="16" autocomplete="off" spellcheck="false" value="Soldier" placeholder="Your callsign"></div>
-        <div class="field room-field"><label for="in-room">ROOM CODE <span>02</span></label><input id="in-room" maxlength="12" autocomplete="off" spellcheck="false" value="ALPHA01" placeholder="Enter a room code"><button id="copy-link" aria-label="Copy room invite link" title="Copy invite link">↗</button></div>
+        <div class="field room-field">
+          <div class="room-label-row">
+            <label for="in-room">ROOM CODE <span>02</span></label>
+            <button id="btn-new-room" class="room-action-btn" type="button" title="Generate fresh room code">🎲 NEW ROOM</button>
+          </div>
+          <div class="room-input-wrap">
+            <input id="in-room" maxlength="12" autocomplete="off" spellcheck="false" value="ALPHA01" placeholder="Enter a room code">
+            <button id="copy-link" class="room-share-btn" type="button" aria-label="Copy room invite link" title="Copy invite link"><span>SHARE</span> ↗</button>
+          </div>
+        </div>
+        <div class="field net-field">
+          <div class="net-header">
+            <span>NETWORK</span>
+            <div class="net-modes" role="radiogroup" aria-label="Network mode">
+              <button id="net-opt-peer" type="button" class="net-opt active" data-net="peer" role="radio" aria-checked="true">ONLINE RELAY</button>
+              <button id="net-opt-server" type="button" class="net-opt" data-net="server" role="radio" aria-checked="false">SERVER</button>
+            </div>
+          </div>
+          <div id="server-url-wrap" class="server-url-wrap hidden">
+            <input id="in-server" autocomplete="off" spellcheck="false" value="ws://localhost:3000/ws" placeholder="Server URL e.g. ws://localhost:3000/ws">
+          </div>
+        </div>
         <button id="join" class="btn primary deploy-button"><span>DEPLOY TO BLACKSHORE</span><span class="button-arrow">↗</span></button>
         <button id="battest" class="btn ghost training-button"><span>ENTER TRAINING</span><span>OFFLINE ↗</span></button>
         <div id="lobby-status" class="status" role="status">Enter a callsign and room code.</div>
@@ -383,7 +404,7 @@
       <button id="settings-save" class="btn ghost">APPLY</button>
     </div>
     <div class="btn-row">
-      <button id="settings-close" class="btn ghost">CANCEL</button>
+      <button id="settings-share" class="btn ghost">COPY INVITE LINK ↗</button>
       <button id="settings-leave" class="btn ghost">LEAVE MATCH</button>
     </div>
   </div>

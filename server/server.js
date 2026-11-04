@@ -252,7 +252,12 @@ function handleJoin(ws, msg) {
       }
     }
   }
-  if (!room) room = createRoom(code, requestedMode);
+  if (!room) {
+    room = createRoom(code, requestedMode);
+  } else if (room.humanCount() === 0 && room.mode !== requestedMode) {
+    rooms.delete(code);
+    room = createRoom(code, requestedMode);
+  }
   if (!player) {
     if (!room.ensureCapacity()) return reject(ws, 'Room is full');
     const team = room.mode === 'tdm' ? pickTeam(room) : 0;

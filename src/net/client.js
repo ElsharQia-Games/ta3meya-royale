@@ -390,7 +390,20 @@ function InputMasks(input) {
 }
 
 export function defaultUrl() {
-  if (location.protocol === 'file:') return 'ws://localhost:3000/ws';
+  if (typeof location === 'undefined') return 'ws://127.0.0.1:3000/ws';
+  try {
+    const params = new URLSearchParams(location.search);
+    const serverParam = params.get('server') || params.get('s');
+    if (serverParam) return serverParam;
+    const saved = localStorage.getItem('ta3meya_server_url');
+    if (saved) return saved;
+  } catch {}
+  if (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    return 'ws://localhost:3000/ws';
+  }
+  if (location.hostname.endsWith('github.io')) {
+    return 'relay';
+  }
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.host}/ws`;
 }
