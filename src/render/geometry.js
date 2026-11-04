@@ -31,7 +31,7 @@ export function batchStaticParts(group) {
 
 // World-space geometry is merged by spatial cell AND material so an invisible
 // town doesn't keep the entire island in every camera/shadow draw.
-export function mergeSpatialGeometry(geometries, material, name, cell = 80) {
+export function mergeSpatialGeometry(geometries, material, name, cell = 160) {
   const bins = new Map();
   for (const geometry of geometries) {
     geometry.computeBoundingBox();
@@ -49,7 +49,7 @@ export function mergeSpatialGeometry(geometries, material, name, cell = 80) {
   return meshes;
 }
 
-export function splitInstances(source, cell = 80) {
+export function splitInstances(source, cell = 160) {
   const bins = new Map(), matrix = new THREE.Matrix4(), position = new THREE.Vector3(), color = new THREE.Color();
   for (let i = 0; i < source.count; i++) {
     source.getMatrixAt(i, matrix); position.setFromMatrixPosition(matrix);

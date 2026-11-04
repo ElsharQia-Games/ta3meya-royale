@@ -90,20 +90,11 @@ export class NatureDetail {
     if (!this.loaded) return;
     const quality = this.view.renderer.settings.quality;
     const x = camera.position.x, z = camera.position.z;
-    if (Math.hypot(x - this.lastX, z - this.lastZ) < 2 && quality === this.lastQuality &&
-      Math.abs(camera.rotation.y - (this.lastYaw ?? Infinity)) < .015 && Math.abs(camera.rotation.x - (this.lastPitch ?? Infinity)) < .015 && camera.fov === this.lastFov) return;
+    if (Math.hypot(x - this.lastX, z - this.lastZ) < 3.5 && quality === this.lastQuality) return;
     this.lastX = x; this.lastZ = z; this.lastQuality = quality;
-    this.lastYaw = camera.rotation.y; this.lastPitch = camera.rotation.x; this.lastFov = camera.fov;
     const radius = quality === 'high' ? 120 : quality === 'medium' ? 85 : 45;
     this.trunks.count = this.farPines.count = this.farOaks.count = 0;
-    camera.updateMatrixWorld();
-    const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
-    const sphere = new THREE.Sphere();
-    const visible = (tree, distance) => {
-      if (distance < 35) return true; // retain nearby off-screen shadow casters
-      sphere.center.set(tree.x, tree.y + tree.h / 2, tree.z); sphere.radius = tree.h + 5;
-      return distance < this.view.renderer.quality.viewDistance && frustum.intersectsSphere(sphere);
-    };
+    const viewDistance = this.view.renderer.quality.viewDistance;
     const copyInstance = (mesh, matrices, colors, index) => {
       mesh.instanceMatrix.array.set(matrices.subarray(index * 16, index * 16 + 16), mesh.count * 16);
       mesh.instanceColor.array.set(colors.subarray(index * 3, index * 3 + 3), mesh.count * 3); mesh.count++;
@@ -115,7 +106,7 @@ export class NatureDetail {
     this.view.world.trees.forEach((tree, index) => {
       const pine = tree.type === 'pine', farIndex = pine ? pi++ : oi++ * 3;
       const distance = Math.hypot(x - tree.x, z - tree.z);
-      if (!visible(tree, distance)) return;
+      if (distance > viewDistance) return;
       copyInstance(this.trunks, this.trunkMatrices, this.trunkColors, index);
       if (distance > radius) {
         if (pine) copyInstance(this.farPines, this.pineMatrices, this.pineColors, farIndex);

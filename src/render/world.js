@@ -85,6 +85,8 @@ export class WorldRenderer {
     this.buildingStyles = new Map(world.buildings.map((building, index) => [building, index % this.facadeMaterials.length]));
     this.fieldAssets = new FieldAssets(renderer, this.mats);
     this.dynamicMeshes = new Map();
+    this.dynamicInstances = new Map();
+    this.dynamicInstancedGroups = [];
     this.staticMeshes = [];
     this.treeMeshes = [];
     this.rockMesh = null;
@@ -265,17 +267,26 @@ export class WorldRenderer {
     const collect = (material, geometry) => {
       const list = byMat.get(material) || []; list.push(geometry); byMat.set(material, list);
     };
+
+    const archetypeBins = new Map();
+    const nonArchetypeDynamic = [];
+
     for (const b of this.world.boxes) {
       if (!b.render || b.destroyed) continue;
-      const model = this.fieldAssets.create(b);
       if (b.dynamic) {
-        const mesh = model || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
-        mesh.castShadow = true; mesh.receiveShadow = true;
-        mesh.name = `dyn_${b.id}`;
-        this.scene.add(mesh);
-        this.dynamicMeshes.set(b.id, mesh);
+        let key = null;
+        if (b.tag === 'barrel') key = (b.id % 3) ? 'barrel_rust' : 'barrel_amber';
+        else if (['sandbag', 'crate', 'fence'].includes(b.tag)) key = b.tag;
+        if (key) {
+          let list = archetypeBins.get(key);
+          if (!list) { list = []; archetypeBins.set(key, list); }
+          list.push(b);
+        } else {
+          nonArchetypeDynamic.push(b);
+        }
         continue;
       }
+      const model = this.fieldAssets.create(b);
       if (model) {
         model.updateMatrixWorld(true);
         model.traverse(part => {
@@ -288,10 +299,68 @@ export class WorldRenderer {
         collect(this.facadeMaterial(b), original.toNonIndexed()); original.dispose();
       }
     }
+
     for (const [mat, geos] of byMat) {
       const meshes = mergeSpatialGeometry(geos, mat, `static_${mat.id}`);
       for (const mesh of meshes) mesh.castShadow = !mat.userData.noShadow;
       this.scene.add(...meshes); this.staticMeshes.push(...meshes);
+    }
+
+    // Build instanced dynamic archetypes
+    for (const [archetypeKey, boxes] of archetypeBins) {
+      const sampleBox = boxes[0];
+      const sampleModel = this.fieldAssets.create(sampleBox);
+      if (!sampleModel) continue;
+      sampleModel.updateMatrixWorld(true);
+
+      const parts = [];
+      sampleModel.traverse(child => {
+        if (child.isMesh) {
+          child.updateMatrix();
+          const geo = (child.geometry.index ? child.geometry.toNonIndexed() : child.geometry.clone()).applyMatrix4(child.matrix);
+          parts.push({ geometry: geo, material: child.material, castShadow: child.castShadow, receiveShadow: child.receiveShadow });
+        }
+      });
+
+      const instancedMeshes = parts.map((part, pIdx) => {
+        const im = new THREE.InstancedMesh(part.geometry, part.material, boxes.length);
+        im.name = `dynamic_${archetypeKey}_${pIdx}`;
+        im.castShadow = part.castShadow;
+        im.receiveShadow = part.receiveShadow;
+        im.frustumCulled = true;
+        this.scene.add(im);
+        this.dynamicInstancedGroups.push(im);
+        return im;
+      });
+
+      const matrix = new THREE.Matrix4();
+      for (let i = 0; i < boxes.length; i++) {
+        const b = boxes[i];
+        const cx = (b.min[0] + b.max[0]) / 2, cy = b.min[1], cz = (b.min[2] + b.max[2]) / 2;
+        matrix.makeTranslation(cx, cy, cz);
+        for (const im of instancedMeshes) im.setMatrixAt(i, matrix);
+        this.dynamicInstances.set(b.id, {
+          archetype: archetypeKey,
+          index: i,
+          originalMatrix: matrix.clone(),
+          meshes: instancedMeshes
+        });
+      }
+
+      for (const im of instancedMeshes) {
+        im.instanceMatrix.needsUpdate = true;
+        im.computeBoundingSphere();
+      }
+
+      sampleModel.traverse(c => { c.geometry?.dispose(); });
+    }
+
+    for (const b of nonArchetypeDynamic) {
+      const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.name = `dyn_${b.id}`;
+      this.scene.add(mesh);
+      this.dynamicMeshes.set(b.id, mesh);
     }
   }
 
@@ -307,6 +376,15 @@ export class WorldRenderer {
   removeBox(id) {
     const box = this.world.boxes[id];
     if (box?.dynamic) box.destroyed = true;
+    const entry = this.dynamicInstances.get(id);
+    if (entry) {
+      const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+      for (const mesh of entry.meshes) {
+        mesh.setMatrixAt(entry.index, zero);
+        mesh.instanceMatrix.needsUpdate = true;
+      }
+      return;
+    }
     const mesh = this.dynamicMeshes.get(id);
     if (!mesh) return;
     this.scene.remove(mesh);
@@ -320,13 +398,23 @@ export class WorldRenderer {
       if (!b.dynamic || !b.render) continue;
       const gone = destroyed.has(b.id);
       b.destroyed = gone;
-      if (gone) this.removeBox(b.id);
-      else if (!this.dynamicMeshes.has(b.id)) {
-        b.hp = b.maxHp;
-        const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
-        mesh.castShadow = true; mesh.receiveShadow = true;
-        mesh.name = `dyn_${b.id}`;
-        this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
+      if (gone) {
+        this.removeBox(b.id);
+      } else {
+        const entry = this.dynamicInstances.get(b.id);
+        if (entry) {
+          b.hp = b.maxHp;
+          for (const mesh of entry.meshes) {
+            mesh.setMatrixAt(entry.index, entry.originalMatrix);
+            mesh.instanceMatrix.needsUpdate = true;
+          }
+        } else if (!this.dynamicMeshes.has(b.id)) {
+          b.hp = b.maxHp;
+          const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+          mesh.castShadow = true; mesh.receiveShadow = true;
+          mesh.name = `dyn_${b.id}`;
+          this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
+        }
       }
     }
   }

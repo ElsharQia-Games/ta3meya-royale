@@ -10,7 +10,7 @@ export const DEFAULTS = {
   muted: false,
   quality: 'high',        // high | medium | low
   shadows: true,
-  bloom: true,
+  bloom: false,
   showFps: false,
   crosshair: '#e7efc9',
   minimap: true,
@@ -36,10 +36,10 @@ export function saveSettings(s) {
 
 export function qualityPreset(name) {
   if (name === 'low') {
-    return { pixelRatio: 0.85, shadows: false, bloom: false, cascades: 1, shadowMap: 512, fogDensity: 0.0022, viewDistance: 700 };
+    return { pixelRatio: 0.85, shadows: false, bloom: false, cascades: 0, shadowMap: 512, fogDensity: 0.0022, viewDistance: 650 };
   }
   if (name === 'medium') {
-    return { pixelRatio: 1.15, shadows: true, bloom: false, cascades: 2, shadowMap: 1024, fogDensity: 0.0018, viewDistance: 1000 };
+    return { pixelRatio: 1.0, shadows: true, bloom: false, cascades: 1, shadowMap: 1024, fogDensity: 0.0018, viewDistance: 950 };
   }
-  return { pixelRatio: 1.65, shadows: true, bloom: true, cascades: 3, shadowMap: 2048, fogDensity: 0.0015, viewDistance: 1400 };
+  return { pixelRatio: 1.0, shadows: true, bloom: false, cascades: 2, shadowMap: 1024, fogDensity: 0.0015, viewDistance: 1250 };
 }

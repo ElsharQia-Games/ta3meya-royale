@@ -166,18 +166,38 @@ export class GameRenderer {
 
   _buildCSM() {
     const q = this.quality;
+    if (!this.settings.shadows || !q.shadows || q.cascades <= 0) {
+      if (this.csm) {
+        this.csm.remove();
+        for (const light of this.csm.lights) { light.shadow.map?.dispose(); light.shadow.mapPass?.dispose(); }
+        this.csm.dispose();
+        this.csm = null;
+      }
+      if (!this.directSun) {
+        this.directSun = new THREE.DirectionalLight(BLACKSHORE.sunColor, BLACKSHORE.sunIntensity);
+        this.directSun.position.copy(LIGHT_DIR).multiplyScalar(-100);
+        this.scene.add(this.directSun);
+      }
+      this.sun = this.directSun;
+      return;
+    }
+    if (this.directSun) {
+      this.directSun.removeFromParent();
+      this.directSun.dispose?.();
+      this.directSun = null;
+    }
     this.csm = new CSM({
       camera: this.camera,
       parent: this.scene,
-      cascades: q.cascades,
-      maxFar: 240,
+      cascades: Math.min(2, q.cascades),
+      maxFar: q.cascades > 1 ? 130 : 80,
       mode: 'practical',
-      shadowMapSize: q.shadowMap,
+      shadowMapSize: Math.min(1024, q.shadowMap),
       lightDirection: LIGHT_DIR.clone(),
       lightIntensity: BLACKSHORE.sunIntensity,
       lightNear: 0.5,
-      lightFar: 600,
-      lightMargin: 220,
+      lightFar: 400,
+      lightMargin: 35,
       shadowBias: -.00005,
     });
     this.csm.fade = false;
@@ -190,8 +210,14 @@ export class GameRenderer {
   }
 
   _buildComposer() {
-    if (!this.settings.bloom || !this.quality.bloom) {
+    const bloomWanted = !!(this.settings.bloom && this.quality.bloom !== false);
+    if (!bloomWanted) {
+      if (this.composer) {
+        for (const pass of this.composer.passes) pass.dispose?.();
+        this.composer.dispose();
+      }
       this.composer = null;
+      this.bloom = null;
       return;
     }
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -233,20 +259,24 @@ export class GameRenderer {
   setQuality(name) {
     const previous = this.quality;
     this.quality = qualityPreset(name);
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this.quality.pixelRatio));
+    this.renderer.setPixelRatio(Math.min(typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1, this.quality.pixelRatio));
     this.renderer.shadowMap.enabled = this.settings.shadows && this.quality.shadows;
-    if (previous.cascades !== this.quality.cascades || previous.shadowMap !== this.quality.shadowMap) {
-      this.csm.remove();
-      for (const light of this.csm.lights) { light.shadow.map?.dispose(); light.shadow.mapPass?.dispose(); }
-      this.csm.dispose();
+    if (previous.cascades !== this.quality.cascades || previous.shadowMap !== this.quality.shadowMap || (!this.csm && this.quality.cascades > 0)) {
+      if (this.csm) {
+        this.csm.remove();
+        for (const light of this.csm.lights) { light.shadow.map?.dispose(); light.shadow.mapPass?.dispose(); }
+        this.csm.dispose();
+      }
       this._buildCSM();
-      for (const material of this._materials) { this.csm.setupMaterial(material); material.needsUpdate = true; }
+      if (this.csm) {
+        for (const material of this._materials) { this.csm.setupMaterial(material); material.needsUpdate = true; }
+      }
     }
-    for (const l of this.csm.lights) l.castShadow = this.renderer.shadowMap.enabled;
+    for (const l of (this.csm?.lights || [])) l.castShadow = this.renderer.shadowMap.enabled;
     this.camera.far = this.quality.viewDistance;
     this.camera.updateProjectionMatrix();
     this.scene.fog.density = this.underwater ? .085 : this.quality.fogDensity;
-    const bloomWanted = this.settings.bloom && this.quality.bloom;
+    const bloomWanted = !!(this.settings.bloom && this.quality.bloom !== false);
     if (bloomWanted && !this.composer) this._buildComposer();
     if (!bloomWanted && this.composer) {
       for (const pass of this.composer.passes) pass.dispose?.();
@@ -273,8 +303,11 @@ export class GameRenderer {
   render(dt) {
     this.renderer.info.reset();
     if (this.csm) {
-      const projection = this.camera.projectionMatrix.elements.join(',');
-      if (projection !== this._shadowProjection) { this.csm.updateFrustums(); this._shadowProjection = projection; }
+      if (this.camera.aspect !== this._shadowAspect || this.camera.fov !== this._shadowFov) {
+        this.csm.updateFrustums();
+        this._shadowAspect = this.camera.aspect;
+        this._shadowFov = this.camera.fov;
+      }
       this.csm.update();
     }
     if (this.clouds) {

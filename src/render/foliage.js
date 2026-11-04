@@ -49,7 +49,7 @@ export class GroundCover {
     this.renderer = renderer;
     this.world = world;
     this.cell = .83;
-    this.radius = 39;
+    this.radius = 22;
     this.lastX = Infinity; this.lastZ = Infinity;
     const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .96, side: THREE.DoubleSide });
     renderer.registerMaterial(material);
@@ -60,7 +60,31 @@ export class GroundCover {
     mesh.frustumCulled = false;
     mesh.count = 0;
     renderer.scene.add(mesh);
-    this.roadSegments = world.roads.flatMap(r => r.points.slice(1).map((p, i) => ({ a: r.points[i], b: p, width: r.width * .5 + .8 })));
+    this.roadSegments = world.roads.flatMap(r => r.points.slice(1).map((p, i) => {
+      const a = r.points[i], b = p, width = r.width * .5 + .8;
+      const minX = Math.min(a[0], b[0]) - width, maxX = Math.max(a[0], b[0]) + width;
+      const minZ = Math.min(a[1], b[1]) - width, maxZ = Math.max(a[1], b[1]) + width;
+      const vx = b[0] - a[0], vz = b[1] - a[1];
+      const lenSq = vx * vx + vz * vz || 1;
+      const wSq = width * width;
+      return { a, b, width, minX, maxX, minZ, maxZ, vx, vz, lenSq, wSq };
+    }));
+
+    // Pre-index road segments into 20m spatial cells for O(1) road testing
+    this.roadGridCell = 20;
+    this.roadGrid = new Map();
+    for (const s of this.roadSegments) {
+      const minGx = Math.floor(s.minX / this.roadGridCell), maxGx = Math.floor(s.maxX / this.roadGridCell);
+      const minGz = Math.floor(s.minZ / this.roadGridCell), maxGz = Math.floor(s.maxZ / this.roadGridCell);
+      for (let gx = minGx; gx <= maxGx; gx++) {
+        for (let gz = minGz; gz <= maxGz; gz++) {
+          const key = (gx << 16) | (gz & 0xffff);
+          let list = this.roadGrid.get(key);
+          if (!list) { list = []; this.roadGrid.set(key, list); }
+          list.push(s);
+        }
+      }
+    }
   }
 
   update(camera) {
@@ -81,14 +105,21 @@ export class GroundCover {
       const patch = Math.sin(x * .22 + Math.cos(z * .17)) * Math.cos(z * .19);
       if (patch < -.25 && f < .65) continue;
       if (Math.abs(x) > 488 || Math.abs(z) > 488 || w.isWater(x, z) || w.nearBuilding(x, z, .9)) continue;
-      let road = false;
-      for (const s of this.roadSegments) {
-        if (x < Math.min(s.a[0], s.b[0]) - s.width || x > Math.max(s.a[0], s.b[0]) + s.width || z < Math.min(s.a[1], s.b[1]) - s.width || z > Math.max(s.a[1], s.b[1]) + s.width) continue;
-        const vx = s.b[0] - s.a[0], vz = s.b[1] - s.a[1];
-        const t = clamp(((x - s.a[0]) * vx + (z - s.a[1]) * vz) / (vx * vx + vz * vz || 1), 0, 1);
-        if (Math.hypot(x - s.a[0] - vx * t, z - s.a[1] - vz * t) < s.width) { road = true; break; }
+      
+      const rKey = (Math.floor(x / this.roadGridCell) << 16) | (Math.floor(z / this.roadGridCell) & 0xffff);
+      const rList = this.roadGrid.get(rKey);
+      if (rList) {
+        let road = false;
+        for (let j = 0; j < rList.length; j++) {
+          const s = rList[j];
+          if (x < s.minX || x > s.maxX || z < s.minZ || z > s.maxZ) continue;
+          const t = clamp(((x - s.a[0]) * s.vx + (z - s.a[1]) * s.vz) / s.lenSq, 0, 1);
+          const ddx = x - s.a[0] - s.vx * t, ddz = z - s.a[1] - s.vz * t;
+          if (ddx * ddx + ddz * ddz < s.wSq) { road = true; break; }
+        }
+        if (road) continue;
       }
-      if (road) continue;
+
       position.set(x, w.terrainHeight(x, z) - .025, z);
       rotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), f * Math.PI * 2);
       const size = .75 + f * .85;
