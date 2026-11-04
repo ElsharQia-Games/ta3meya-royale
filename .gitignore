@@ -4,3 +4,4 @@ qa/shots/
 qa/clip/
 *.log
 .DS_Store
+.worktrees/
