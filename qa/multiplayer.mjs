@@ -43,9 +43,10 @@ const mk = async (name) => {
     quality: 'low', shadows: false, bloom: false, showFps: true, muted: true, mode: 'br',
   })));
   const p = await ctx.newPage();
+  p.setDefaultNavigationTimeout(120000);
   p.on('pageerror', (e) => errors.push(name + ': ' + (e.stack || e)));
   p.on('console', (m) => { if (m.type() === 'error') errors.push(name + ': ' + m.text()); });
-  await p.goto(BASE);
+  await p.goto(BASE, { waitUntil: 'domcontentloaded' });
   await p.fill('#in-name', name);
   await p.fill('#in-room', ROOM);
   await p.click('#join');

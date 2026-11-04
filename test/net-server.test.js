@@ -45,10 +45,13 @@ test('server rejects incompatible joins before room allocation and accepts the c
   const accepted = new Promise(resolve => good.on('message', (data, binary) => {
     if (!binary) { const m = JSON.parse(data.toString()); if (m.type === 'welcome') resolve(m); }
   }));
-  good.send(JSON.stringify({ type: 'join', room: 'VERSION', name: 'Current', protocol: PROTOCOL_VERSION }));
+  good.send(JSON.stringify({ type: 'join', room: 'VERSION', name: 'Current', mode: 'tdm', kit: 'heavy',
+    weapons: ['sniper', 'sniper'], protocol: PROTOCOL_VERSION }));
   const message = await accepted;
   assert.equal(message.protocol, PROTOCOL_VERSION);
   assert.ok(message.playerId > 0);
+  assert.equal(message.kit, 'heavy');
+  assert.deepEqual(message.weapons, ['lmg', 'rpg'], 'server chooses the validated kit, never a client-supplied inventory');
 });
 
 test('active socket replacement and long-lived reconnect retain the player and input ownership', { timeout: 20000 }, async t => {

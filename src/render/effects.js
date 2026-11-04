@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { CFG, MATERIALS } from '../../shared/config.js';
 import { clamp } from '../../shared/math.js';
 import { moveProjectile } from '../../shared/weapons.js';
+import { advanceRocket } from '../../shared/projectiles.js';
+import { createRocketGeometry } from './launcher-model.js';
 
 const MAX_PARTICLES = 900;
 const MAX_TRACERS = 96;
@@ -37,6 +39,8 @@ export class Effects {
     this.projectiles = [];
     this.flashes = [];
     this.pendingImpacts = [];
+    this.rockets = new Map();
+    this.blastTexture = blastTexture();
   }
 
   // -------------------------------------------------------------------------
@@ -354,12 +358,15 @@ export class Effects {
     if (ev.projectileId) this.stopProjectile(ev.projectileId);
     const p = [ev.x, ev.y, ev.z];
     const radius = ev.r || 7;
-    const geo = new THREE.SphereGeometry(1, 16, 12);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffb060, transparent: true, opacity: 0.9,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
+    const mat = new THREE.SpriteMaterial({ map: this.blastTexture, color: 0xffbc75,
+      transparent: true, opacity: .88, depthWrite: false, toneMapped: false });
+    const mesh = new THREE.Group(); mesh.material = mat;
+    for (let i = 0; i < 5; i++) {
+      const card = new THREE.Sprite(mat);
+      const angle = i * 2.399;
+      card.position.set(Math.cos(angle) * .3, .05 + i * .12, Math.sin(angle) * .3);
+      card.scale.set(.9 + i * .06, .95 + i * .1, 1); mesh.add(card);
+    }
     mesh.position.set(p[0], p[1], p[2]);
     mesh.scale.setScalar(0.6);
     this.scene.add(mesh);
@@ -422,7 +429,39 @@ export class Effects {
     });
   }
 
+  launch(ev) {
+    if (this.rockets.has(ev.projectileId)) return;
+    const model = createRocketGeometry(false);
+    this.renderer.registerObject(model.root); this.scene.add(model.root);
+    const rocket = { id: ev.projectileId, model, weapon: ev.w || 'rpg', pos: ev.o.slice(),
+      vel: ev.v.slice(), fuse: ev.life || CFG.WEAPONS.rpg.rocket.life, accumulator: 0,
+      correction: new THREE.Vector3(), held: false, trailT: 0 };
+    model.root.position.set(...rocket.pos); this.rockets.set(rocket.id, rocket);
+    for (let i = 0; i < 10; i++) this.spawnParticle(...ev.o,
+      (Math.random() - .5) * 2, Math.random() * 1.2, (Math.random() - .5) * 2, .3 + Math.random() * .3, .15, 0xa5ac93, 0);
+  }
+
+  syncProjectiles(list) {
+    const seen = new Set();
+    for (const p of list) {
+      if (p.type !== 'rocket') continue;
+      seen.add(p.id);
+      if (!this.rockets.has(p.id)) this.launch({ projectileId: p.id, w: p.weapon, o: p.pos, v: p.vel, life: p.fuse });
+      const view = this.rockets.get(p.id);
+      view.correction.copy(view.model.root.position).sub(new THREE.Vector3(...p.pos));
+      if (view.correction.length() > 12) view.correction.set(0, 0, 0);
+      view.pos = p.pos.slice(); view.vel = p.vel.slice(); view.fuse = p.fuse; view.held = false;
+    }
+    for (const id of this.rockets.keys()) if (!seen.has(id)) this.stopProjectile(id);
+  }
+
   stopProjectile(id) {
+    const rocket = this.rockets?.get(id);
+    if (rocket) {
+      rocket.model.root.traverse(o => o.geometry?.dispose());
+      rocket.model.materials.forEach(material => material.dispose());
+      rocket.model.root.removeFromParent(); this.rockets.delete(id);
+    }
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
       if (p.id !== id) continue;
@@ -436,6 +475,23 @@ export class Effects {
   // -------------------------------------------------------------------------
   update(dt) {
     this.time += dt;
+    for (const rocket of this.rockets.values()) {
+      rocket.accumulator += dt; rocket.trailT += dt;
+      while (rocket.accumulator + 1e-9 >= CFG.SIM_DT) {
+        rocket.accumulator -= CFG.SIM_DT; rocket.fuse -= CFG.SIM_DT;
+        if (!rocket.held) rocket.held = !!advanceRocket(this.world, rocket, CFG.SIM_DT);
+      }
+      rocket.correction.multiplyScalar(Math.exp(-18 * dt));
+      const model = rocket.model.root;
+      model.position.set(...rocket.pos).add(rocket.correction);
+      model.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), new THREE.Vector3(...rocket.vel).normalize());
+      if (rocket.trailT > .024) {
+        rocket.trailT = 0;
+        this.spawnParticle(model.position.x, model.position.y, model.position.z, 0, .12, 0, .8, .2, 0xa7aa9b, 0);
+        this.spawnParticle(model.position.x, model.position.y, model.position.z, 0, 0, 0, .07, .12, 0xffc17d, 0);
+      }
+      if (rocket.fuse <= 0) this.stopProjectile(rocket.id);
+    }
     for (let i = this.pendingImpacts.length - 1; i >= 0; i--) {
       if (this.pendingImpacts[i].at > this.time) continue;
       const impact = this.pendingImpacts.splice(i, 1)[0]; this.impact(impact.ev);
@@ -487,12 +543,12 @@ export class Effects {
       const e = this.explosions[i];
       e.t += dt;
       const f = clamp(e.t / 0.45, 0, 1);
-      e.mesh.scale.setScalar(0.6 + f * e.radius * 0.85);
-      e.mesh.material.opacity = (1 - f) * 0.9;
+      e.mesh.scale.setScalar(.4 + Math.sqrt(f) * e.radius * .48);
+      e.mesh.material.opacity = Math.pow(1 - f, 1.4) * .86;
       e.light.intensity = 40 * (1 - f) * (1 - f);
       if (f >= 1) {
         this.scene.remove(e.mesh, e.light);
-        e.mesh.geometry.dispose(); e.mesh.material.dispose();
+        e.mesh.material.dispose();
         this.explosions.splice(i, 1);
       }
     }
@@ -547,6 +603,7 @@ export class Effects {
   }
 
   dispose() {
+    for (const id of this.rockets.keys()) this.stopProjectile(id);
     this.scene.removeFromParent();
     const geometries = new Set(), materials = new Set(), maps = new Set();
     this.scene.traverse(o => {
@@ -556,7 +613,22 @@ export class Effects {
     geometries.forEach(g => g.dispose());
     materials.forEach(m => m.dispose());
     maps.forEach(t => t.dispose());
+    this.blastTexture.dispose();
   }
+}
+
+function blastTexture() {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
+  const context = canvas.getContext('2d');
+  for (let i = 0; i < 27; i++) {
+    const a = i * 2.399, radius = 10 + (i % 5) * 6;
+    const x = 64 + Math.cos(a) * (i % 6) * 6, y = 64 + Math.sin(a) * (i % 6) * 6;
+    const gradient = context.createRadialGradient(x, y, 1, x, y, radius);
+    gradient.addColorStop(0, 'rgba(255,247,196,.9)'); gradient.addColorStop(.3, 'rgba(246,183,99,.72)');
+    gradient.addColorStop(.65, 'rgba(116,76,42,.45)'); gradient.addColorStop(1, 'rgba(46,43,34,0)');
+    context.fillStyle = gradient; context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
+  const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace; return map;
 }
 
 function radialTexture(color, soft = false) {

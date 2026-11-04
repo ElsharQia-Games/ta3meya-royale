@@ -10,6 +10,8 @@ import { texture } from './textures.js';
 import { batchStaticParts } from './geometry.js';
 import { createVehicleModel } from './vehicle-model.js';
 import { smokeObscures } from '../../shared/visibility.js';
+import { DeathAnimation } from './death-animation.js';
+import { torsoGeometry, carrierPlate } from './character-shapes.js';
 
 const SKIN = [0xc99a72, 0x9c6b4a, 0x6f4a32, 0xe0b48c, 0x8a5a3c];
 const UNIFORM = [0x737961, 0x80765d, 0x60746c, 0x807763];
@@ -26,14 +28,14 @@ function makeCharacter(color, skin) {
   const root = new THREE.Group();
   root.rotation.order = 'YXZ';
   const cloth = new THREE.MeshStandardMaterial({ color, map: texture('fabric'), roughness: 0.9 });
-  const vestMat = new THREE.MeshStandardMaterial({ color: 0x4c5742, roughness: 0.85 });
+  const vestMat = new THREE.MeshStandardMaterial({ color: 0x657253, map: texture('fabric'), roughness: .92 });
   const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7 });
   const bootMat = new THREE.MeshStandardMaterial({ color: 0x303a2d, roughness: 0.9 });
   const helmetMat = new THREE.MeshStandardMaterial({ color: 0x657056, roughness: 0.72, metalness: 0.15 });
   const lensMat = new THREE.MeshStandardMaterial({ color: 0x263f37, roughness: .16, metalness: .7 });
   const strapMat = new THREE.MeshStandardMaterial({ color: 0x9b9674, roughness: .95 });
   const teamMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, emissiveIntensity: 0.08 });
-  const rounded = (w, h, d, mat, x, y, z, radius = .025) => part(new RoundedBoxGeometry(w, h, d, 1, radius), mat, x, y, z);
+  const rounded = (w, h, d, mat, x, y, z, radius = .025) => part(new RoundedBoxGeometry(w, h, d, 2, radius), mat, x, y, z);
 
   const hips = new THREE.Group();
   hips.position.y = 0.92;
@@ -41,10 +43,12 @@ function makeCharacter(color, skin) {
 
   const torso = new THREE.Group();
   hips.add(torso);
-  torso.add(rounded(.4, .55, .26, cloth, 0, .24, 0, .07));
-  torso.add(rounded(.42, .41, .31, vestMat, 0, .28, 0));
+  torso.add(part(torsoGeometry(), cloth, 0, 0, 0));
+  torso.add(part(carrierPlate(), vestMat, 0, .075, -.176));
+  torso.add(part(carrierPlate(), vestMat, 0, .075, .137));
+  for (const side of [-1, 1]) torso.add(rounded(.037, .19, .23, vestMat, side * .187, .23, 0, .01));
   torso.add(rounded(.33, .19, .26, cloth, 0, -.025, 0, .05));
-  const pack = rounded(.31, .37, .19, vestMat, 0, .28, .235);
+  const pack = rounded(.29, .37, .16, vestMat, 0, .28, .225, .055);
   torso.add(pack);
   torso.add(rounded(.24, .13, .06, cloth, 0, .16, .35));
   for (const side of [-1, 1]) {
@@ -87,8 +91,8 @@ function makeCharacter(color, skin) {
   const arms = [];
   for (const [arm, side] of [[armL, -1], [armR, 1]]) {
     arm.userData.articulated = true;
-    const upper = part(new THREE.CylinderGeometry(.077, .088, 1, 9), cloth, 0, 0, 0);
-    const lower = part(new THREE.CylinderGeometry(.05, .065, 1, 9), cloth, 0, 0, 0);
+    const upper = part(new THREE.CylinderGeometry(.062, .077, 1, 14), cloth, 0, 0, 0);
+    const lower = part(new THREE.CylinderGeometry(.042, .058, 1, 14), cloth, 0, 0, 0);
     const elbow = part(new THREE.SphereGeometry(.069, 8, 6), vestMat, 0, 0, 0);
     const hand = rounded(.081, .074, .095, bootMat, 0, 0, 0, .022);
     arm.add(upper, lower, elbow, hand);
@@ -108,7 +112,7 @@ function makeCharacter(color, skin) {
     leg.add(knee);
     knee.add(part(new THREE.CapsuleGeometry(0.09, 0.3, 3, 8), cloth, 0, -0.2, 0));
     knee.add(rounded(.14, .12, .055, bootMat, 0, -.025, -.1, .025));
-    knee.add(rounded(.17, .14, .29, bootMat, 0, -.41, -.045, .025));
+    knee.add(rounded(.16, .13, .28, bootMat, 0, -.41, -.05, .045));
     leg.add(rounded(.05, .15, .13, vestMat, leg === legL ? -.1 : .1, -.17, .01, .013));
   }
 
@@ -200,8 +204,11 @@ export class CharacterView {
     this.teamColor = new THREE.Color(TEAMS[0].color);
     this.setTeam(0);
     this.visible = true;
+    this.deathAnimation = null;
+    this.death = null;
     this.weaponKey = 'ar'; this.reloadT = 0; this.shotT = Infinity;
     this.inVehicle = 0; this.seat = -1; this.vehicle = null;
+    this.hitKick = 0;
   }
 
   setTeam(team) {
@@ -218,6 +225,7 @@ export class CharacterView {
     this.pitch = p.pitch ?? this.pitch;
     this.stance = p.stance ?? this.stance;
     this.alive = !!p.alive;
+    if (p.death) this.death = p.death;
     this.name = p.name || this.name;
     if (p.team !== undefined && p.team !== this.team) this.setTeam(p.team);
     this.hp = p.hp;
@@ -239,6 +247,7 @@ export class CharacterView {
   }
 
   fire() { this.shotT = 0; }
+  hit(amount = 20) { this.hitKick = Math.min(.19, this.hitKick + amount * .002); }
 
   update(dt, cameraPos) {
     const m = this.model;
@@ -247,6 +256,7 @@ export class CharacterView {
     const prone = !seated && this.stance === STANCE.PRONE;
     const crouch = !seated && this.stance === STANCE.CROUCH;
     this.shotT += dt;
+    this.hitKick *= Math.exp(-9 * dt);
 
     r.position.set(this.pos[0], this.pos[1], this.pos[2]);
     r.rotation.y = this.yaw;
@@ -264,26 +274,16 @@ export class CharacterView {
     this.plate.update(this.name || '', this.team, this.hp ?? 100, 100, !this.alive);
 
     if (!this.alive) {
-      this.deathT = Math.min(1, this.deathT + dt * 2.2);
-      // Rotate around the feet, then lift enough that the horizontal torso and
-      // pack do not sink through the terrain. The rifle is dropped: while the
-      // body tips forward its muzzle would sweep ~0.9 m below the feet.
-      r.rotation.x = 0;
-      r.rotation.z = this.deathT * Math.PI * .48;
-      r.position.y = this.pos[1] + this.deathT * .35;
-      if (this.world) {
-        r.updateWorldMatrix(true, true);
-        let lift = 0;
-        for (const node of [m.head, m.hips, m.kneeL, m.kneeR]) {
-          const at = node.getWorldPosition(new THREE.Vector3());
-          lift = Math.max(lift, this.world.terrainHeight(at.x, at.z) + .14 - at.y);
-        }
-        r.position.y += lift;
-      }
+      if (!this.deathAnimation) this.deathAnimation = new DeathAnimation(m, this.world, this.pos,
+        this.death || { yaw: this.yaw, stance: this.stance }, this.id);
+      const hands = this.deathAnimation.update(dt);
+      this.deathT = this.deathAnimation.age;
+      this.poseArms(hands);
       m.gun.visible = false;
       this.plate.sprite.visible = false;
       return;
     }
+    if (this.deathAnimation) { this.deathAnimation.dispose(); this.deathAnimation = null; this.death = null; }
     this.deathT = 0;
     r.rotation.x = 0;
     r.rotation.z = 0;
@@ -298,7 +298,7 @@ export class CharacterView {
     m.torso.position.y = damp(m.torso.position.y, seated ? -.2 : prone ? -.15 : crouch ? -.18 : 0, 12, dt);
     m.torso.rotation.x = damp(m.torso.rotation.x,
       seated ? 0 : prone ? -1.28 : crouch ? .32 : clamp(this.pitch * .2, -.2, .2), 10, dt);
-    m.torso.rotation.z = 0;
+    m.torso.rotation.z = this.hitKick * (this.id % 2 ? 1 : -1);
 
     // Walk cycle from horizontal velocity estimate.
     const speed = seated ? 0 : Math.hypot(this.vx || 0, this.vz || 0);
@@ -327,15 +327,29 @@ export class CharacterView {
     m.head.rotation.y = seated && this.vehicle ? clamp(Math.atan2(Math.sin(this.yaw - this.vehicle.yaw), Math.cos(this.yaw - this.vehicle.yaw)), -.8, .8) : 0;
     // Keep the rifle level in prone: the torso is pitched ~73 degrees forward,
     // so an unrotated gun would point its muzzle into the terrain.
-    const { motion, support } = poseWeaponMechanics(m.weapon, this.reloadT, this.shotT, this.ammo);
+    const { motion, support, trigger } = poseWeaponMechanics(m.weapon, this.reloadT, this.shotT, this.ammo);
     m.gun.rotation.x = damp(m.gun.rotation.x, this.pitch - m.torso.rotation.x + motion.lift * .14, 10, dt);
     m.gun.rotation.z = motion.lift * .3;
     m.gun.position.y = damp(m.gun.position.y, (this.ads && !motion.active ? .47 : .31) + (prone ? .23 : 0) + Math.sin(this.walk * .7) * .003 + motion.lift * .07, 14, dt);
-    m.gun.position.z = damp(m.gun.position.z, prone ? -.18 : -.19, 14, dt);
+    const recoil = Math.sin(Math.PI * clamp(this.shotT / .19, 0, 1)) * .035;
+    m.gun.position.z = damp(m.gun.position.z, (prone ? -.18 : -.19) + recoil, 14, dt);
     m.gun.updateMatrix();
-    for (const arm of m.arms) {
-      const target = seated && this.seat === 0 ? new THREE.Vector3(arm.side * .155, .5, -.27)
-        : (arm.side < 0 ? support.clone() : m.weapon.rightGrip.position.clone()).applyMatrix4(m.gun.matrix);
+    const hands = m.arms.map(arm => seated && this.seat === 0 ? new THREE.Vector3(arm.side * .155, .5, -.27)
+      : (arm.side < 0 ? support.clone() : trigger.clone()).applyMatrix4(m.gun.matrix));
+    this.poseArms(hands);
+
+    const d3 = cameraPos
+      ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2]) : 99;
+    const plateHeight = clamp(d3 * .032, .15, 1.45);
+    this.plate.sprite.scale.set(plateHeight * 4, plateHeight, 1);
+    this.plate.sprite.visible = this.alive && this.visible && !seated && d3 > 1.6 &&
+      (!cameraPos || !smokeObscures(this.smokes, cameraPos, [r.position.x, r.position.y + this.plateY - .3, r.position.z]));
+  }
+
+  poseArms(hands) {
+    const m = this.model;
+    for (let i = 0; i < m.arms.length; i++) {
+      const arm = m.arms[i], target = hands[i];
       const shoulder = [arm.side * .245, .405, 0];
       const pose = solveTwoBone(shoulder, target.toArray(), [arm.side * .5, .02, .03], .29, .3);
       const a = new THREE.Vector3(...shoulder), b = new THREE.Vector3(...pose.elbow), c = new THREE.Vector3(...pose.hand);
@@ -349,24 +363,10 @@ export class CharacterView {
       arm.elbow.position.copy(b); arm.hand.position.copy(c);
       arm.hand.quaternion.copy(m.gun.quaternion);
     }
-
-    // Hide our own body and nameplate from the first-person camera by distance.
-    // This also prevents the spectated player's nameplate from covering the
-    // screen when the camera sits at their eye.
-    const d = cameraPos ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[2] - this.pos[2]) : 99;
-    const d3 = cameraPos
-      ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2])
-      : 99;
-    // Keep the plate at a readable on-screen size out to 40 m. The base sprite
-    // is ~5.6 px tall at 40 m with size attenuation, so scale up with distance
-    // and cap the growth to avoid giant plates in the far field.
-    const plateHeight = clamp(d3 * .032, .15, 1.45);
-    this.plate.sprite.scale.set(plateHeight * 4, plateHeight, 1);
-    this.plate.sprite.visible = this.alive && this.visible && !seated && d3 > 1.6 &&
-      (!cameraPos || !smokeObscures(this.smokes, cameraPos, [r.position.x, r.position.y + this.plateY - .3, r.position.z]));
   }
 
   dispose() {
+    this.deathAnimation?.dispose();
     this.scene.remove(this.model.root);
     const materials = new Set();
     this.model.root.traverse(o => { o.geometry?.dispose(); if (o.material) materials.add(o.material); });

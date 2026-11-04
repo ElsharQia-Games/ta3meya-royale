@@ -20,6 +20,7 @@ export class NetClient {
     this.name = opts.name || 'Soldier';
     this.room = opts.room || 'ALPHA01';
     this.mode = opts.mode || 'br';
+    this.kit = opts.kit || 'assault';
     this.token = opts.token || null;
     this.ws = null;
     this.connected = false;
@@ -63,6 +64,7 @@ export class NetClient {
     this.onLoot = null;
     this.onState = null;
     this.onVehicles = null;
+    this.onProjectiles = null;
     this.onChat = null;
     this.onStatus = null;
     this.onError = null;
@@ -92,7 +94,7 @@ export class NetClient {
       this.connected = true;
       this.reconnectAttempts = 0;
       this._sendJson({
-        type: 'join', name: this.name, room: this.room, mode: this.mode,
+        type: 'join', name: this.name, room: this.room, mode: this.mode, kit: this.kit,
         token: this.token || undefined, protocol: PROTOCOL_VERSION,
       });
       this._status('joined-pending');
@@ -240,6 +242,9 @@ export class NetClient {
           break;
         case 'vehicles':
           if (this.onVehicles) this.onVehicles(msg);
+          break;
+        case 'projectiles':
+          if (this.onProjectiles) this.onProjectiles(msg);
           break;
         case 'chat':
           if (this.onChat) this.onChat(msg);

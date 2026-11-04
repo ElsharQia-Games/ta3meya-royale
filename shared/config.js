@@ -68,7 +68,7 @@ export const CFG = {
       tracer: 0xffd27a, audio: 'pistol', lootTier: 1,
     },
     smg: {
-      name: 'MP5', cls: 'smg', auto: true, dmg: 21, rpm: 720, mag: 30, reserve: 120,
+      name: 'VEX-9', cls: 'smg', auto: true, dmg: 21, rpm: 720, mag: 30, reserve: 120,
       reload: 2.1, mv: 420, drag: 0.0011, grav: 0.8,
       spreadHip: 0.026, spreadAds: 0.010, spreadMove: 0.030, spreadAir: 0.075,
       recoilPitch: 0.0085, recoilYaw: 0.006, recoilRecover: 9,
@@ -77,7 +77,7 @@ export const CFG = {
       tracer: 0xffd27a, audio: 'smg', lootTier: 2,
     },
     ar: {
-      name: 'AR-4', cls: 'ar', auto: true, dmg: 31, rpm: 690, mag: 30, reserve: 150,
+      name: 'K4 CARBINE', cls: 'ar', auto: true, dmg: 31, rpm: 690, mag: 30, reserve: 150,
       reload: 2.2, mv: 880, drag: 0.0007, grav: 0.62,
       spreadHip: 0.018, spreadAds: 0.0045, spreadMove: 0.026, spreadAir: 0.07,
       recoilPitch: 0.0125, recoilYaw: 0.0075, recoilRecover: 8.5,
@@ -86,7 +86,7 @@ export const CFG = {
       tracer: 0xffe08a, audio: 'ar', lootTier: 3,
     },
     dmr: {
-      name: 'SKS', cls: 'dmr', auto: false, dmg: 54, rpm: 300, mag: 10, reserve: 60,
+      name: 'SABLE DMR', cls: 'dmr', auto: false, dmg: 54, rpm: 300, mag: 10, reserve: 60,
       reload: 2.5, mv: 900, drag: 0.00055, grav: 0.55,
       spreadHip: 0.022, spreadAds: 0.0018, spreadMove: 0.03, spreadAir: 0.08,
       recoilPitch: 0.026, recoilYaw: 0.010, recoilRecover: 7,
@@ -95,7 +95,7 @@ export const CFG = {
       tracer: 0xffe08a, audio: 'dmr', lootTier: 3,
     },
     shotgun: {
-      name: 'M870', cls: 'shotgun', auto: false, dmg: 17, rpm: 78, mag: 6, reserve: 36,
+      name: 'M12 BREACHER', cls: 'shotgun', auto: false, dmg: 17, rpm: 78, mag: 6, reserve: 36,
       reload: 2.8, mv: 390, drag: 0.0016, grav: 0.8,
       spreadHip: 0.052, spreadAds: 0.034, spreadMove: 0.02, spreadAir: 0.03,
       recoilPitch: 0.038, recoilYaw: 0.012, recoilRecover: 6,
@@ -104,7 +104,7 @@ export const CFG = {
       tracer: 0xffc060, audio: 'shotgun', lootTier: 2,
     },
     sniper: {
-      name: 'K98', cls: 'sniper', auto: false, dmg: 102, rpm: 42, mag: 5, reserve: 30,
+      name: 'AX-50', cls: 'sniper', auto: false, dmg: 102, rpm: 42, mag: 5, reserve: 30,
       reload: 3.1, mv: 945, drag: 0.0004, grav: 0.5,
       spreadHip: 0.05, spreadAds: 0.0006, spreadMove: 0.05, spreadAir: 0.1,
       recoilPitch: 0.045, recoilYaw: 0.014, recoilRecover: 5.5,
@@ -121,9 +121,27 @@ export const CFG = {
       adsZoom: 1.25, adsTime: 0.32, sway: 0.7, switchTime: 0.6, headshot: 2.2,
       tracer: 0xffe08a, audio: 'lmg', lootTier: 4,
     },
+    rpg: {
+      name: 'R7 LANCER', cls: 'launcher', projectile: 'rocket', auto: false,
+      dmg: 120, rpm: 48, mag: 1, reserve: 3, reload: 3.6,
+      mv: 72, drag: .00015, grav: .55,
+      spreadHip: .025, spreadAds: .002, spreadMove: .022, spreadAir: .045,
+      recoilPitch: .034, recoilYaw: .012, recoilRecover: 6,
+      pellets: 1, penetration: 0, falloff: [120, 500, .9], headshot: 1,
+      adsZoom: 1.35, adsTime: .34, sway: .85, switchTime: .62,
+      tracer: 0xffc575, audio: 'rpg', lootTier: 4,
+      rocket: { acceleration: 135, maxSpeed: 160, life: 5, radius: 7, damage: 180, vehicleScale: 2.6 },
+    },
   },
 
-  WEAPON_ORDER: ['pistol', 'smg', 'ar', 'dmr', 'shotgun', 'sniper', 'lmg'],
+  WEAPON_ORDER: ['pistol', 'smg', 'ar', 'dmr', 'shotgun', 'sniper', 'lmg', 'rpg'],
+
+  KITS: {
+    assault: { name: 'ASSAULT', tag: '01 / FRONTLINE', weapons: ['ar', 'pistol'], detail: 'K4 carbine · P92 sidearm', role: 'A versatile rifleman for the forward push.' },
+    recon: { name: 'RECON', tag: '02 / OVERWATCH', weapons: ['sniper', 'pistol'], detail: 'AX-50 precision rifle · P92', role: 'A magnified optic and deliberate bolt-action fire.' },
+    breach: { name: 'BREACHER', tag: '03 / CLOSE QUARTERS', weapons: ['shotgun', 'smg'], detail: 'M12 pump-action · VEX-9', role: 'Control interiors and fight through tight cover.' },
+    heavy: { name: 'HEAVY', tag: '04 / ANTI-ARMOUR', weapons: ['lmg', 'rpg'], detail: 'M249 support gun · R7 launcher', role: 'Suppress the approach. Break hostile cover.' },
+  },
 
   ARMOR: { absorb: 0.45, headAbsorb: 0.25, max: 100 },
   GRENADE: { dmg: 110, radius: 7.5, fuse: 3.2, throwSpeed: 19, bounces: 4, drag: 0.15, gravity: 0.9 },
@@ -133,7 +151,7 @@ export const CFG = {
     medkit: { amount: 75, time: 5.0, cap: 100 },
   },
   LOOT: { pickupRange: 2.2, dropRange: 2.0 },
-  INVENTORY: { slots: 2, ammoPerPickup: { pistol: 30, smg: 45, ar: 60, dmr: 30, shotgun: 12, sniper: 10, lmg: 75 } },
+  INVENTORY: { slots: 2, ammoPerPickup: { pistol: 30, smg: 45, ar: 60, dmr: 30, shotgun: 12, sniper: 10, lmg: 75, rpg: 1 } },
 
   ZONE: {
     // wait -> shrink; radius is the target at the end of the phase.
@@ -219,3 +237,7 @@ export const TEAMS = [
 
 export const STANCE = { STAND: 0, CROUCH: 1, PRONE: 2 };
 export const MATCH_STATE = { LOBBY: 0, WARMUP: 1, LIVE: 2, ENDED: 3 };
+
+export function combatKit(key) {
+  return typeof key === 'string' && Object.hasOwn(CFG.KITS, key) ? key : 'assault';
+}

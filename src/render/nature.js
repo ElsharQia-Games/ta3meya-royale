@@ -2,6 +2,7 @@
 // silhouettes; the original straight trunks retain the collider footprint.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { splitInstances } from './geometry.js';
 
 const FILES = ['Pine_1', 'Pine_3', 'CommonTree_1', 'CommonTree_3', 'Bush_Common', 'Fern_1', 'Rock_Medium_1'];
 
@@ -58,8 +59,14 @@ export class NatureDetail {
       this.root.add(mesh); this.batches.set(name, mesh);
     }
     this.farPines = this.view.treeMeshes[1]; this.farOaks = this.view.treeMeshes[2];
+    this.trunks = this.view.treeMeshes[0];
+    this.trunkMatrices = this.trunks.instanceMatrix.array.slice();
+    this.trunkColors = this.trunks.instanceColor.array.slice();
     this.pineMatrices = this.farPines.instanceMatrix.array.slice();
     this.oakMatrices = this.farOaks.instanceMatrix.array.slice();
+    this.pineColors = this.farPines.instanceColor.array.slice();
+    this.oakColors = this.farOaks.instanceColor.array.slice();
+    for (const mesh of [this.trunks, this.farPines, this.farOaks]) mesh.frustumCulled = false;
     const rock = this.templates.get('Rock_Medium_1');
     const rocks = new THREE.InstancedMesh(rock.geometry, rock.material, this.view.world.rocks.length);
     rocks.name = 'coastal_rocks'; rocks.castShadow = true; rocks.receiveShadow = true;
@@ -73,7 +80,7 @@ export class NatureDetail {
     });
     this.view.rockMesh.removeFromParent();
     this.view.rockMesh.geometry.dispose(); this.view.rockMesh.material.dispose();
-    this.view.rockMesh = rocks; this.root.add(rocks);
+    this.view.rockMesh = splitInstances(rocks); this.root.add(this.view.rockMesh);
     this.loaded = true;
     this.update(this.view.renderer.camera);
   }
@@ -82,11 +89,24 @@ export class NatureDetail {
     if (!this.loaded) return;
     const quality = this.view.renderer.settings.quality;
     const x = camera.position.x, z = camera.position.z;
-    if (Math.hypot(x - this.lastX, z - this.lastZ) < 4 && quality === this.lastQuality) return;
+    if (Math.hypot(x - this.lastX, z - this.lastZ) < 2 && quality === this.lastQuality &&
+      Math.abs(camera.rotation.y - (this.lastYaw ?? Infinity)) < .015 && Math.abs(camera.rotation.x - (this.lastPitch ?? Infinity)) < .015 && camera.fov === this.lastFov) return;
     this.lastX = x; this.lastZ = z; this.lastQuality = quality;
+    this.lastYaw = camera.rotation.y; this.lastPitch = camera.rotation.x; this.lastFov = camera.fov;
     const radius = quality === 'high' ? 120 : quality === 'medium' ? 85 : 45;
-    this.farPines.instanceMatrix.array.set(this.pineMatrices);
-    this.farOaks.instanceMatrix.array.set(this.oakMatrices);
+    this.trunks.count = this.farPines.count = this.farOaks.count = 0;
+    camera.updateMatrixWorld();
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    const sphere = new THREE.Sphere();
+    const visible = (tree, distance) => {
+      if (distance < 35) return true; // retain nearby off-screen shadow casters
+      sphere.center.set(tree.x, tree.y + tree.h / 2, tree.z); sphere.radius = tree.h + 5;
+      return distance < this.view.renderer.quality.viewDistance && frustum.intersectsSphere(sphere);
+    };
+    const copyInstance = (mesh, matrices, colors, index) => {
+      mesh.instanceMatrix.array.set(matrices.subarray(index * 16, index * 16 + 16), mesh.count * 16);
+      mesh.instanceColor.array.set(colors.subarray(index * 3, index * 3 + 3), mesh.count * 3); mesh.count++;
+    };
     for (const batch of this.batches.values()) batch.count = 0;
     const zero = new THREE.Matrix4().makeScale(0, 0, 0), matrix = new THREE.Matrix4();
     const p = new THREE.Vector3(), s = new THREE.Vector3(), q = new THREE.Quaternion(), axis = new THREE.Vector3(0, 1, 0);
@@ -94,9 +114,13 @@ export class NatureDetail {
     this.view.world.trees.forEach((tree, index) => {
       const pine = tree.type === 'pine', farIndex = pine ? pi++ : oi++ * 3;
       const distance = Math.hypot(x - tree.x, z - tree.z);
-      if (distance > radius) return;
-      if (pine) this.farPines.setMatrixAt(farIndex, zero);
-      else for (let k = 0; k < 3; k++) this.farOaks.setMatrixAt(farIndex + k, zero);
+      if (!visible(tree, distance)) return;
+      copyInstance(this.trunks, this.trunkMatrices, this.trunkColors, index);
+      if (distance > radius) {
+        if (pine) copyInstance(this.farPines, this.pineMatrices, this.pineColors, farIndex);
+        else for (let k = 0; k < 3; k++) copyInstance(this.farOaks, this.oakMatrices, this.oakColors, farIndex + k);
+        return;
+      }
       const name = pine ? (index % 2 ? 'Pine_1' : 'Pine_3') : (index % 2 ? 'CommonTree_1' : 'CommonTree_3');
       const template = this.templates.get(name), batch = this.batches.get(name);
       p.set(tree.x, tree.y, tree.z); q.setFromAxisAngle(axis, tree.rot);
@@ -114,7 +138,9 @@ export class NatureDetail {
       }
     });
     for (const batch of this.batches.values()) batch.instanceMatrix.needsUpdate = true;
-    this.farPines.instanceMatrix.needsUpdate = true; this.farOaks.instanceMatrix.needsUpdate = true;
+    for (const mesh of [this.trunks, this.farPines, this.farOaks]) {
+      mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+    }
     this.treeCount = count; this.plantCount = plants;
   }
 

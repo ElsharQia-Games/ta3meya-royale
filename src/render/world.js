@@ -11,6 +11,8 @@ import { pineGeometry, GroundCover } from './foliage.js';
 import { NatureDetail } from './nature.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { createWeaponModel } from './weapon-model.js';
+import { mergeSpatialGeometry, splitGridGeometry } from './geometry.js';
+import { addCoastalDetails } from './coastal-details.js';
 
 const _v = new THREE.Vector3();
 
@@ -87,6 +89,7 @@ export class WorldRenderer {
     this._buildRoads();
     this._buildBoxes();
     this._buildArchitecture();
+    addCoastalDetails(this);
     this._buildTrees();
     this._buildRocks();
     this._buildWater();
@@ -146,10 +149,11 @@ export class WorldRenderer {
     const mat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({
       map, bumpMap, bumpScale: .035, vertexColors: true, roughness: .97, metalness: 0,
     }));
-    this.terrain = new THREE.Mesh(geo, mat);
-    this.terrain.receiveShadow = true;
-    this.terrain.name = 'terrain';
-    this.scene.add(this.terrain);
+    const tiles = splitGridGeometry(geo, N).map((geometry, i) => {
+      const mesh = new THREE.Mesh(geometry, mat); mesh.receiveShadow = true; mesh.name = `terrain_${i}`; return mesh;
+    });
+    this.terrain = tiles[0];
+    this.scene.add(...tiles);
     const loader = new THREE.TextureLoader();
     const load = (file, colour) => loader.loadAsync(`/textures/${file}.webp`).then(tex => {
       tex.colorSpace = colour ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -248,14 +252,9 @@ export class WorldRenderer {
       arr.push(geo);
     }
     for (const [mat, geos] of byMat) {
-      const merged = mergeGeometries(geos, false);
-      for (const g of geos) g.dispose();
-      const mesh = new THREE.Mesh(merged, this.mats[mat]);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.name = `static_${mat}`;
-      this.scene.add(mesh);
-      this.staticMeshes.push(mesh);
+      const meshes = mergeSpatialGeometry(geos, this.mats[mat], `static_${mat}`);
+      for (const mesh of meshes) mesh.castShadow = true;
+      this.scene.add(...meshes); this.staticMeshes.push(...meshes);
     }
   }
 
@@ -350,10 +349,8 @@ export class WorldRenderer {
       [signGeometries, new THREE.MeshStandardMaterial({ map: atlas, roughness: .85 }), 'building_serials'],
     ]) {
       if (!geometries.length) continue;
-      const merged = mergeGeometries(geometries, false); geometries.forEach(g => g.dispose());
-      const mesh = new THREE.Mesh(merged, this.renderer.registerMaterial(material));
-      mesh.name = name; mesh.receiveShadow = true; mesh.castShadow = false;
-      this.scene.add(mesh); this.staticMeshes.push(mesh);
+      const meshes = mergeSpatialGeometry(geometries, this.renderer.registerMaterial(material), name);
+      this.scene.add(...meshes); this.staticMeshes.push(...meshes);
     }
   }
 

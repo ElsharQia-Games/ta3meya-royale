@@ -1,0 +1,259 @@
+{
+  "clips": 36,
+  "maxDecodedPeak": 0.68935,
+  "allFinite": true,
+  "rows": [
+    {
+      "file": "pistol-1.ogg",
+      "duration": 0.82,
+      "decodedPeak": 0.61582,
+      "rms": 0.03047,
+      "nonFinite": 0
+    },
+    {
+      "file": "pistol-2.ogg",
+      "duration": 0.82,
+      "decodedPeak": 0.62828,
+      "rms": 0.02922,
+      "nonFinite": 0
+    },
+    {
+      "file": "ar-1.ogg",
+      "duration": 0.8473333333333334,
+      "decodedPeak": 0.64057,
+      "rms": 0.02689,
+      "nonFinite": 0
+    },
+    {
+      "file": "ar-2.ogg",
+      "duration": 0.8473333333333334,
+      "decodedPeak": 0.60151,
+      "rms": 0.02366,
+      "nonFinite": 0
+    },
+    {
+      "file": "smg-1.ogg",
+      "duration": 0.5973333333333334,
+      "decodedPeak": 0.62131,
+      "rms": 0.02967,
+      "nonFinite": 0
+    },
+    {
+      "file": "smg-2.ogg",
+      "duration": 0.5973333333333334,
+      "decodedPeak": 0.63054,
+      "rms": 0.02862,
+      "nonFinite": 0
+    },
+    {
+      "file": "shotgun-1.ogg",
+      "duration": 1.15,
+      "decodedPeak": 0.66689,
+      "rms": 0.02787,
+      "nonFinite": 0
+    },
+    {
+      "file": "shotgun-2.ogg",
+      "duration": 1.15,
+      "decodedPeak": 0.67383,
+      "rms": 0.02559,
+      "nonFinite": 0
+    },
+    {
+      "file": "sniper-1.ogg",
+      "duration": 1.65,
+      "decodedPeak": 0.66295,
+      "rms": 0.02,
+      "nonFinite": 0
+    },
+    {
+      "file": "sniper-2.ogg",
+      "duration": 1.65,
+      "decodedPeak": 0.61604,
+      "rms": 0.01735,
+      "nonFinite": 0
+    },
+    {
+      "file": "dmr-1.ogg",
+      "duration": 0.9973333333333333,
+      "decodedPeak": 0.67715,
+      "rms": 0.03013,
+      "nonFinite": 0
+    },
+    {
+      "file": "dmr-2.ogg",
+      "duration": 0.9973333333333333,
+      "decodedPeak": 0.64842,
+      "rms": 0.02867,
+      "nonFinite": 0
+    },
+    {
+      "file": "lmg-1.ogg",
+      "duration": 0.8706666666666667,
+      "decodedPeak": 0.65485,
+      "rms": 0.03641,
+      "nonFinite": 0
+    },
+    {
+      "file": "lmg-2.ogg",
+      "duration": 0.8473333333333334,
+      "decodedPeak": 0.65235,
+      "rms": 0.02986,
+      "nonFinite": 0
+    },
+    {
+      "file": "rifle-distant-1.ogg",
+      "duration": 1.5,
+      "decodedPeak": 0.66335,
+      "rms": 0.02767,
+      "nonFinite": 0
+    },
+    {
+      "file": "rifle-distant-2.ogg",
+      "duration": 1.5,
+      "decodedPeak": 0.64895,
+      "rms": 0.02774,
+      "nonFinite": 0
+    },
+    {
+      "file": "step-grass-1.ogg",
+      "duration": 0.7720208333333334,
+      "decodedPeak": 0.68557,
+      "rms": 0.02258,
+      "nonFinite": 0
+    },
+    {
+      "file": "step-grass-2.ogg",
+      "duration": 0.6868958333333334,
+      "decodedPeak": 0.66469,
+      "rms": 0.02384,
+      "nonFinite": 0
+    },
+    {
+      "file": "step-concrete-1.ogg",
+      "duration": 0.124,
+      "decodedPeak": 0.67476,
+      "rms": 0.05828,
+      "nonFinite": 0
+    },
+    {
+      "file": "step-concrete-2.ogg",
+      "duration": 0.10722916666666667,
+      "decodedPeak": 0.65933,
+      "rms": 0.05065,
+      "nonFinite": 0
+    },
+    {
+      "file": "step-wood-1.ogg",
+      "duration": 0.292,
+      "decodedPeak": 0.67469,
+      "rms": 0.06288,
+      "nonFinite": 0
+    },
+    {
+      "file": "step-wood-2.ogg",
+      "duration": 0.24583333333333332,
+      "decodedPeak": 0.67638,
+      "rms": 0.08004,
+      "nonFinite": 0
+    },
+    {
+      "file": "mag-out.ogg",
+      "duration": 0.24627083333333333,
+      "decodedPeak": 0.67504,
+      "rms": 0.07128,
+      "nonFinite": 0
+    },
+    {
+      "file": "mag-in.ogg",
+      "duration": 0.4861666666666667,
+      "decodedPeak": 0.60455,
+      "rms": 0.03972,
+      "nonFinite": 0
+    },
+    {
+      "file": "bolt.ogg",
+      "duration": 0.11358333333333333,
+      "decodedPeak": 0.44026,
+      "rms": 0.05845,
+      "nonFinite": 0
+    },
+    {
+      "file": "body-fall.ogg",
+      "duration": 0.5664791666666666,
+      "decodedPeak": 0.67669,
+      "rms": 0.10139,
+      "nonFinite": 0
+    },
+    {
+      "file": "impact-wood.ogg",
+      "duration": 0.327125,
+      "decodedPeak": 0.65646,
+      "rms": 0.05465,
+      "nonFinite": 0
+    },
+    {
+      "file": "impact-metal.ogg",
+      "duration": 0.3703125,
+      "decodedPeak": 0.64761,
+      "rms": 0.0652,
+      "nonFinite": 0
+    },
+    {
+      "file": "impact-glass.ogg",
+      "duration": 0.5377916666666667,
+      "decodedPeak": 0.68146,
+      "rms": 0.03949,
+      "nonFinite": 0
+    },
+    {
+      "file": "shell.ogg",
+      "duration": 0.12822916666666667,
+      "decodedPeak": 0.66127,
+      "rms": 0.05973,
+      "nonFinite": 0
+    },
+    {
+      "file": "blast-1.ogg",
+      "duration": 0.7748125,
+      "decodedPeak": 0.66544,
+      "rms": 0.15347,
+      "nonFinite": 0
+    },
+    {
+      "file": "blast-2.ogg",
+      "duration": 2.0000625,
+      "decodedPeak": 0.66399,
+      "rms": 0.09362,
+      "nonFinite": 0
+    },
+    {
+      "file": "rocket-launch.ogg",
+      "duration": 1.2,
+      "decodedPeak": 0.6358,
+      "rms": 0.08568,
+      "nonFinite": 0
+    },
+    {
+      "file": "ui-select.ogg",
+      "duration": 0.03772916666666667,
+      "decodedPeak": 0.66045,
+      "rms": 0.11581,
+      "nonFinite": 0
+    },
+    {
+      "file": "ui-deploy.ogg",
+      "duration": 0.5363541666666667,
+      "decodedPeak": 0.68935,
+      "rms": 0.13524,
+      "nonFinite": 0
+    },
+    {
+      "file": "ui-open.ogg",
+      "duration": 0.31466666666666665,
+      "decodedPeak": 0.43427,
+      "rms": 0.09488,
+      "nonFinite": 0
+    }
+  ]
+}

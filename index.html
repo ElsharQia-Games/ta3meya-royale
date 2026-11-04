@@ -284,13 +284,23 @@
       <section class="operation-copy" aria-labelledby="operation-name">
         <div class="eyebrow"><span class="section-index">01 /</span> ACTIVE THEATRE <span class="eyebrow-line"></span></div>
         <h1 id="operation-name">BLACK<span>SHORE</span><i aria-hidden="true">01</i></h1>
-        <div class="operation-subtitle">EVERY METRE MATTERS.</div>
-        <p class="operation-description">An exposed coast. A closing perimeter.<br>Make your next move count.</p>
+        <div class="operation-subtitle">TAKE GROUND. BREAK THE LINE.</div>
+        <p class="operation-description">An exposed coast. A closing perimeter.<br>Precision, firepower, and the people beside you.</p>
         <div class="operation-facts">
           <div><b>1 KM²</b><span>OPEN BATTLEFIELD</span></div>
-          <div><b>07</b><span>WEAPON CLASSES</span></div>
+          <div><b>08</b><span>WEAPON CLASSES</span></div>
           <div><b>60 HZ</b><span>SIMULATION</span></div>
         </div>
+        <section class="kit-picker" aria-labelledby="kit-title">
+          <div class="kit-heading"><span id="kit-title">COMBAT KIT</span><span id="kit-rule">TDM DEPLOYMENT / BR LOOT</span></div>
+          <div class="kit-options" role="radiogroup" aria-label="Combat kit">
+            <button class="kit-option active" data-kit="assault" role="radio" aria-checked="true"><span>01</span><b>ASSAULT</b><small>K4 / P92</small></button>
+            <button class="kit-option" data-kit="recon" role="radio" aria-checked="false"><span>02</span><b>RECON</b><small>AX-50 / P92</small></button>
+            <button class="kit-option" data-kit="breach" role="radio" aria-checked="false"><span>03</span><b>BREACHER</b><small>M12 / VEX-9</small></button>
+            <button class="kit-option" data-kit="heavy" role="radio" aria-checked="false"><span>04</span><b>HEAVY</b><small>M249 / R7 RPG</small></button>
+          </div>
+          <p id="kit-description">A versatile rifleman for the forward push.</p>
+        </section>
         <div class="terrain-caption"><span class="cross-icon">+</span><span id="lobby-location">BLACKSHORE / NORTHERN APPROACH</span></div>
       </section>
       <aside class="deployment-panel panel" aria-labelledby="lobby-title">
@@ -326,9 +336,9 @@
     <p class="panel-description">Stay mobile. Use cover. Watch the perimeter.</p>
     <div class="manual-grid">
       <section><h3>MOVEMENT</h3><p><kbd>WASD</kbd> Move</p><p><kbd>SHIFT</kbd> Sprint</p><p><kbd>SPACE</kbd> Jump</p><p><kbd>C / X / V</kbd> Crouch / prone / stand</p></section>
-      <section><h3>COMBAT</h3><p><kbd>LMB / RMB</kbd> Fire / aim</p><p><kbd>R</kbd> Reload</p><p><kbd>1 / 2 / Q</kbd> Equip / cycle weapon</p><p><kbd>G / T</kbd> Frag / smoke</p></section>
+      <section><h3>COMBAT</h3><p><kbd>LMB / RMB</kbd> Fire / aim</p><p><kbd>R</kbd> Reload · cycle launcher round</p><p><kbd>1 / 2 / Q</kbd> Equip / cycle weapon</p><p><kbd>G / T</kbd> Frag / smoke</p></section>
       <section><h3>FIELDCRAFT</h3><p><kbd>E</kbd> Pick up / vehicle</p><p><kbd>F</kbd> Heal</p><p><kbd>TAB</kbd> Scoreboard</p><p><kbd>ENTER</kbd> Chat</p></section>
-      <section><h3>PLAY TOGETHER</h3><p>Use the same server link and room code.</p><p>Battle Royale is last-one-standing. Team Deathmatch assigns two teams.</p><p>Training runs locally with bots.</p></section>
+      <section><h3>PLAY TOGETHER</h3><p>Use the same server link and room code.</p><p>Choose Recon for the sniper or Heavy for the RPG in Team Deathmatch. Your kit returns on respawn.</p><p>Battle Royale begins with a sidearm. Find the rest in the field.</p></section>
     </div>
     <button id="manual-done" class="btn primary">READY TO DEPLOY <span>↗</span></button>
   </div>

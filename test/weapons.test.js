@@ -218,6 +218,7 @@ test('TTK at 10/30/60 m follows the class roles in the weapon table', () => {
   const ttk = {};
   for (const key of CFG.WEAPON_ORDER) {
     const W = CFG.WEAPONS[key];
+    if (W.projectile) continue; // live explosive flight has separate impact/radius tests
     ttk[key] = ranges.map(dist => ttkSeconds(W, dist));
     for (let i = 1; i < ttk[key].length; i++) {
       assert.ok(ttk[key][i] >= ttk[key][i - 1] - 1e-9,
@@ -280,6 +281,7 @@ test('damage falloff is monotonic and clamps to its configured floor', () => {
   const ranges = [5, 10, 20, 30, 45, 60, 80, 120];
   for (const key of CFG.WEAPON_ORDER) {
     const W = CFG.WEAPONS[key];
+    if (W.projectile) continue;
     const [start, end, floorMult] = W.falloff;
     assert.ok(start > 0 && end > start, `${key} falloff range`);
     assert.ok(floorMult > 0 && floorMult < 1, `${key} falloff floor`);
@@ -315,6 +317,7 @@ function shootThrough(W, thickness, mat) {
 test('penetration threshold matches weapon data and material toughness', () => {
   for (const key of CFG.WEAPON_ORDER) {
     const W = CFG.WEAPONS[key];
+    if (W.projectile) continue;
     assert.ok(W.penetration > 0, `${key} penetration`);
     const under = shootThrough(W, W.penetration * 0.9, 'concrete');
     assert.ok(under.travel > 2.1, `${key} should penetrate ${(W.penetration * 0.9).toFixed(3)} m of concrete`);
@@ -359,8 +362,9 @@ test('every weapon reloads, fires and dry-fires according to its data', () => {
     const game2 = { events: [] };
     assert.equal(tryReload(game2, partial), true);
     finishReload(partial);
-    assert.equal(partial.inv[key].mag, Math.max(0, W.mag - 3) + Math.min(3, 2));
-    assert.equal(partial.inv[key].reserve, 0);
+    const taken = Math.min(W.mag, 3, 2);
+    assert.equal(partial.inv[key].mag, Math.max(0, W.mag - 3) + taken);
+    assert.equal(partial.inv[key].reserve, 2 - taken);
 
     // Full magazines and empty reserves cannot start a reload.
     const full = {
@@ -384,7 +388,7 @@ test('every weapon reloads, fires and dry-fires according to its data', () => {
       eyeHeight: () => 1.64, shotsFired: 0, prevShoot: false,
     };
     const fireGame = {
-      world: openWorld, rng: { next: () => 0.5 }, events: [], pendingDamage: [],
+      world: openWorld, rng: { next: () => 0.5 }, events: [], pendingDamage: [], projectiles: [],
       time: 0, mode: 'br', players: new Map([[1, shooter]]),
     };
     const input = emptyInput();
@@ -392,10 +396,11 @@ test('every weapon reloads, fires and dry-fires according to its data', () => {
     assert.equal(tryFire(fireGame, shooter, input, [], { rng: fireGame.rng }), true, `${key} fires`);
     assert.equal(shooter.inv[key].mag, W.mag - 1, `${key} ammo spend`);
     assert.ok(Math.abs(shooter.cooldown - 60 / W.rpm) < 1e-9, `${key} cadence`);
-    const shot = fireGame.events.find(e => e.k === 'shot');
+    const shot = fireGame.events.find(e => e.k === (W.projectile ? 'launch' : 'shot'));
     assert.ok(shot, `${key} shot event`);
     assert.equal(shot.w, key);
-    assert.equal(shot.e.length, W.pellets, `${key} tracer count`);
+    if (W.projectile) assert.equal(fireGame.projectiles.length, 1);
+    else assert.equal(shot.e.length, W.pellets, `${key} tracer count`);
 
     // Dry fire is a distinct, visible failure that still costs a short cooldown.
     shooter.inv[key].mag = 0;

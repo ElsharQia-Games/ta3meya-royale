@@ -1,0 +1,391 @@
+{
+  "sampleRate": 48000,
+  "channels": 1,
+  "encoding": "Ogg Vorbis q5",
+  "sourcePeak": 0.67,
+  "sourceArchives": {
+    "Prepared-SFX-Library.7z": "cc1ab5a99a0a365105c7c5dd783f4b0b1fe90938114d3ceec53856bfe005f7d6",
+    "kenney-impact-sounds.zip": "029d734af1582474edf3a694d1b0cebc97c1c152f2f39fa34d4c2bafc5de77f8",
+    "kenney-sci-fi-sounds.zip": "119340f351a5098ad814f78719438c0da355a9ce8a4c8a3af6a8d48aa3d49e04",
+    "kenney-interface-sounds.zip": "f2193d072726d6758a5f7871b2dcc54dcce0d5c35c6f0a62f92549b327c81232"
+  },
+  "totalBytes": 359719,
+  "clips": [
+    {
+      "file": "pistol-1.ogg",
+      "seconds": 0.8,
+      "bytes": 11509,
+      "sha256": "7b17b6f520e689faa1e95ca8b1904598a1647b11136557210dfdbe9de82689df",
+      "source": "1911/A_42P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "8e84438e771c157155a6a1ff47a6a7a7d81b6f39b185d41e426c57337a82254a",
+      "startSeconds": 0.936479
+    },
+    {
+      "file": "pistol-2.ogg",
+      "seconds": 0.8,
+      "bytes": 11770,
+      "sha256": "de61605b9adef1dab45519de49697f272e2d6b8cd48b7842134cc7468d3bf047",
+      "source": "1911/A_42P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "8e84438e771c157155a6a1ff47a6a7a7d81b6f39b185d41e426c57337a82254a",
+      "startSeconds": 4.996542
+    },
+    {
+      "file": "ar-1.ogg",
+      "seconds": 0.85,
+      "bytes": 11769,
+      "sha256": "70316ce26f39962d3995848cfb5330530d774d2003d5d4255eae65ae3c35b7cb",
+      "source": "AR-15/D_32P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "acee9d2106b68fe5956225a19d7aedf943d97793817f9bda9d486a2b74b0a812",
+      "startSeconds": 0.698729
+    },
+    {
+      "file": "ar-2.ogg",
+      "seconds": 0.85,
+      "bytes": 11763,
+      "sha256": "0a9d2de24eec01ded1250609d90e045d3338086f71355b0cab92287b94166090",
+      "source": "AR-15/D_32P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "acee9d2106b68fe5956225a19d7aedf943d97793817f9bda9d486a2b74b0a812",
+      "startSeconds": 5.642437
+    },
+    {
+      "file": "smg-1.ogg",
+      "seconds": 0.6,
+      "bytes": 9699,
+      "sha256": "38bc1254afb753e42043b2ed5d44dd2435f1a6cb9c32221654ec2f56e04a6a01",
+      "source": "Carl Gustav M45/G_31P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "5982c6c2fa44545b750ba6217ed57797a6a15c02f5c9943ac0e99e5f3ab2b158",
+      "startSeconds": 0.305292
+    },
+    {
+      "file": "smg-2.ogg",
+      "seconds": 0.6,
+      "bytes": 9649,
+      "sha256": "efb3357f5819c3440cb87f391962c7e5db67e2ccbd617db2846d416530d55b26",
+      "source": "Carl Gustav M45/G_31P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "5982c6c2fa44545b750ba6217ed57797a6a15c02f5c9943ac0e99e5f3ab2b158",
+      "startSeconds": 3.49625
+    },
+    {
+      "file": "shotgun-1.ogg",
+      "seconds": 1.15,
+      "bytes": 14681,
+      "sha256": "8aa52dd82f3d126b7e2947c9b668cc4bb52b5aa9e760cefe0edc7ad0f3a0e4ea",
+      "source": "Model 12/K_22P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "ea19e9a0be4686054847a58b0a43f6be82fbe65345489f41aa02dbcf166d34d0",
+      "startSeconds": 0.837167
+    },
+    {
+      "file": "shotgun-2.ogg",
+      "seconds": 1.15,
+      "bytes": 14679,
+      "sha256": "74908d84937b87afc9f05d67118df8605c6f9f352d674e7afd264779864a49a5",
+      "source": "Model 12/K_22P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "ea19e9a0be4686054847a58b0a43f6be82fbe65345489f41aa02dbcf166d34d0",
+      "startSeconds": 7.440458
+    },
+    {
+      "file": "sniper-1.ogg",
+      "seconds": 1.65,
+      "bytes": 18257,
+      "sha256": "a3e8345b9db46ed71c7ce1777fab7cbb3231bc15fe23ed80f9293c2f2eb2cb36",
+      "source": "Savage 10 .300 Blackout/T_27P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "92296c320f7854da29ff28d1687da21a110cb1242bb03e5e1e62f6a4e7f79f3b",
+      "startSeconds": 0.946958
+    },
+    {
+      "file": "sniper-2.ogg",
+      "seconds": 1.65,
+      "bytes": 18119,
+      "sha256": "a2205c99f5c43ca91529fddbc42beedf7c357217d7e6327fbd0d181c3a7c4686",
+      "source": "Savage 10 .300 Blackout/T_27P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "92296c320f7854da29ff28d1687da21a110cb1242bb03e5e1e62f6a4e7f79f3b",
+      "startSeconds": 4.963021
+    },
+    {
+      "file": "dmr-1.ogg",
+      "seconds": 1.0,
+      "bytes": 12965,
+      "sha256": "659043330596b4f44585fba7ac4b5faca2bf838cadf6350cbab7618c4d1dcae3",
+      "source": "SKS/U_14P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "ad33d11af79d73ec8b7a527a8aed948a086a0d764cec5a54d2e86887351d6c96",
+      "startSeconds": 3.572021
+    },
+    {
+      "file": "dmr-2.ogg",
+      "seconds": 1.0,
+      "bytes": 12878,
+      "sha256": "449e8f7d5ee760447c61d6a19e6d0f5a486b2ee5387cf389061c80302b722657",
+      "source": "SKS/U_14P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "ad33d11af79d73ec8b7a527a8aed948a086a0d764cec5a54d2e86887351d6c96",
+      "startSeconds": 6.750104
+    },
+    {
+      "file": "lmg-1.ogg",
+      "seconds": 0.85,
+      "bytes": 11669,
+      "sha256": "d052b0e4e3a82a4111dd40823841bf348de20a91cecb0cf432eb9e01080549d4",
+      "source": "AK-47/C_28P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "e0934c1d79192d2216db62fdf6ab57bf9d5d585267af367a1cfb21f0972a537d",
+      "startSeconds": 0.606167
+    },
+    {
+      "file": "lmg-2.ogg",
+      "seconds": 0.85,
+      "bytes": 11447,
+      "sha256": "90c10c2bf554e26f79a91a6e8afc426af82828a322e45692a10c0f4b21a5eda0",
+      "source": "AK-47/C_28P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "e0934c1d79192d2216db62fdf6ab57bf9d5d585267af367a1cfb21f0972a537d",
+      "startSeconds": 3.252396
+    },
+    {
+      "file": "rifle-distant-1.ogg",
+      "seconds": 1.5,
+      "bytes": 18092,
+      "sha256": "64538323fbddf4d42f78aa6139b3127576e843b72b72f5b49d4284722c92bffe",
+      "source": "AR-15/D_24P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "4c6a54ca0583150bbb32b7f658bc64da9ad9ba42fd3aca769c6120b44af8d3f0",
+      "startSeconds": 0.544271
+    },
+    {
+      "file": "rifle-distant-2.ogg",
+      "seconds": 1.5,
+      "bytes": 18167,
+      "sha256": "c9396563152d78de41bccd028254a264474818913486bde41b9cb84ba8bd34b1",
+      "source": "AR-15/D_24P.wav",
+      "sourceLibrary": "Free Firearm Sound Library",
+      "license": "CC0-1.0",
+      "sourceSha256": "4c6a54ca0583150bbb32b7f658bc64da9ad9ba42fd3aca769c6120b44af8d3f0",
+      "startSeconds": 3.905354
+    },
+    {
+      "file": "step-grass-1.ogg",
+      "seconds": 0.7747,
+      "bytes": 6788,
+      "sha256": "0554e08e7c5a618efa2db73d74281bc147d57fd7c7d52c5ac83e1cee3bc2784c",
+      "source": "Audio/footstep_grass_000.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "9d49497777405d78d7cf7f2888e28277f3a23192300cfd1d79d54876b20f479f",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "step-grass-2.ogg",
+      "seconds": 0.6896,
+      "bytes": 6863,
+      "sha256": "3e39eecb2e3c1e2aeab3ff1982beca047ee594adbba5baaf09d2fb4d6bb6611a",
+      "source": "Audio/footstep_grass_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "73a520139f5be716a403bfe9c80e0e94d1e61d8e9de04a354b336392164b53dc",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "step-concrete-1.ogg",
+      "seconds": 0.103,
+      "bytes": 4914,
+      "sha256": "0ba58eeec53b9036bc2dd418f425a389657b7db5eee2f1db58e8b52c2117d186",
+      "source": "Audio/footstep_concrete_000.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "d7267e183067757c92c169de2a379abea592cfca6b39bb2e8feea15221ad79fe",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "step-concrete-2.ogg",
+      "seconds": 0.1099,
+      "bytes": 5122,
+      "sha256": "9193483e7d804d31114045e48e7e1b0ef73d1d97dc7bae55a344b6e06ead02c4",
+      "source": "Audio/footstep_concrete_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "b21fa546d74941196b25da8a20b7010abd8c05c4fcf93545d1f344e66a664e13",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "step-wood-1.ogg",
+      "seconds": 0.2714,
+      "bytes": 5048,
+      "sha256": "e1236333ba9edf47d10ccd0bcc41c384f48658a6b83184b8a2c935db74904db1",
+      "source": "Audio/footstep_wood_000.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "5f1c252942a220d658121bd9417448cd19649ded9fff2ff15f6e50899373ce8e",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "step-wood-2.ogg",
+      "seconds": 0.2485,
+      "bytes": 4870,
+      "sha256": "d7ee067d20c2d2032c6d9c89c3eb87b1d6c97b875bfc9ee264a2514d85825850",
+      "source": "Audio/footstep_wood_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "9ff095b05cee5eec40b081defe3f0eef7232bb16d4865ce03b9f6dbab875cfdd",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "mag-out.ogg",
+      "seconds": 0.2489,
+      "bytes": 5762,
+      "sha256": "59b4415f94744999186e67daa516791d4313024e5fdb4974e6d1da39b2563495",
+      "source": "Audio/impactMetal_light_001.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "fba69c467ddd85da7b1d82e259f936b876d9ba6a3d6f1b24bdd10468e46bfe08",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "mag-in.ogg",
+      "seconds": 0.4888,
+      "bytes": 7841,
+      "sha256": "693868db9efb70cb47a4d78827cb7f574d09f9f1b75cc4997f31f6c79981754e",
+      "source": "Audio/impactPlate_light_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "8ac5869ea434cf0d364872774efe70b2d666a4f02ba35ddfc1e051d336721be8",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "bolt.ogg",
+      "seconds": 0.1163,
+      "bytes": 4972,
+      "sha256": "851d10649d01945e93660e65a21b3b603f104811bb2a8d7b4ef3d081a580a49a",
+      "source": "Audio/impactMetal_medium_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "7e89ce2ca0dbda95ea2b78d4b50791cab35c10d20e9f5ccd45dd0b00e99ff548",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "body-fall.ogg",
+      "seconds": 0.5691,
+      "bytes": 5527,
+      "sha256": "9a30e3a0cfb77db5eb5e54a76fa75bcf948c2c97257f8dfc57d9a868773212a0",
+      "source": "Audio/impactSoft_heavy_001.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "4d0096364ba9e46119d2ff6df493fdc101bd2e1efae061da5e5f77a53b3fdcb6",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "impact-wood.ogg",
+      "seconds": 0.3298,
+      "bytes": 5362,
+      "sha256": "2ef1e9e03f97911eceffe0720fde927d241fd80f636c06049aa1b5c3634c54c4",
+      "source": "Audio/impactWood_medium_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "3f3f1917428b828f733a963167833c707bf88296ff158e1559c57c5cb813d799",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "impact-metal.ogg",
+      "seconds": 0.373,
+      "bytes": 6339,
+      "sha256": "c1f2c429096875b1a1c6c68811ca926bdaf2da5caec984a9fc3d7763740de0a2",
+      "source": "Audio/impactMetal_light_000.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "33b5e6e37c6e9d54e07bf5a89b12c76e879f40c1ea83cdd82714df1d6f9fec6d",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "impact-glass.ogg",
+      "seconds": 0.5405,
+      "bytes": 6583,
+      "sha256": "cc4f11d4026b6ec186899c212582d169fe362efc3de706e1c906b546bafc88da",
+      "source": "Audio/impactGlass_medium_000.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "9252d50bfb85edb17d6073c4a7806e10cdb9de56d3dbfc93a4b9727146d2df6d",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "shell.ogg",
+      "seconds": 0.1309,
+      "bytes": 5147,
+      "sha256": "034e86bf0f2dba6dfd5a021ecbac8cecbcfb970d14eba82c00dc3ab309afd411",
+      "source": "Audio/impactTin_medium_002.ogg",
+      "sourceLibrary": "Kenney impact-sounds",
+      "sourceSha256": "c1d2c4f9910d4529581ae56a9a9a01454c4619fbb7d6da7616221d8ec58cc0c4",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "blast-1.ogg",
+      "seconds": 0.7775,
+      "bytes": 11554,
+      "sha256": "934002c80059ce52e0463c61ca151e823c283f90c0046f860469b310eb67dbd8",
+      "source": "Audio/explosionCrunch_000.ogg",
+      "sourceLibrary": "Kenney sci-fi-sounds",
+      "sourceSha256": "4b597d658d0ae101f0a030fbeea5fc3a4292ab85f017470a8254a8e7959cbd69",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "blast-2.ogg",
+      "seconds": 2.0001,
+      "bytes": 11108,
+      "sha256": "27a7999f300d86d740d624666b8d65e3c6a1e9a2f6bf053081d3dc072a411fd3",
+      "source": "Audio/lowFrequency_explosion_000.ogg",
+      "sourceLibrary": "Kenney sci-fi-sounds",
+      "sourceSha256": "3cb48d86dab63140cfb9aaeea4d4a6846abaca5831d157d8adbec0490da26343",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "rocket-launch.ogg",
+      "seconds": 1.2,
+      "bytes": 18511,
+      "sha256": "2538feacc6c009eafd08392fa120bed9d227d70c7c335d3fcbfc32b2f37dcaf5",
+      "source": "Audio/thrusterFire_000.ogg",
+      "sourceLibrary": "Kenney sci-fi-sounds",
+      "sourceSha256": "0fdc474d93f209debf1fc4ea77765a669dcb7676db31b4d8a0a509685bccf374",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "ui-select.ogg",
+      "seconds": 0.0404,
+      "bytes": 4551,
+      "sha256": "f6fbff160a95812535ab0b0333b3030f161f9f6312da368ae6f8b66e1448f534",
+      "source": "Audio/select_002.ogg",
+      "sourceLibrary": "Kenney interface-sounds",
+      "sourceSha256": "4cc6ac5341b9b2c86fef80c347de028e9ab9f2e037586ac7d9fa59a403a1c012",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "ui-deploy.ogg",
+      "seconds": 0.539,
+      "bytes": 7948,
+      "sha256": "538452bb2720015fa805d415014d1b47ced80258095c7ea6cb6f7245e3d4bb1d",
+      "source": "Audio/confirmation_002.ogg",
+      "sourceLibrary": "Kenney interface-sounds",
+      "sourceSha256": "33b17a9a9a2397c62b285c52c33a907fdffb476909c99e42dde603f6a7a8b12c",
+      "license": "CC0-1.0"
+    },
+    {
+      "file": "ui-open.ogg",
+      "seconds": 0.3138,
+      "bytes": 7796,
+      "sha256": "4d503d113edc8d458f5931e43f1109cce3af800bdbb6abc0bc290fc7c6995594",
+      "source": "Audio/open_002.ogg",
+      "sourceLibrary": "Kenney interface-sounds",
+      "sourceSha256": "24ff224fe2c09c6aed1b41249825382dc74cf324b887ff279d8494912ce2beee",
+      "license": "CC0-1.0"
+    }
+  ]
+}

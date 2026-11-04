@@ -1,0 +1,53 @@
+{
+  "simulatedMinutes": 0.3,
+  "arsenalFixtures": true,
+  "ticks": 1200,
+  "wallSeconds": 1.1,
+  "ticksPerSecond": 1092,
+  "players": 32,
+  "alive": 32,
+  "respawns": 7,
+  "simMsMean": 0.8959,
+  "simMsP95": 1.6725,
+  "simMsP99": 5.6303,
+  "simMsMax": 55.4,
+  "navigationBootMs": 481.954,
+  "ticksOverBudget": 1,
+  "tickBudgetMs": 16.67,
+  "nonFinite": 0,
+  "outOfBounds": 0,
+  "groundPenetrations": 0,
+  "groundToleranceMetres": 0.08,
+  "vehicleNonFinite": 0,
+  "vehicleOutOfBounds": 0,
+  "vehicleGroundPenetrations": 0,
+  "projectileNonFinite": 0,
+  "projectileOverdue": 0,
+  "peakProjectiles": 2,
+  "shotsByWeapon": {
+    "pistol": 54,
+    "sniper": 7,
+    "rpg": 7,
+    "ar": 16,
+    "shotgun": 19,
+    "lmg": 17,
+    "smg": 6,
+    "dmr": 11
+  },
+  "impactsByWeapon": {
+    "rpg": 7
+  },
+  "teleportsOver2_5m": 0,
+  "maxStepMetres": 0.21,
+  "zoneRadius": 450,
+  "matchState": 2,
+  "slowestTicks": [
+    {
+      "tick": 0,
+      "ms": 55.4,
+      "botMs": 48.389,
+      "gameMs": 7.031
+    }
+  ],
+  "capturedAt": "2026-11-04T11:27:54.302Z"
+}

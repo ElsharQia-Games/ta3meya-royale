@@ -15,7 +15,7 @@ import { CFG } from './config.js';
 import { WEAPON_KEYS } from './weapons.js';
 import { clamp, wrapAngle, TAU } from './math.js';
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 // A join is only accepted for the exact wire format this server speaks. The
 // snapshot/input layouts are not forward/backward compatible, so silently
@@ -588,7 +588,7 @@ export function filterEvents(events, viewer, radius = CFG.NET.eventRadius) {
     if (e.k === 'hit' || e.k === 'kill') {
       if (e.from === viewer.id || e.to === viewer.id || e.victim === viewer.id || e.killer === viewer.id) { out.push(e); continue; }
     }
-    if (e.k === 'shot') {
+    if (e.k === 'shot' || e.k === 'launch') {
       if (e.id === viewer.id) { out.push(e); continue; }
       const dx = e.o[0] - vx, dz = e.o[2] - vz;
       if (dx * dx + dz * dz <= radius * radius) out.push(e);

@@ -1,11 +1,12 @@
-// Procedural WebAudio: every sound is synthesised at runtime, so the project
-// ships no audio files. Distant sounds are delayed by distance / speed of sound
-// and panned relative to the listener.
+// Local CC0 samples with procedural low-frequency/ambience layers. Distant
+// sounds have propagation delay, occlusion filtering and HRTF spatial panning.
 //
 // Bus: voices -> master gain -> glue compressor -> brick-wall limiter ->
 //      analyser -> destination. The limiter keeps overlapping gunfire and
 //      explosions below full scale; the analyser is used by QA to measure it.
 import { clamp } from '../../shared/math.js';
+import { CFG } from '../../shared/config.js';
+import { SampleBank, ReloadCues } from './samples.js';
 
 const SPEED_OF_SOUND = 343;
 
@@ -28,6 +29,11 @@ export class AudioEngine {
     this._steps = new Map();
     this._levelBuf = null;
     this._gesture = null;
+    this.voices = new Set();
+    this.samples = null;
+    this.reloadCues = new ReloadCues();
+    this.variant = 0;
+    this.world = null;
   }
 
   init() {
@@ -62,6 +68,8 @@ export class AudioEngine {
     this.analyser.connect(this.ctx.destination);
 
     this._noise = this._makeNoise(2.0);
+    this.samples = new SampleBank(this.ctx);
+    this.samples.load();
     this._startAmbient();
     this.enabled = true;
 
@@ -91,7 +99,38 @@ export class AudioEngine {
   }
 
   _applyGain() {
-    if (this.master) this.master.gain.value = this.muted ? 0 : this.volume;
+    if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : this.volume, this.ctx.currentTime, .025);
+  }
+
+  playSample(key, { gain = 1, rate = 1, position = null, delay = 0, cutoff = 14000, group = null } = {}) {
+    const buffer = this.samples?.buffers.get(key);
+    if (!this.enabled || !buffer) return false;
+    if (this.voices.size >= 48) this.voices.values().next().value.stop();
+    const source = this.ctx.createBufferSource(); source.buffer = buffer; source.playbackRate.value = rate;
+    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = cutoff;
+    const level = this.ctx.createGain(); level.gain.value = Math.max(0, gain);
+    const panner = position ? this.ctx.createPanner() : this.ctx.createStereoPanner();
+    if (position) {
+      panner.panningModel = 'HRTF'; panner.distanceModel = 'inverse'; panner.refDistance = 3; panner.maxDistance = 600; panner.rolloffFactor = .65;
+      panner.positionX.value = position[0]; panner.positionY.value = position[1]; panner.positionZ.value = position[2];
+    }
+    source.connect(filter).connect(level).connect(panner).connect(this.master);
+    const voice = { group, stop: () => { this.voices.delete(voice); try { source.stop(); } catch {} } };
+    const release = () => { source.disconnect(); filter.disconnect(); level.disconnect(); panner.disconnect(); this.voices.delete(voice); };
+    source.onended = release;
+    this.voices.add(voice); source.start(this.ctx.currentTime + delay);
+    return true;
+  }
+
+  cancelGroup(group) { for (const voice of this.voices) if (voice.group === group) voice.stop(); }
+
+  updateActions(player) {
+    const active = !!player?.alive && player.reloadT > 0;
+    if (!active) this.cancelGroup('reload');
+    const W = CFG.WEAPONS[player?.weapon];
+    for (const cue of this.reloadCues.step(player?.weapon, player?.reloadT || 0, W?.reload || 1, !!player?.alive)) {
+      if (!this.playSample(cue, { gain: .42, group: 'reload' })) this._noiseBurst(.055, .1, 'bandpass', 2100, 1.2);
+    }
   }
 
   // Time-domain levels after the limiter. QA uses this to prove no clipping.
@@ -223,6 +262,13 @@ export class AudioEngine {
     const w = weaponKey || 'ar';
     const loud = { sniper: 1.35, dmr: 1.15, shotgun: 1.25, lmg: 1.1, ar: 1, smg: 0.85, pistol: 0.8 }[w] || 1;
     const lp = s.dist > 60 ? 1800 : s.dist > 25 ? 3600 : 9000;
+    const occluded = s.dist > 4 && this.world && !this.world.lineOfSight(this.listenerPos, [x, y, z], .4);
+    const sample = w === 'rpg' ? 'rocket-launch' : `${s.dist > 65 ? 'rifle-distant' : w}-${++this.variant % 2 + 1}`;
+    if (this.playSample(sample, { gain: loud * (occluded ? .48 : .85), rate: .98 + Math.random() * .04,
+      position: s.dist < 2 ? null : [x, y, z], delay: s.dist < 2 ? 0 : s.delay, cutoff: occluded ? 1000 : lp })) {
+      if (near && ['rpg', 'sniper', 'shotgun'].includes(w)) this._tone(w === 'rpg' ? 52 : 80, .17, .16, 'sine', 0, 0, 32);
+      return;
+    }
     this._noiseBurst(0.22 * loud, 0.55 * s.gain * loud, 'lowpass', lp, 0.9, s.delay, s.pan);
     this._tone(115 * (0.9 + Math.random() * 0.2), 0.16, 0.34 * s.gain * loud, 'triangle', s.delay, s.pan, 48);
     if (near) {
@@ -237,15 +283,14 @@ export class AudioEngine {
   }
 
   reload(dur = 2) {
-    if (!this.enabled) return;
-    this._tone(320, 0.05, 0.09, 'square', 0.05);
-    this._noiseBurst(0.04, 0.1, 'bandpass', 2600, 1.4, 0.18);
-    this._tone(240, 0.05, 0.1, 'square', dur * 0.55);
-    this._noiseBurst(0.05, 0.12, 'bandpass', 1800, 1.6, dur * 0.8);
+    this.cancelGroup('reload');
+    this.reloadCues.active = false;
   }
 
   switchWeapon() {
     if (!this.enabled) return;
+    this.cancelGroup('reload'); this.reloadCues.active = false;
+    if (this.playSample('mag-out', { gain: .22, rate: .88 })) return;
     this._noiseBurst(0.06, 0.12, 'bandpass', 1900, 1.2);
     this._tone(420, 0.04, 0.06, 'square', 0.06);
   }
@@ -271,6 +316,10 @@ export class AudioEngine {
     if (!this.enabled) return;
     const s = this.spatial(x, y, z);
     if (s.dist > 600) return;
+    if (this.playSample('blast-1', { gain: 1.1, position: [x, y, z], delay: s.delay, cutoff: s.dist > 80 ? 2000 : 9000 })) {
+      this.playSample('blast-2', { gain: .64, position: [x, y, z], delay: s.delay, rate: .9 });
+      return;
+    }
     this._noiseBurst(0.9, 0.8 * s.gain, 'lowpass', s.dist > 80 ? 320 : 900, 0.8, s.delay, s.pan);
     this._tone(62, 0.8, 0.5 * s.gain, 'sine', s.delay, s.pan, 28);
   }
@@ -284,6 +333,7 @@ export class AudioEngine {
     const last = this._steps.get(id) || 0;
     if (now - last < interval) return;
     this._steps.set(id, now);
+    if (this._steps.size > 64) for (const [key, at] of this._steps) if (now - at > 12) this._steps.delete(key);
     this._lastStep = now;
     let gain = 0.075 + Math.min(0.06, speed * 0.008);
     let pan = 0;
@@ -294,6 +344,9 @@ export class AudioEngine {
       pan = s.pan;
     }
     const freq = surface === 'wood' ? 320 : surface === 'metal' ? 620 : surface === 'water' ? 900 : 210;
+    const material = surface === 'wood' ? 'wood' : ['concrete', 'metal', 'road'].includes(surface) ? 'concrete' : 'grass';
+    if (surface !== 'water' && this.playSample(`step-${material}-${++this.variant % 2 + 1}`,
+      { gain: (x === undefined ? .25 : .4), rate: .93 + Math.random() * .1, position: x === undefined ? null : [x, y, z] })) return;
     this._noiseBurst(0.07, gain, 'bandpass', freq, 1.1, 0, pan);
   }
 
@@ -334,6 +387,22 @@ export class AudioEngine {
   setListener(pos, yaw) {
     this.listenerPos = pos;
     this.listenerYaw = yaw;
+    if (this.ctx) {
+      const listener = this.ctx.listener;
+      listener.positionX.value = pos[0]; listener.positionY.value = pos[1]; listener.positionZ.value = pos[2];
+      listener.forwardX.value = -Math.sin(yaw); listener.forwardY.value = 0; listener.forwardZ.value = -Math.cos(yaw);
+      listener.upX.value = 0; listener.upY.value = 1; listener.upZ.value = 0;
+    }
+  }
+
+  death() {
+    this.cancelGroup('reload'); this.reloadCues.active = false;
+    this.playSample('body-fall', { gain: .5 });
+    if (this.enabled) this._tone(66, .65, .12, 'sine', 0, 0, 28);
+  }
+
+  ui(action = 'select') {
+    this.playSample(`ui-${action}`, { gain: .18 });
   }
 
   vehicleLoop(vehicle) {

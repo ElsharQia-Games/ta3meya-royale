@@ -3,6 +3,7 @@
 import { CFG, TEAMS, MATCH_STATE } from '../../shared/config.js';
 import { clamp } from '../../shared/math.js';
 import { WEAPON_KEYS } from '../../shared/weapons.js';
+import { CombatFeedback } from './combat.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, parent, text) => {
@@ -15,7 +16,7 @@ const el = (tag, cls, parent, text) => {
 
 const WEAPON_LABEL = {
   pistol: 'P92', smg: 'VEX-9', ar: 'K4 CARBINE', dmr: 'SABLE DMR',
-  shotgun: 'M12 BREACHER', sniper: 'AX-50', lmg: 'M249 SAW',
+  shotgun: 'M12 BREACHER', sniper: 'AX-50', lmg: 'M249 SAW', rpg: 'R7 LANCER',
 };
 
 const mapName = (names, id) => {
@@ -106,6 +107,7 @@ export class HUD {
     this.reloadTag = el('div', 'reload-tag', ammo, 'RELOADING');
     this.reloadTrack = el('div', 'reload-track', ammo);
     this.reloadFill = el('i', '', this.reloadTrack);
+    this.combat = new CombatFeedback(root);
 
     this.vehiclePanel = el('div', 'vehicle-panel hidden', root);
     this.vehicleRole = el('div', 'vehicle-role', this.vehiclePanel, 'UTILITY / DRIVER');
@@ -384,6 +386,7 @@ export class HUD {
   update(dt, ctx) {
     const { player, state, roster, vehicles, loot, cameraYaw, spectator } = ctx;
     if (!player) return;
+    this.combat.update(player, state);
 
     if (roster) {
       const me = roster.find(p => p.id === this.playerId);
@@ -424,7 +427,7 @@ export class HUD {
     if (this._last.mag !== mag) { this._last.mag = mag; this.magText.textContent = mag; this.magText.classList.toggle('empty', mag === 0); }
     if (this._last.res !== res) { this._last.res = res; this.reserveText.textContent = `/ ${res}`; }
     const W = CFG.WEAPONS[wkey];
-    const mode = W ? (W.auto ? 'AUTO' : 'SEMI') : '';
+    const mode = W ? (W.projectile ? 'SINGLE / HIGH EXPLOSIVE' : W.cls === 'sniper' ? 'BOLT ACTION / 4.2×' : W.auto ? 'AUTO' : 'SEMI') : '';
     if (this._last.mode !== mode) { this._last.mode = mode; this.fireMode.textContent = mode; }
     const reloading = (player.reloadT ?? 0) > 0;
     if (this._last.reloading !== reloading) {
@@ -559,7 +562,7 @@ export class HUD {
       rtxt = `RESPAWN IN ${Math.ceil(player.respawnIn)}`;
     }
     if (this._last.respawn !== rtxt) { this._last.respawn = rtxt; this.respawn.textContent = rtxt; }
-    this.respawn.classList.toggle('show', !!rtxt);
+    this.respawn.classList.toggle('show', !!rtxt && !this.combat.dead);
 
     // prompt
     if (this.prompt !== (this._last.prompt ?? '')) {

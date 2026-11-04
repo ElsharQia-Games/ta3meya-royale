@@ -26,6 +26,7 @@ export async function launchBrowser({ width = 1920, height = 1080, quality = 'hi
   })), quality);
   const page = await context.newPage();
   page.setDefaultTimeout(60000);
+  page.setDefaultNavigationTimeout(120000);
   const errors = [];
   page.on('pageerror', e => errors.push(String(e.stack || e)));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });

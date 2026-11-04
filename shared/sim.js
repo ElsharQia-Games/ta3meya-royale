@@ -2,7 +2,7 @@
 // Authoritative game simulation. Fixed 60 Hz. Shared by client (prediction)
 // and server (truth). No DOM, no rendering, no network I/O.
 // ============================================================================
-import { CFG, STANCE, MATCH_STATE, TEAMS } from './config.js';
+import { CFG, STANCE, MATCH_STATE, TEAMS, combatKit } from './config.js';
 import { RNG, clamp, yawTo, TAU, lerp } from './math.js';
 import { World } from './world.js';
 import { movePlayer, stanceHeight, stanceEye, supportHeight, capsuleBlocked } from './physics.js';
@@ -71,6 +71,8 @@ export class Player {
     this.ping = 0;
     this.spectate = null;
     this.zoneT = 0;
+    this.kit = 'assault';
+    this.death = null;
   }
   height() { return this.inVehicle ? CFG.VEHICLE.occupantHeight : stanceHeight(this.stance); }
   eyeHeight() { return this.inVehicle ? CFG.VEHICLE.eyeHeight : stanceEye(this.stance); }
@@ -150,10 +152,11 @@ export class Game {
     const p = new Player(id, name, team);
     p.isBot = !!opts.bot;
     p.connected = opts.connected !== false;
+    p.kit = combatKit(opts.kit);
     this.players.set(id, p);
     this.spawnPlayer(p, opts.forceSpawn);
     if (this.mode === 'tdm') {
-      p.giveLoadout(['ar', 'pistol']);
+      p.giveLoadout(CFG.KITS[p.kit].weapons);
       p.armor = 50;
       p.grenades = 1; p.bandages = 2;
     } else {
@@ -209,6 +212,7 @@ export class Game {
     p.fallImpact = 0; p.pendingFallDamage = 0;
     p.prevShoot = false;
     p.respawnAt = 0;
+    p.death = null;
   }
 
   begin() {
@@ -235,7 +239,7 @@ export class Game {
       this.spawnPlayer(p);
       p.smokes = 0; p.medkits = 0;
       if (this.mode === 'tdm') {
-        p.giveLoadout(['ar', 'pistol']);
+        p.giveLoadout(CFG.KITS[p.kit].weapons);
         p.armor = 50; p.grenades = 1; p.bandages = 2;
       } else {
         p.giveLoadout(['pistol', null]);
@@ -359,7 +363,6 @@ export class Game {
   }
 
   handleActions(p, input, opts = {}) {
-    const key = p.curWeapon();
     // weapon switch
     if (input.slot === 0 || input.slot === 1) switchWeapon(this, p, input.slot);
     else if (input.cycle) switchWeapon(this, p, p.curSlot === 0 ? 1 : 0);
@@ -397,6 +400,7 @@ export class Game {
     }
 
     // shooting
+    const key = p.curWeapon();
     if (key && p.alive && this.matchState === MATCH_STATE.LIVE && !(p.inVehicle && p.seat === 0)) {
       const W = CFG.WEAPONS[key];
       const wantFire = W.auto ? input.shoot : (input.shoot && !p.prevShoot);
@@ -435,6 +439,12 @@ export class Game {
     victim.health = 0;
     victim.deaths++;
     const killer = this.players.get(killerId);
+    const dx = victim.pos[0] - (killer?.pos[0] ?? victim.pos[0] + Math.sin(victim.yaw));
+    const dz = victim.pos[2] - (killer?.pos[2] ?? victim.pos[2] + Math.cos(victim.yaw));
+    const distance = Math.hypot(dx, dz) || 1;
+    victim.death = { at: this.time, yaw: victim.yaw, stance: victim.stance,
+      direction: [dx / distance, 0, dz / distance], explosive: zone === 'explosion', weapon, killerId };
+    victim.reloadT = 0; victim.reloadKey = null; victim.healT = 0; victim.healItem = null;
     if (killer && killer.id !== victim.id) killer.kills++;
     if (this.mode === 'tdm') {
       this.score[victim.team === 0 ? 1 : 0]++;
@@ -446,6 +456,7 @@ export class Game {
       k: 'kill', victim: victim.id, killer: killerId, vname: victim.name,
       kname: killer ? killer.name : (killerId === -1 ? 'ZONE' : '?'),
       w: weapon, zone, dist: Math.round(dist), team: victim.team, kteam: killer ? killer.team : -1,
+      pos: victim.pos.slice(), death: { ...victim.death },
     });
   }
 
@@ -456,10 +467,10 @@ export class Game {
         this.spawnPlayer(p);
         p.health = CFG.PLAYER.MAX_HEALTH;
         p.armor = 50;
-        p.giveLoadout(['ar', 'pistol']);
+        p.giveLoadout(CFG.KITS[p.kit].weapons);
         p.grenades = 1; p.bandages = 2;
         p.smokes = 0; p.medkits = 0;
-        this.events.push({ k: 'respawn', id: p.id });
+        this.events.push({ k: 'respawn', id: p.id, kit: p.kit, weapons: p.weapons.slice() });
       }
     }
   }

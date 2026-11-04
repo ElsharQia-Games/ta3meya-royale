@@ -7,6 +7,7 @@ import { texture, stencil } from './textures.js';
 import { CFG } from '../../shared/config.js';
 import { clamp } from '../../shared/math.js';
 import { reloadMotion } from './animation.js';
+import { createLauncherModel } from './launcher-model.js';
 
 export const WEAPON_VISUALS = {
   pistol: { receiver: .19, barrel: .02, stock: 0, optic: 'iron', sightY: .051, tint: 0x747d6e, marking: 'P92 / 9MM' },
@@ -19,6 +20,7 @@ export const WEAPON_VISUALS = {
 };
 
 export function createWeaponModel(key = 'ar', detailed = true) {
+  if (key === 'rpg') return createLauncherModel(detailed);
   const profile = WEAPON_VISUALS[key] || WEAPON_VISUALS.ar;
   const root = new THREE.Group();
   root.name = `weapon_${key}`;
@@ -215,6 +217,20 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
   const W = CFG.WEAPONS[model.key] || CFG.WEAPONS.ar;
   const motion = reloadMotion(reloadT, W.reload);
   const support = model.gripRest.clone();
+  const trigger = model.rightGrip.position.clone();
+  if (model.key === 'rpg') {
+    model.magazine.position.copy(model.magRest); model.magazine.rotation.set(0, 0, 0);
+    model.magazine.visible = ammo > 0;
+    if (motion.active) {
+      const insert = clamp((motion.progress - .3) / .45, 0, 1);
+      const eased = insert * insert * (3 - 2 * insert);
+      model.magazine.visible = motion.progress > .23;
+      model.magazine.position.set(-.10 * (1 - eased), -.17 * (1 - eased), model.magRest.z + .38 * (1 - eased));
+      model.magazine.rotation.x = -.75 * (1 - eased);
+      support.lerp(new THREE.Vector3(-.038, -.085, -.32).lerp(model.gripRest, eased), motion.grasp);
+    }
+    return { motion, support, trigger };
+  }
   model.magazine.position.copy(model.magRest); model.magazine.rotation.set(0, 0, 0);
   model.magazine.visible = model.key !== 'shotgun';
   if (model.feedCover) model.feedCover.rotation.x = motion.feed * 1.12;
@@ -230,6 +246,10 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
     const cycle = Math.sin(Math.PI * clamp((shotT - .13) / .47, 0, 1));
     model.bolt.position.z = model.boltRestZ + Math.max(cycle, motion.rack) * .065;
     model.bolt.rotation.z = -Math.max(cycle, motion.rack) * .9;
+    if (model.key === 'sniper' && !motion.active) {
+      const reach = Math.sin(Math.PI * clamp((shotT - .1) / .64, 0, 1));
+      trigger.lerp(model.bolt.position.clone().add(new THREE.Vector3(.033, -.03, 0)), Math.pow(reach, .45));
+    }
   }
   if (model.shell) model.shell.visible = false;
   if (motion.active) {
@@ -248,5 +268,5 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
       model.shell.visible = motion.progress > .12 && motion.progress < .85;
     }
   }
-  return { motion, support };
+  return { motion, support, trigger };
 }

@@ -3,6 +3,13 @@
 Updated2026-11-04. Active goal: a cohesive, playable design foundation with
 player-journey evidence. Expanded release acceptance is still open.
 
+Combined-arms continuation: protocol7 RPG/kits, sampled audio, sniper handling
+and articulated death/respawn presentation implemented. Latest checked source:
+131/131 unit tests and10/10 combined-arms browser checks; actual pass2 frames
+reviewed. Live multiplayer, full new-arsenal recording and combined load/stress
+acceptance are in progress. See `qa/reports/COMBINED-ARMS.md` for current evidence;
+the tables below preserve the earlier foundation checkpoint pending reconciliation.
+
 ## Integrated
 
 - Original renderer/client work preserved and merged; Blackshore foundation

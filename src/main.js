@@ -6,7 +6,7 @@
 //   offline — the identical shared simulation plus bot AI running in-tab,
 //             used for training without a server.
 import * as THREE from 'three';
-import { CFG, MATCH_STATE, TEAMS, STANCE } from '../shared/config.js';
+import { CFG, MATCH_STATE, TEAMS, STANCE, combatKit } from '../shared/config.js';
 import { weaponKey } from '../shared/protocol.js';
 import { Game } from '../shared/sim.js';
 import { spawnBots, stepBots } from '../server/bots.js';
@@ -31,7 +31,7 @@ const $ = (id) => document.getElementById(id);
 
 const WEAPON_LABEL = {
   pistol: 'P92', smg: 'VEX-9', ar: 'K4 CARBINE', dmr: 'SABLE DMR',
-  shotgun: 'M12 BREACHER', sniper: 'AX-50', lmg: 'M249 SAW',
+  shotgun: 'M12 BREACHER', sniper: 'AX-50', lmg: 'M249 SAW', rpg: 'R7 LANCER',
 };
 
 class App {
@@ -93,6 +93,8 @@ class App {
     this.hadLock = false;
     this.spectateId = null;
     this.spectateT = 0;
+    this.localDeath = null;
+    this.deathEvents = new Map();
     this.deadAt = 0;
     this.latencyText = '';
 
@@ -124,7 +126,8 @@ class App {
     const name = params.get('name') || this.settings.name || 'Soldier';
     $('in-name').value = name.slice(0, 16);
     $('in-room').value = room.slice(0, 12);
-    $('in-mode').value = this.settings.mode || 'br';
+    $('in-mode').value = ['br', 'tdm'].includes(params.get('mode')) ? params.get('mode') : this.settings.mode || 'br';
+    this.selectedKit = combatKit(this.settings.kit);
     const selectMode = mode => {
       $('in-mode').value = mode;
       document.querySelectorAll('.mode-option').forEach(button => {
@@ -134,6 +137,7 @@ class App {
         button.tabIndex = selected ? 0 : -1;
       });
       $('mode-capacity').textContent = `${CFG.MODES[mode].maxPlayers} MAX`;
+      $('kit-rule').textContent = mode === 'tdm' ? 'EQUIPPED ON DEPLOY / RESPAWN' : 'BR / WEAPONS FOUND IN THE FIELD';
     };
     selectMode($('in-mode').value);
     $('in-mode').addEventListener('change', () => selectMode($('in-mode').value));
@@ -147,6 +151,30 @@ class App {
         document.querySelector(`[data-mode="${next}"]`).focus();
       });
     });
+    const selectKit = key => {
+      this.selectedKit = combatKit(key);
+      this.settings.kit = this.selectedKit;
+      document.querySelectorAll('.kit-option').forEach(button => {
+        const selected = button.dataset.kit === this.selectedKit;
+        button.classList.toggle('active', selected); button.setAttribute('aria-checked', String(selected));
+        button.tabIndex = selected ? 0 : -1;
+      });
+      $('kit-description').textContent = CFG.KITS[this.selectedKit].role;
+      if (this.previewSoldier) this.previewSoldier.applyState({ ...this.previewState,
+        weapon: CFG.KITS[this.selectedKit].weapons[0] });
+      saveSettings(this.settings);
+    };
+    for (const button of document.querySelectorAll('.kit-option')) {
+      button.addEventListener('click', () => selectKit(button.dataset.kit));
+      button.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        const keys = Object.keys(CFG.KITS), step = ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1;
+        selectKit(keys[(keys.indexOf(this.selectedKit) + keys.length + step) % keys.length]);
+        document.querySelector(`[data-kit="${this.selectedKit}"]`).focus();
+      });
+    }
+    selectKit(this.selectedKit);
     $('nav-deploy').onclick = () => $('in-name').focus();
     $('nav-settings').onclick = () => this.hud.toggleSettings(true);
     $('nav-manual').onclick = () => this.toggleManual(true);
@@ -177,11 +205,13 @@ class App {
     this.buildSession(CFG.MAP.SEED);
     this.previewSoldier = new CharacterView(this.renderer.scene, -7, this.world, this.renderer);
     this.renderer.registerObject(this.previewSoldier.model.root);
-    this.previewSoldier.applyState({
+    this.previewState = {
       x: 20.85, y: this.world.terrainHeight(20.85, -164.3), z: -164.3,
       yaw: Math.PI + .72, pitch: -.17, stance: STANCE.STAND,
       alive: true, hp: 100, name: '', team: 0,
-    });
+      weapon: CFG.KITS[this.selectedKit].weapons[0],
+    };
+    this.previewSoldier.applyState(this.previewState);
     this.previewReady = true;
   }
 
@@ -197,10 +227,12 @@ class App {
       this.previewSoldier.plate.sprite.visible = false;
     }
     this.worldView.update(dt, this.time);
-    if (this.viewmodel) this.viewmodel.root.visible = false;
+    if (this.viewmodel) { this.viewmodel.root.visible = false; this.viewmodel.armsRoot.visible = false; }
   }
 
   finishBackdrop() {
+    this.hud.combat.transition('DEPLOYING TO BLACKSHORE');
+    this.audio.ui('deploy');
     if (this.previewSoldier) { this.previewSoldier.dispose(); this.previewSoldier = null; }
     this.renderer.camera.fov = this.settings.fov;
     this.renderer.camera.updateProjectionMatrix();
@@ -213,8 +245,9 @@ class App {
     this.settings.name = name;
     this.settings.room = room;
     this.settings.mode = mode;
+    this.settings.kit = this.selectedKit;
     saveSettings(this.settings);
-    return { name, room, mode };
+    return { name, room, mode, kit: this.selectedKit };
   }
 
   setLobbyStatus(text, error = false) {
@@ -239,14 +272,14 @@ class App {
   // -------------------------------------------------------------------------
   joinOnline() {
     if (this.net) return;
-    const { name, room, mode } = this.readLobby();
+    const { name, room, mode, kit } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
     this.audio.setMuted(this.settings.muted);
     this.setLobbyStatus('Connecting to the server…');
     $('join').disabled = true;
 
-    const net = new NetClient({ name, room, mode, url: defaultUrl() });
+    const net = new NetClient({ name, room, mode, kit, url: defaultUrl() });
     this.net = net;
     net.onStatus = (state, extra) => {
       if (state === 'connecting') this.setLobbyStatus('Connecting…');
@@ -272,6 +305,7 @@ class App {
     net.onEvents = (events) => this.handleEvents(events, net.playerId);
     net.onLoot = (loot) => { this.loot = loot; };
     net.onState = (state) => { this.state = state; this.syncState(state); };
+    net.onProjectiles = ({ projectiles }) => this.effects?.syncProjectiles(projectiles);
     net.onVehicles = ({ vehicles }) => {
       if (!this.state) return;
       const combined = new Map((this.state.vehicles || []).map(v => [v.id, v]));
@@ -284,6 +318,7 @@ class App {
   }
 
   onWelcome(msg) {
+    this.activeKit = combatKit(msg.kit);
     this.localSnap = null;
     this.pendingShots.length = 0;
     this.localWeapons = msg.weapons?.slice(0, 2) || (msg.mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null]);
@@ -355,7 +390,7 @@ class App {
     if (this.active || this.preparing) return;
     this.net?.disconnect(); this.net = null;
     this.preparing = true;
-    const { name, mode } = this.readLobby();
+    const { name, mode, kit } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
     this.audio.setMuted(this.settings.muted);
@@ -365,7 +400,8 @@ class App {
       this.finishBackdrop();
       const game = new Game({ mode, mapSeed: CFG.MAP.SEED, seed: 0x51f15e });
       this.offlineGame = game;
-      const me = game.addPlayer(name, 0, { connected: true });
+      const me = game.addPlayer(name, 0, { connected: true, kit });
+      this.activeKit = kit;
       this.offlinePlayer = me;
       this.localId = me.id;
       this.hud.playerId = me.id;
@@ -378,7 +414,7 @@ class App {
       this.input.clearHeld();
       document.activeElement?.blur();
       this.input.enabled = true;
-      this.localWeapons = mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
+      this.localWeapons = me.weapons.slice();
       this.hud.setLobbyVisible(false);
       this.hud.notify('Offline training. Click the game to capture the mouse.');
     }, 30);
@@ -398,6 +434,7 @@ class App {
     this.world = new World(seed);
     this.worldView = new WorldRenderer(this.renderer, this.world);
     this.effects = new Effects(this.renderer, this.renderer.camera, this.world);
+    this.audio.world = this.world;
     this.viewmodel = new ViewModel(this.renderer.camera, this.renderer.scene, this.renderer);
     this.prediction = new Prediction(this.world);
     this.hud.world = this.world;
@@ -450,6 +487,8 @@ class App {
   }
 
   restart() {
+    this.localDeath = null; this.deathEvents.clear(); this.hud.combat.reset();
+    this.hud.combat.transition('NEW OPERATION');
     this.hud.hideEnd();
     this.endShown = false;
     if (this.mode === 'offline' && this.offlineGame) {
@@ -568,7 +607,7 @@ class App {
 
     // Footstep audio for the local player.
     const lp = this.getLocalPlayer();
-    if (lp && lp.alive && lp.grounded) {
+    if (lp && lp.alive && lp.grounded && !lp.inVehicle) {
       const speed = Math.hypot(lp.vx || 0, lp.vz || 0);
       if (speed > 1.4) this.audio.footstep(lp.inWater ? 'water' : this.surfaceAt(lp.x, lp.y, lp.z), speed);
     }
@@ -649,13 +688,22 @@ class App {
     for (const ev of events) {
       switch (ev.k) {
         case 'shot': this.onShot(ev, selfId); break;
+        case 'launch':
+          this.effects?.launch(ev);
+          if (ev.id !== selfId) { this.characters.get(ev.id)?.fire(); this.audio.shot(ev.w, ...ev.o); }
+          break;
+        case 'projectileend':
+          this.effects?.stopProjectile(ev.projectileId);
+          break;
         case 'hit': this.onHit(ev, selfId); break;
         case 'kill': {
+          if (ev.death) this.deathEvents.set(ev.victim, ev.death);
+          if (ev.victim === selfId) this.startDeath(ev);
           const names = new Map(this.names);
           if (ev.kname) names.set(ev.killer, ev.kname);
           if (ev.vname) names.set(ev.victim, ev.vname);
           this.hud.addKill(ev, names);
-          if (ev.killer === selfId) this.hud.notify(`Eliminated ${ev.vname}${ev.zone === 'head' ? ' — headshot' : ''}`);
+          if (ev.killer === selfId && ev.victim !== selfId) this.hud.combat.confirm(ev);
           break;
         }
         case 'destroy':
@@ -714,12 +762,21 @@ class App {
           if (ev.id === selfId) { this.audio.damage(); this.shake = Math.min(1.2, this.shake + 0.6); }
           break;
         case 'warmup':
-          this.localWeapons = ev.mode === 'tdm' ? ['ar', 'pistol'] : ['pistol', null];
+          this.localDeath = null; this.deathEvents.clear(); this.hud.combat.reset();
+          this.localWeapons = ev.mode === 'tdm' ? CFG.KITS[this.activeKit || 'assault'].weapons.slice() : ['pistol', null];
           this.pendingShots.length = 0;
           this.hud.notify(`Match starts in ${Math.ceil(ev.countdown)}s`);
           break;
         case 'live':
           this.hud.notify('MATCH LIVE');
+          break;
+        case 'respawn':
+          this.deathEvents.delete(ev.id);
+          if (ev.id === selfId) {
+            this.localDeath = null; this.localWeapons = ev.weapons?.slice() || this.localWeapons;
+            this.pendingShots.length = 0; this.hud.combat.reset(); this.hud.combat.transition('BACK IN THE FIGHT', 450);
+            this.audio.ui('deploy');
+          }
           break;
         case 'zone':
           if (ev.shrink) this.hud.notify('The zone is closing — move');
@@ -768,6 +825,7 @@ class App {
   }
 
   onHit(ev, selfId) {
+    this.characters.get(ev.to)?.hit(ev.dmg);
     if (ev.from === selfId) {
       const kill = (ev.hp ?? 1) <= 0;
       this.hud.hit(ev.dmg, ev.zone === 'head', kill);
@@ -793,6 +851,7 @@ class App {
   // -------------------------------------------------------------------------
   syncState(state) {
     if (!state) return;
+    for (const death of state.deaths || []) this.deathEvents.set(death.id, death);
     this.worldView?.syncDestruction(state.destroyed || []);
     this.syncVehicles(state.vehicles || []);
     this.effects?.syncSmoke(state.smokes || []);
@@ -938,6 +997,10 @@ class App {
     if (!this.active) { this.updateBackdrop(dt); this.renderer.render(dt); return; }
     const camera = this.renderer.camera;
     const lp = this.active ? this.getLocalPlayer() : null;
+    if (lp && !lp.alive && !this.localDeath) this.startDeath({ kname: 'UNKNOWN', w: '?', pos: [lp.x, lp.y, lp.z] });
+    if (lp && !lp.alive && this.localDeath) this.localDeath.seenDead = true;
+    if (lp?.alive && this.localDeath?.seenDead) { this.localDeath = null; this.hud.combat.reset(); this.hud.combat.transition('REDEPLOYED', 450); }
+    if (this.localDeath) this.localDeath.age += dt;
     const camLp = this.spectateCamera(lp);
     // Camera and chassis use the same rendered vehicle pose. A separately
     // smoothed car otherwise trails its driver by metres at driving speed.
@@ -955,8 +1018,10 @@ class App {
     } else {
       this.updateCamera(dt, camLp, camera);
     }
+    if (this.localDeath && !lp?.alive && (this.localDeath.age < 1.1 || this.state?.mode === 'tdm')) this.updateDeathCamera(camera);
 
     // Local first-person weapon.
+    this.audio.updateActions(lp);
     if (this.viewmodel) {
       const hide = !lp || !lp.alive || !lp.weapon || (lp.inVehicle && lp.seat === 0) || this.spectateId !== null;
       const lookDX = (this.aimYaw - this.prevAimYaw) * 1000;
@@ -1005,6 +1070,7 @@ class App {
           alive: !!p.alive,
           stance: p.stance,
           weapon: weaponKey(p.w),
+          death: this.deathEvents.get(id),
         });
         view.visible = id !== this.spectateId;
         view.smokes = this.state?.smokes || [];
@@ -1012,7 +1078,7 @@ class App {
         view.vx = p.vx; view.vz = p.vz;
         view.update(dt, camPos);
         const spd = Math.hypot(p.vx || 0, p.vz || 0);
-        if (p.alive && p.grounded && spd > 1.8) {
+        if (p.alive && p.grounded && !p.vehicle && spd > 1.8) {
           this.audio.footstep(this.surfaceAt(p.x, p.y, p.z), spd, p.x, p.y, p.z, id);
         }
       }
@@ -1040,6 +1106,7 @@ class App {
           weapon: p.curWeapon(), reloadT: p.reloadT, inVehicle: p.inVehicle, seat: p.seat,
           mag: p.inv[p.curWeapon()]?.mag || 0,
           ads: !!p.adsing,
+          death: p.death,
         });
         view.visible = p.id !== this.spectateId;
         view.smokes = this.state?.smokes || [];
@@ -1047,7 +1114,7 @@ class App {
         view.vx = p.vel[0]; view.vz = p.vel[2];
         view.update(dt, camPos);
         const spd = Math.hypot(p.vel[0] || 0, p.vel[2] || 0);
-        if (p.alive && p.grounded && spd > 1.8) {
+        if (p.alive && p.grounded && !p.inVehicle && spd > 1.8) {
           this.audio.footstep(this.surfaceAt(p.pos[0], p.pos[1], p.pos[2]), spd, p.pos[0], p.pos[1], p.pos[2], p.id);
         }
       }
@@ -1070,7 +1137,7 @@ class App {
   // While dead in BR, follow the player selected by the spectate rotation.
   spectateCamera(lp) {
     if (!lp) return null;
-    if (lp.alive || this.spectateId === null) return lp;
+    if (lp.alive || this.spectateId === null || this.localDeath?.age < 1.1) return lp;
     const t = this.mode === 'offline'
       ? this.offlineGame?.players.get(this.spectateId)
       : this.net?.cache.get(this.spectateId);
@@ -1262,7 +1329,7 @@ class App {
       return;
     }
     if (!this.deadAt) this.deadAt = this.time;
-    if (this.state?.mode !== 'br') return;
+    if (this.state?.mode !== 'br' || this.localDeath?.age < 1.1) return;
     this.spectateT -= dt;
     if (this.spectateT > 0) return;
     this.spectateT = 3;
@@ -1290,6 +1357,25 @@ class App {
     return this.names.get(this.spectateId)
       || this.offlineGame?.players.get(this.spectateId)?.name
       || 'PLAYER';
+  }
+
+  startDeath(event) {
+    if (this.localDeath) return;
+    const camera = this.renderer.camera;
+    this.localDeath = { age: 0, seenDead: false, position: camera.position.clone(), pitch: camera.rotation.x, yaw: camera.rotation.y,
+      feet: event.pos || [camera.position.x, camera.position.y - 1.64, camera.position.z],
+      side: event.death?.direction?.[0] < 0 ? -1 : 1 };
+    this.input.clearHeld(); this.audio.death(); this.hud.combat.eliminated(event);
+  }
+
+  updateDeathCamera(camera) {
+    const death = this.localDeath;
+    const t = clamp(death.age / .9, 0, 1), ease = t * t * (3 - 2 * t);
+    const ground = this.world.terrainHeight(death.feet[0], death.feet[2]);
+    camera.position.copy(death.position);
+    camera.position.y += (Math.max(ground + .3, death.feet[1] + .28) - death.position.y) * ease;
+    camera.rotation.set(death.pitch * (1 - ease) + .08 * ease, death.yaw, death.side * .38 * ease);
+    this.audio.setListener(camera.position.toArray(), death.yaw);
   }
 
   // -------------------------------------------------------------------------

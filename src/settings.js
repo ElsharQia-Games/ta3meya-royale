@@ -17,6 +17,7 @@ export const DEFAULTS = {
   name: 'Soldier',
   room: 'ALPHA01',
   mode: 'br',
+  kit: 'assault',
 };
 
 export function loadSettings() {

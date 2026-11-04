@@ -14,8 +14,13 @@ import { writeFileSync } from 'node:fs';
 const SECONDS = Number(process.env.STRESS_SECONDS || 30 * 60);
 const TICKS = Math.round(SECONDS * CFG.SIM_HZ);
 const BOTS = Number(process.env.STRESS_BOTS || 31);
+const ARSENAL = process.env.STRESS_ARSENAL === '1';
 const DT = CFG.SIM_DT;
 const BOUND = CFG.MAP.BOUNDS + 1;
+const armPlayer = p => {
+  const key = CFG.WEAPON_ORDER[(p.id - 1) % CFG.WEAPON_ORDER.length];
+  p.giveLoadout([key, key === 'pistol' ? 'ar' : 'pistol']);
+};
 
 const game = new Game({ mode: 'br', mapSeed: CFG.MAP.SEED, seed: 0x5eed });
 const human = game.addPlayer('Stress', 0, { connected: true });
@@ -24,6 +29,10 @@ spawnBots(game, BOTS, false);
 const navigationBootMs = performance.now() - navStart;
 game.begin();
 game.matchState = 2; // LIVE
+if (ARSENAL) {
+  game.spawnWorldLootNow();
+  for (const p of game.players.values()) armPlayer(p);
+}
 
 const inputs = new Map();
 const humanInput = {
@@ -39,6 +48,8 @@ let respawns = 0;
 const tickTimes = [];
 const overBudget = [];
 let vehicleNonFinite = 0, vehicleOutOfBounds = 0, vehicleGroundPenetrations = 0;
+let projectileNonFinite = 0, projectileOverdue = 0, peakProjectiles = 0;
+const shotsByWeapon = {}, impactsByWeapon = {};
 const t0 = performance.now();
 
 for (let tick = 0; tick < TICKS; tick++) {
@@ -50,6 +61,7 @@ for (let tick = 0; tick < TICKS; tick++) {
   humanInput.pitch = -0.05;
   humanInput.jump = tick % 180 === 0;
   humanInput.shoot = tick % 240 < 30;
+  humanInput.reload = tick % 180 === 175;
   inputs.clear();
   if (human.alive) inputs.set(human.id, humanInput);
   const simStart = performance.now();
@@ -61,6 +73,15 @@ for (let tick = 0; tick < TICKS; tick++) {
   if (elapsed > 1000 / CFG.SIM_HZ) overBudget.push({ tick, ms: +elapsed.toFixed(3),
     botMs: +(afterBots - simStart).toFixed(3), gameMs: +(performance.now() - afterBots).toFixed(3) });
   totalTicks++;
+  for (const event of game.events.splice(0)) {
+    if (event.k === 'shot' || event.k === 'launch') shotsByWeapon[event.w] = (shotsByWeapon[event.w] || 0) + 1;
+    if (event.k === 'boom') impactsByWeapon[event.w || 'grenade'] = (impactsByWeapon[event.w || 'grenade'] || 0) + 1;
+  }
+  peakProjectiles = Math.max(peakProjectiles, game.projectiles.length);
+  for (const pr of game.projectiles) {
+    if (![...pr.pos, ...pr.vel, pr.fuse].every(Number.isFinite)) projectileNonFinite++;
+    if (pr.type === 'rocket' && pr.fuse <= 0) projectileOverdue++;
+  }
 
   for (const p of game.players.values()) {
     const [x, y, z] = p.pos;
@@ -87,7 +108,10 @@ for (let tick = 0; tick < TICKS; tick++) {
   // Keep every player in the match so the whole 30 simulated minutes runs with
   // the full 32-player load (a real BR empties out; a stress test should not).
   for (const p of game.players.values()) {
-    if (!p.alive) { game.spawnPlayer(p); respawns++; }
+    if (!p.alive) {
+      game.spawnPlayer(p); respawns++;
+      if (ARSENAL) armPlayer(p);
+    }
   }
   if (game.matchState !== 2) game.matchState = 2;
 
@@ -105,6 +129,7 @@ const pct = (q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length *
 console.log('\n');
 const report = {
   simulatedMinutes: +(SECONDS / 60).toFixed(1),
+  arsenalFixtures: ARSENAL,
   ticks: totalTicks,
   wallSeconds: +wall.toFixed(2),
   ticksPerSecond: Math.round(totalTicks / wall),
@@ -123,6 +148,7 @@ const report = {
   groundPenetrations: penetrations,
   groundToleranceMetres: .08,
   vehicleNonFinite, vehicleOutOfBounds, vehicleGroundPenetrations,
+  projectileNonFinite, projectileOverdue, peakProjectiles, shotsByWeapon, impactsByWeapon,
   teleportsOver2_5m: teleports,
   maxStepMetres: +maxStep.toFixed(3),
   zoneRadius: +game.zone.r.toFixed(1),
@@ -134,7 +160,7 @@ console.log('Slowest over-budget ticks:', slowestTicks);
 if (process.env.STRESS_REPORT) writeFileSync(process.env.STRESS_REPORT,
   JSON.stringify({ ...report, slowestTicks, capturedAt: new Date().toISOString() }, null, 2));
 
-if (nonFinite || outOfBounds || penetrations || teleports || vehicleNonFinite || vehicleOutOfBounds || vehicleGroundPenetrations) {
+if (nonFinite || outOfBounds || penetrations || teleports || vehicleNonFinite || vehicleOutOfBounds || vehicleGroundPenetrations || projectileNonFinite || projectileOverdue) {
   console.error('STRESS FAILED');
   process.exitCode = 1;
 } else {

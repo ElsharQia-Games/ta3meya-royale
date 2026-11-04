@@ -8,6 +8,7 @@ import { CFG, MATERIALS, STANCE } from './config.js';
 import { clamp, spreadDirection, dirFromAngles, yawTo, TAU } from './math.js';
 import { rayCapsuleSegment, raySphere, stanceHeight, stanceEye } from './physics.js';
 import { vehicleInReach } from './vehicle.js';
+import { advanceRocket } from './projectiles.js';
 
 export const WEAPON_KEYS = Object.keys(CFG.WEAPONS);
 
@@ -176,6 +177,16 @@ export function tryFire(game, p, input, targets, opts = {}) {
   p.shotsFired = (p.shotsFired || 0) + 1;
 
   const rng = opts.rng || game.rng;
+  if (W.projectile === 'rocket') {
+    const direction = spreadDirection(baseDir, spread, rng);
+    const projectile = { id: `${p.id}:rocket:${input.seq || game.tick || p.shotsFired}`,
+      type: 'rocket', weapon: key, owner: p.id, team: p.team, pos: origin.slice(),
+      vel: direction.map(value => value * W.mv), fuse: W.rocket.life, distance: 0 };
+    game.projectiles.push(projectile);
+    game.events.push({ k: 'launch', id: p.id, projectileId: projectile.id, w: key,
+      o: origin, v: projectile.vel.slice(), life: projectile.fuse, team: p.team });
+    return true;
+  }
   const tracerEnds = [];
   const flightTimes = [];
   const allImpacts = [];
@@ -237,6 +248,8 @@ export function tryFire(game, p, input, targets, opts = {}) {
 
 export function applyDamage(game, victim, amount, attackerId, zone, point, weaponKey, dist = 0) {
   if (!victim || !victim.alive || amount <= 0) return;
+  const attacker = game.players?.get(attackerId);
+  if (game.mode === 'tdm' && attacker && attacker.id !== victim.id && attacker.team === victim.team) return;
   let dmg = amount;
   // Armour absorbs a share until depleted.
   if (victim.armor > 0) {
@@ -335,9 +348,28 @@ export function moveProjectile(world, pr, dt) {
 
 export function stepProjectiles(game, dt) {
   const G = CFG.GRENADE;
+  let rocketTargets = null;
   for (let i = game.projectiles.length - 1; i >= 0; i--) {
     const pr = game.projectiles[i];
     pr.fuse -= dt;
+
+    if (pr.type === 'rocket') {
+      rocketTargets ||= game.buildTargets();
+      const hit = advanceRocket(game.world, pr, dt, (origin, direction, distance) =>
+        nearestPlayerHit(origin, direction, distance, rocketTargets, pr.owner, pr.team, game.mode));
+      if (hit) {
+        const W = CFG.WEAPONS[pr.weapon];
+        if (hit.target) applyDamage(game, game.players.get(hit.target.id), W.dmg, pr.owner, 'explosion', hit.point, pr.weapon, pr.distance);
+        // Remove before blast/secondary explosions, so even chained destruction
+        // cannot revisit a spent rocket.
+        game.projectiles.splice(i, 1);
+        explode(game, pr.pos, W.rocket.damage, W.rocket.radius, pr.owner, pr.id, pr.weapon);
+      } else if (pr.fuse <= 0 || Math.abs(pr.pos[0]) > CFG.MAP.BOUNDS + 100 || Math.abs(pr.pos[2]) > CFG.MAP.BOUNDS + 100 || pr.pos[1] < -80) {
+        game.projectiles.splice(i, 1);
+        game.events.push({ k: 'projectileend', projectileId: pr.id, reason: 'expired' });
+      }
+      continue;
+    }
 
     // A deployed smoke cloud is stationary and only counts down.
     if (pr.deployed) {
@@ -366,11 +398,11 @@ export function stepProjectiles(game, dt) {
   }
 }
 
-export function explode(game, pos, dmg, radius, owner, projectileId = null) {
-  game.events.push({ k: 'boom', projectileId, x: pos[0], y: pos[1], z: pos[2], r: radius });
+export function explode(game, pos, dmg, radius, owner, projectileId = null, weapon = 'grenade') {
+  game.events.push({ k: 'boom', projectileId, w: weapon, x: pos[0], y: pos[1], z: pos[2], r: radius });
   for (const v of game.vehicles || []) {
     const distance = Math.hypot(...pos.map((n, i) => n - v.pos[i]));
-    if (distance < radius) game.damageVehicle(v, dmg * 1.5 * (1 - distance / radius), owner);
+    if (distance < radius) game.damageVehicle(v, dmg * (CFG.WEAPONS[weapon]?.rocket?.vehicleScale || 1.5) * (1 - distance / radius), owner);
   }
   // Blast damage to destructible props.
   const boxes = game.world.queryBoxes(pos[0] - radius, pos[2] - radius, pos[0] + radius, pos[2] + radius);
@@ -400,7 +432,7 @@ export function explode(game, pos, dmg, radius, owner, projectileId = null) {
     // line of sight reduces blast
     if (!game.world.lineOfSight(pos, chest, 0.2)) f *= 0.35;
     const amount = dmg * f;
-    if (amount > 1) applyDamage(game, p, amount, owner, 'explosion', chest, 'grenade', d);
+    if (amount > 1) applyDamage(game, p, amount, owner, 'explosion', chest, weapon, d);
   }
 }
 
@@ -412,7 +444,7 @@ export function rollLoot(game, tier = 1) {
   const r = rng.next();
   // Higher tier shifts the distribution toward better guns.
   const weaponPool = tier >= 3
-    ? ['ar', 'ar', 'dmr', 'sniper', 'lmg', 'shotgun', 'smg']
+    ? ['ar', 'ar', 'dmr', 'sniper', 'lmg', 'shotgun', 'smg', 'rpg']
     : tier === 2
       ? ['ar', 'smg', 'shotgun', 'dmr', 'pistol', 'ar', 'smg']
       : ['pistol', 'smg', 'shotgun', 'ar', 'pistol'];

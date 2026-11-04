@@ -51,6 +51,17 @@ project's collider-sized trunks. Maps are512px WebP via `EXT_texture_webp`.
 Runtime near-detail limits, model transforms, tint and ownership are documented
 in `public/models/nature/NOTICE.md`. Pro/Source editions were not purchased.
 
+## Sampled audio
+
+36 local CC0 clips now supplement the original synthesis: firearm recordings by
+Ben Jaszczak, Brian Nelson, Kevin Heras and Matthew Nanney (archived Free Firearm
+Sound Library), plus selected Kenney impacts/steps/interface/blast layers.
+`public/audio/NOTICE.md` identifies the sources, actual licences and the requested
+LANDR/Pixabay access/licensing result. `manifest.json` and `tools/build-audio.py`
+record exact selections, edits, hashes and encoding. Runtime payload:359,719B.
+No LANDR/Pixabay files were acquired; owner-provided licensed selections can be
+imported through the documented clip-slot workflow.
+
 ## Reference-only imagery
 
 `qa/shots/references/` contains ignored inspection copies of publisher-provided

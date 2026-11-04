@@ -52,7 +52,7 @@ export class ViewModel {
     this.root.add(this.gun);
     this.renderer?.registerObject(this.root);
     this.basePos = new THREE.Vector3(key === 'pistol' ? .16 : .2, -.215, key === 'pistol' ? -.42 : -.4);
-    this.adsPos = new THREE.Vector3(0, -this.model.profile.sightY, key === 'pistol' ? -.37 : -.32);
+    this.adsPos = new THREE.Vector3(-this.model.sight.position.x, -this.model.profile.sightY, key === 'pistol' ? -.37 : -.32);
   }
 
   makeArm(side) {
@@ -128,7 +128,7 @@ export class ViewModel {
     let ry = this.kickYaw + this.swayX * 2.2 * free;
     let rz = 0;
 
-    const { motion, support } = poseWeaponMechanics(this.model, reloadT, this.shotT, ctx.mag || 0);
+    const { motion, support, trigger } = poseWeaponMechanics(this.model, reloadT, this.shotT, ctx.mag || 0);
     this.reloadStage = motion.stage;
     if (this.model.reticle) this.model.reticle.visible = this.ads > .6;
 
@@ -139,6 +139,7 @@ export class ViewModel {
       this.root.position.y += motion.lift * .23;
       this.root.position.x -= motion.lift * .04;
       this.root.position.z -= motion.lift * .08;
+      if (this.weapon === 'rpg') { this.root.position.z += motion.lift * .08; this.root.position.y -= motion.lift * .07; }
     }
     if (switchT > 0) {
       const s = clamp(switchT / (CFG.WEAPONS[this.weapon]?.switchTime || .5), 0, 1);
@@ -149,7 +150,7 @@ export class ViewModel {
     this.root.rotation.set(rx, ry, rz);
     this.root.updateMatrix();
     this.poseArm(this.arms[0], support.applyMatrix4(this.root.matrix));
-    this.poseArm(this.arms[1], this.model.rightGrip.position.clone().applyMatrix4(this.root.matrix));
+    this.poseArm(this.arms[1], trigger.applyMatrix4(this.root.matrix));
     this.root.visible = !ctx.hide;
     this.armsRoot.visible = this.root.visible;
   }

@@ -18,6 +18,7 @@ import { WebSocketServer } from 'ws';
 import { Game } from '../shared/sim.js';
 import { CFG, MATCH_STATE } from '../shared/config.js';
 import { packVehicle } from '../shared/vehicle.js';
+import { packProjectile } from '../shared/projectiles.js';
 import { clamp } from '../shared/math.js';
 import {
   PROTOCOL_VERSION, MSG, encodePong, decodePing, decodePong, encodeAck,
@@ -64,6 +65,7 @@ const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.ttf': 'font/ttf',
   '.gltf': 'model/gltf+json', '.glb': 'model/gltf-binary',
+  '.ogg': 'audio/ogg', '.wav': 'audio/wav',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
   '.map': 'application/json', '.wasm': 'application/wasm',
 };
@@ -254,7 +256,7 @@ function handleJoin(ws, msg) {
   if (!player) {
     if (!room.ensureCapacity()) return reject(ws, 'Room is full');
     const team = room.mode === 'tdm' ? pickTeam(room) : 0;
-    player = room.game.addPlayer(name, team, { connected: true });
+    player = room.game.addPlayer(name, team, { connected: true, kit: msg.kit });
     token = randomBytes(16).toString('hex');
     sessions.set(token, { roomCode: room.code, playerId: player.id, expires: Infinity });
   } else {
@@ -311,6 +313,7 @@ function handleJoin(ws, msg) {
     playerId: player.id,
     name: player.name,
     weapons: player.weapons.slice(),
+    kit: player.kit,
     room: room.code,
     mode: room.mode,
     mapSeed: room.game.mapSeed,
@@ -427,6 +430,7 @@ function statePayload(room) {
     roundTime: game.roundTime,
     score: game.score.slice(),
     destroyed: [...game.destroyedBoxes],
+    deaths: [...game.players.values()].filter(p => !p.alive && p.death).map(p => ({ id: p.id, pos: p.pos.slice(), ...p.death })),
     winner: game.winner ? { id: game.winner.id ?? null, team: game.winner.team ?? null, name: game.winner.name } : null,
     zone: {
       cx: +game.zone.cx.toFixed(1), cz: +game.zone.cz.toFixed(1),
@@ -580,6 +584,12 @@ function stepRoom(room, dt) {
       const payload = { type: 'vehicles', time: game.time, vehicles: moving.map(packVehicle) };
       for (const c of room.clients.values()) sendText(c.ws, payload);
     }
+    const projectiles = game.projectiles.filter(p => !p.deployed);
+    if (projectiles.length || room.hadProjectiles) {
+      const payload = { type: 'projectiles', time: game.time, projectiles: projectiles.map(packProjectile) };
+      for (const c of room.clients.values()) sendText(c.ws, payload);
+    }
+    room.hadProjectiles = projectiles.length > 0;
   }
 
   // ---- loot refresh (interest filtered) ----
