@@ -4,6 +4,8 @@ import { Game, emptyInput } from '../shared/sim.js';
 import { CFG, STANCE, MATCH_STATE } from '../shared/config.js';
 import { solveBallistic, hitboxesFor } from '../shared/weapons.js';
 import { movePlayer } from '../shared/physics.js';
+import { wireToSimInput } from '../shared/protocol.js';
+import { Prediction } from '../src/prediction.js';
 
 function setup() {
   const g = new Game({ mode: 'br', seed: 2024 });
@@ -93,6 +95,60 @@ test('client prediction via movePlayer matches the authoritative step', () => {
     assert.ok(Math.abs(pred.pos[k] - shooter.pos[k]) < 1e-9,
       `axis ${k}: predicted ${pred.pos[k]} vs server ${shooter.pos[k]}`);
   }
+});
+
+test('server cooldown caps fire rate even when shoot is held every tick', () => {
+  const g = new Game({ mode: 'tdm', seed: 7 });
+  const p = g.addPlayer('Spammer', 0);
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+  p.pos = [0, g.world.terrainHeight(0, 0) + 0.05, 0];
+  p.vel = [0, 0, 0];
+  const ticks = 120; // 2 s of simulation
+  let shots = 0;
+  for (let i = 0; i < ticks; i++) {
+    const inp = emptyInput();
+    inp.shoot = true;
+    inp.yaw = 0;
+    inp.pitch = 0;
+    g.step(new Map([[p.id, inp]]), CFG.SIM_DT);
+    for (const e of g.events) if (e.k === 'shot' && e.id === p.id) shots++;
+    g.events.length = 0;
+  }
+  const maxShots = Math.ceil((ticks * CFG.SIM_DT) * (CFG.WEAPONS.ar.rpm / 60)) + 1;
+  assert.ok(shots > 0, 'the weapon should fire');
+  assert.ok(shots <= maxShots, `fired ${shots} shots, rpm cap allows ${maxShots}`);
+});
+
+test('reconciliation is skipped when the snapshot ack is unknown', () => {
+  const g = new Game({ mode: 'br', seed: 11 });
+  g.addPlayer('P', 0);
+  const pred = new Prediction(g.world);
+  pred.player.pos = [1, 2, 3];
+  const inp = emptyInput();
+  inp.seq = 1;
+  pred.push(inp, CFG.SIM_DT);
+  const before = pred.player.pos.slice();
+  const history = pred.history.length;
+  pred.reconcile({
+    x: 99, y: 0, z: 99, vx: 0, vz: 0, stance: 0,
+    grounded: true, inWater: false, vehicle: 0, reload: 0, heal: 0,
+  }, null);
+  assert.deepEqual(pred.player.pos, before, 'position must not change on an unknown ack');
+  assert.equal(pred.history.length, history, 'unacked history must be preserved');
+});
+
+test('wire inputs cannot set an authoritative position', () => {
+  const w = {
+    seq: 1, clientTime: 0, yaw: 0, pitch: 0, buttons: 1, actions: 0,
+    slot: -1, stance: -1, enterVehicle: 0, viewTime: 0,
+    x: 9999, y: 9999, z: 9999, pos: [9999, 9999, 9999],
+  };
+  const sim = wireToSimInput(w);
+  assert.equal(sim.x, undefined);
+  assert.equal(sim.y, undefined);
+  assert.equal(sim.z, undefined);
+  assert.equal(sim.pos, undefined);
 });
 
 test('hitboxes move with stance and crouching lowers the head', () => {

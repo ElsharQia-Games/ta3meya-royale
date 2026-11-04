@@ -17,11 +17,12 @@ import { WebSocketServer } from 'ws';
 
 import { Game } from '../shared/sim.js';
 import { CFG, MATCH_STATE } from '../shared/config.js';
-import { clamp, wrapAngle } from '../shared/math.js';
+import { clamp } from '../shared/math.js';
 import {
-  PROTOCOL_VERSION, MSG, encodePong, decodePing, decodePong,
-  decodeInput, wireToSimInput, encodeSnapshot, snapshotState, encodeEvents,
-  encodeLoot, filterEvents, sanitizeName, sanitizeRoom, decodeControl,
+  PROTOCOL_VERSION, MSG, encodePong, decodePing, decodePong, encodeAck,
+  decodeInput, sanitizeWireInput, wireToSimInput, encodeSnapshot, snapshotState,
+  encodeEvents, encodeLoot, filterEvents, sanitizeName, sanitizeRoom, decodeControl,
+  isProtocolCompatible, backlogLimit, pushBoundedInput, isStaleInput, heldSimInput,
 } from '../shared/protocol.js';
 import { spawnBots, stepBots } from './bots.js';
 
@@ -34,6 +35,17 @@ const RECONNECT_GRACE_MS = 45_000;
 const SESSION_MS = 60_000;
 const ROOM_IDLE_MS = 5 * 60_000;
 const AUTO_RESTART_S = 12;
+// Bound input backlog to a few ticks so a flooding client cannot add ~1 s of
+// stale input latency (the token bucket allows 150 inputs/s, the sim eats 60).
+// 16 entries at 60 Hz is ~267 ms, below a 300 ms one-way target.
+const INPUT_BACKLOG = backlogLimit(CFG.NET.maxQueuedInputs);
+// Skip snapshots to sockets that are not draining. The client asks for (and
+// the server will send) a keyframe as soon as it catches up.
+const MAX_BUFFERED_BYTES = 256 * 1024;
+const ACK_BYTES = 9;
+// Raw per-tick samples kept for /stats. 600 ticks is ~10 s at 60 Hz; percentiles
+// are computed on demand so the hot path only writes one number.
+const TICK_SAMPLE_WINDOW = 600;
 
 const rooms = new Map();          // roomCode -> Room
 const sessions = new Map();       // token -> { roomCode, playerId, expires }
@@ -114,7 +126,15 @@ class Room {
     this.lootTimer = 0;
     this.stateTimer = 0;
     this.accum = 0;
+    this.simResets = 0;
     this.tickMsEma = 0;
+    this.tickSamples = new Float32Array(TICK_SAMPLE_WINDOW);
+    this.tickSampleIndex = 0;
+    this.tickSampleCount = 0;
+    this.tickOverBudget = 0;
+    this.tickCount = 0;
+    this.tickTotalMs = 0;
+    this.tickLifetimeMaxMs = 0;
     this.bytesTimer = 0;
     this.snapshotBytesWindow = 0;
     this.snapshotBytesPerSec = 0;
@@ -204,6 +224,12 @@ function viewerPos(room, client) {
 // ---------------------------------------------------------------------------
 function handleJoin(ws, msg) {
   if (ws.client) return;
+  // Reject an incompatible wire format before allocating a room/player. The
+  // client is told why and closed with 4003, so it does not retry forever.
+  if (!isProtocolCompatible(msg.protocol)) {
+    reject(ws, `Incompatible protocol: server ${PROTOCOL_VERSION}, client ${msg.protocol ?? 'none'}`);
+    return;
+  }
   const name = sanitizeName(msg.name);
   const requestedMode = msg.mode === 'tdm' ? 'tdm' : 'br';
   const code = sanitizeRoom(msg.room);
@@ -244,7 +270,8 @@ function handleJoin(ws, msg) {
 
   const client = existing && existing.ws === ws ? existing : {
     ws, room, playerId: player.id, token,
-    lastSeq: 0, lastConsumedSeq: 0, lastSimInput: null,
+    lastSeq: 0, lastConsumedSeq: 0, lastQueuedSeq: 0, lastSimInput: null,
+    lastInputAt: 0, droppedInputs: 0, skippedSnapshots: 0, staleInputs: 0,
     queue: [], needsKeyframe: true, spectateId: null,
     rttEma: 120, pingSentAt: 0,
     inputWindowStart: performance.now(), inputCount: 0,
@@ -258,8 +285,13 @@ function handleJoin(ws, msg) {
   client.needsKeyframe = true;
   client.lastSeq = 0;
   client.lastConsumedSeq = 0;
+  client.lastQueuedSeq = 0;
   client.queue = [];
   client.lastSimInput = null;
+  client.lastInputAt = 0;
+  client.droppedInputs = 0;
+  client.skippedSnapshots = 0;
+  client.staleInputs = 0;
   ws.client = client;
   room.clients.set(ws, client);
   room.byPlayer.set(player.id, client);
@@ -409,30 +441,38 @@ function sendState(room, only = null) {
   for (const c of room.clients.values()) sendText(c.ws, payload);
 }
 
-function sendKeyframe(room, client, seq, states) {
-  const ack = client.lastConsumedSeq >>> 0;
-  const { buffer } = encodeSnapshot(states, null, seq, room.game.time, ack, true);
-  sendBinary(client.ws, buffer);
-  client.needsKeyframe = false;
-  room.snapshotBytesWindow += buffer.byteLength;
-}
-
 function sendSnapshots(room) {
   const game = room.game;
   const seq = room.snapshotSeq++ & 0xffff;
   const keyframe = !room.prevStates || (room.snapshotSeq % CFG.NET.snapshotKeyframeEvery === 0);
   const states = snapshotState(game);
-  const { buffer, states: newStates } = encodeSnapshot(states, room.prevStates, seq, game.time, 0, keyframe);
+  const { buffer, states: newStates } = encodeSnapshot(states, room.prevStates, seq, game.time, keyframe);
   room.prevStates = newStates;
+
+  // One keyframe buffer per tick, built only if a client actually needs one.
+  let keyframeBuffer = keyframe ? buffer : null;
 
   for (const c of room.clients.values()) {
     if (c.ws.readyState !== 1) continue;
-    if (c.needsKeyframe) { sendKeyframe(room, c, seq, states); continue; }
-    // Ack is per client, so patch the 4-byte header field on a copy.
-    const copy = buffer.slice(0);
-    new DataView(copy).setUint32(12, c.lastConsumedSeq >>> 0, true);
-    sendBinary(c.ws, copy);
-    room.snapshotBytesWindow += copy.byteLength;
+    // Do not grow an unbounded send queue for a stalled socket. The client
+    // cannot apply a delta it missed, so force a keyframe on recovery.
+    if (c.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+      c.needsKeyframe = true;
+      c.skippedSnapshots++;
+      continue;
+    }
+    // Ack first: it names this exact snapshot sequence, so it is applied only
+    // if that snapshot is the one the client actually applies.
+    sendBinary(c.ws, encodeAck(seq, c.lastConsumedSeq >>> 0));
+    if (c.needsKeyframe) {
+      if (!keyframeBuffer) keyframeBuffer = encodeSnapshot(states, null, seq, game.time, true).buffer;
+      sendBinary(c.ws, keyframeBuffer);
+      c.needsKeyframe = false;
+      room.snapshotBytesWindow += keyframeBuffer.byteLength + ACK_BYTES;
+    } else {
+      sendBinary(c.ws, buffer);
+      room.snapshotBytesWindow += buffer.byteLength + ACK_BYTES;
+    }
   }
 }
 
@@ -483,12 +523,13 @@ function stepRoom(room, dt) {
       c.lastConsumedSeq = w.seq;
       inputs.set(c.playerId, sim);
     } else if (c.lastSimInput) {
-      // Repeat held buttons but never repeat one-shot actions.
-      const last = c.lastSimInput;
-      inputs.set(c.playerId, {
-        ...last, reload: false, grenade: false, smoke: false, heal: false,
-        interact: false, cycle: false, slot: -1, stance: null, enterVehicle: undefined,
-      });
+      // Repeat held buttons for a short grace period, but never repeat
+      // one-shot actions. After the grace window without a frame, stop moving
+      // and shooting so a silent client cannot keep acting on a stale input.
+      const stale = isStaleInput(c.lastInputAt, performance.now());
+      const next = heldSimInput(c.lastSimInput, stale);
+      if (stale) { c.staleInputs++; c.lastSimInput = next; }
+      inputs.set(c.playerId, next);
     }
   }
 
@@ -586,21 +627,28 @@ wss.on('connection', (ws) => {
       handleControl(client, msg);
       return;
     }
-    // Binary frames.
+    // Binary frames. Empty or truncated frames are ignored rather than
+    // throwing inside the ws message handler (which would take down the room).
+    if (!data || data.byteLength < 1) return;
     const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    const type = new DataView(ab).getUint8(0);
-    if (type === MSG.INPUT) {
-      if (!client) return;
-      handleInput(client, ab);
-    } else if (type === MSG.PING) {
-      const ping = decodePing(ab);
-      if (ping && client) sendBinary(client.ws, encodePong(ping.clientTime, client.room.game.time));
-    } else if (type === MSG.PONG) {
-      const pong = decodePong(ab);
-      if (pong && client && client.pingSentAt) {
-        const rtt = performance.now() - client.pingSentAt;
-        client.rttEma = client.rttEma * 0.7 + clamp(rtt, 1, 1000) * 0.3;
+    let type;
+    try { type = new DataView(ab).getUint8(0); } catch { return; }
+    try {
+      if (type === MSG.INPUT) {
+        if (!client) return;
+        handleInput(client, ab);
+      } else if (type === MSG.PING) {
+        const ping = decodePing(ab);
+        if (ping && client) sendBinary(client.ws, encodePong(ping.clientTime, client.room.game.time));
+      } else if (type === MSG.PONG) {
+        const pong = decodePong(ab);
+        if (pong && client && client.pingSentAt) {
+          const rtt = performance.now() - client.pingSentAt;
+          client.rttEma = client.rttEma * 0.7 + clamp(rtt, 1, 1000) * 0.3;
+        }
       }
+    } catch (e) {
+      log(`[ws] malformed binary frame from ${client ? client.playerId : 'unjoined'}: ${e.message}`);
     }
   });
   ws.on('close', () => disconnect(ws, false));
@@ -619,15 +667,15 @@ function handleInput(client, ab) {
   client.inputCount++;
   if (client.inputCount > 150) return;
 
-  if (!Number.isFinite(w.yaw) || !Number.isFinite(w.pitch)) return;
-  w.yaw = wrapAngle(w.yaw);
-  w.pitch = clamp(w.pitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH);
-  w.slot = w.slot >= 0 && w.slot <= 1 ? w.slot : -1;
-  w.stance = w.stance >= 0 && w.stance <= 2 ? w.stance : -1;
+  // Reject duplicates/replays/out-of-order frames and normalise every
+  // client-controlled field before it can enter the simulation.
+  const clean = sanitizeWireInput(w, client.lastQueuedSeq);
+  if (!clean) return;
+  client.lastQueuedSeq = clean.seq;
+  client.lastInputAt = now;
 
   const q = client.queue;
-  if (q.length >= CFG.NET.maxQueuedInputs) q.shift();
-  q.push(w);
+  client.droppedInputs += pushBoundedInput(q, clean, INPUT_BACKLOG);
   client.room.inputQueues.set(client.playerId, q);
 }
 
@@ -690,10 +738,22 @@ setInterval(() => {
       stepRoom(room, CFG.SIM_DT);
       const ms = performance.now() - t0;
       room.tickMsEma = room.tickMsEma * 0.94 + ms * 0.06;
+      // Raw per-tick samples for p50/p95/p99/max. The EMA above is what the
+      // live HUD uses; do not present it as a raw maximum.
+      room.tickSamples[room.tickSampleIndex] = ms;
+      room.tickSampleIndex = (room.tickSampleIndex + 1) % TICK_SAMPLE_WINDOW;
+      if (room.tickSampleCount < TICK_SAMPLE_WINDOW) room.tickSampleCount++;
+      if (ms > CFG.SIM_DT * 1000) room.tickOverBudget++;
+      room.tickCount++;
+      room.tickTotalMs += ms;
+      room.tickLifetimeMaxMs = Math.max(room.tickLifetimeMaxMs, ms);
       room.accum -= CFG.SIM_DT;
       steps++;
     }
-    if (room.accum > CFG.SIM_DT * 10) room.accum = 0;
+    // Catch up after a GC/event-loop stall instead of silently dropping sim
+    // time. The 8-step budget bounds work per loop iteration; only give up if
+    // the backlog is a full second (severe overload, not a normal pause).
+    if (room.accum > 1) { room.accum = 0; room.simResets++; }
 
     room.bytesTimer += frameDt;
     if (room.bytesTimer >= 1) {
@@ -727,17 +787,47 @@ setInterval(() => {
 // ---------------------------------------------------------------------------
 // Stats
 // ---------------------------------------------------------------------------
+function tickPercentiles(room) {
+  const n = room.tickSampleCount;
+  if (!n) return { p50: 0, p95: 0, p99: 0, max: 0 };
+  const arr = Array.from(room.tickSamples.subarray(0, n)).sort((a, b) => a - b);
+  const at = (p) => arr[Math.min(n - 1, Math.floor(n * p))];
+  return { p50: at(0.5), p95: at(0.95), p99: at(0.99), max: arr[n - 1] };
+}
+
 function roomInfo(room) {
   const game = room.game;
   const alive = [...game.players.values()].filter(p => p.alive).length;
-  let pingSum = 0, pingN = 0;
-  for (const c of room.clients.values()) { pingSum += c.rttEma; pingN++; }
+  let pingSum = 0, pingN = 0, droppedInputs = 0, skippedSnapshots = 0, staleInputs = 0;
+  for (const c of room.clients.values()) {
+    pingSum += c.rttEma; pingN++;
+    droppedInputs += c.droppedInputs || 0;
+    skippedSnapshots += c.skippedSnapshots || 0;
+    staleInputs += c.staleInputs || 0;
+  }
+  const tp = tickPercentiles(room);
   return {
     code: room.code, mode: room.mode, state: game.matchState,
     tick: game.tick, time: +game.time.toFixed(1),
     players: game.players.size, humans: room.humanCount(), bots: game.players.size - room.humanCount(),
     alive, score: game.score, zone: { r: +game.zone.r.toFixed(1), phase: game.zone.phase, shrinking: game.zone.shrinking },
-    tickMs: +room.tickMsEma.toFixed(3), snapshotKBps: +(room.snapshotBytesPerSec / 1024).toFixed(2),
+    // tickMs is the live EMA. tickP*Ms/tickMaxMs are raw per-sim-step samples
+    // over the last TICK_SAMPLE_WINDOW steps (not an EMA maximum).
+    tickMs: +room.tickMsEma.toFixed(3),
+    tickP50Ms: +tp.p50.toFixed(3),
+    tickP95Ms: +tp.p95.toFixed(3),
+    tickP99Ms: +tp.p99.toFixed(3),
+    tickMaxMs: +tp.max.toFixed(3),
+    tickOverBudget: room.tickOverBudget,
+    tickSamples: room.tickSampleCount,
+    tickWindowCapacity: TICK_SAMPLE_WINDOW,
+    tickCount: room.tickCount,
+    tickTotalMs: +room.tickTotalMs.toFixed(3),
+    tickLifetimeMaxMs: +room.tickLifetimeMaxMs.toFixed(3),
+    // Snapshot+ACK payload only. Client-observed all-binary traffic is reported
+    // separately by tools/loadtest.js.
+    snapshotKiBps: +(room.snapshotBytesPerSec / 1024).toFixed(2),
+    droppedInputs, skippedSnapshots, staleInputs, simResets: room.simResets,
     avgPing: pingN ? Math.round(pingSum / pingN) : 0,
     uptime: Math.round((Date.now() - room.createdAt) / 1000),
   };
@@ -758,7 +848,7 @@ function stats() {
 function log(...args) { console.log(new Date().toISOString().slice(11, 19), ...args); }
 
 http.listen(PORT, HOST, () => {
-  log(`[server] Frontline on http://${HOST}:${PORT}  (ws /ws, ${CFG.SIM_HZ} Hz sim, ${CFG.SNAPSHOT_HZ} Hz snapshots)`);
+  log(`[server] Frontline on http://${HOST}:${http.address().port}  (ws /ws, ${CFG.SIM_HZ} Hz sim, ${CFG.SNAPSHOT_HZ} Hz snapshots)`);
   log(`[server] static root: ${ROOT}`);
   if (HOST === '127.0.0.1') log('[server] bound to localhost only. For LAN set HOST=0.0.0.0; for internet use a Cloudflare Tunnel (see README).');
 });

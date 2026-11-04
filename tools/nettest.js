@@ -1,269 +1,220 @@
-// Application-level network emulation test.
-//
-//   npm run nettest
-//
-// Starts a private server on :3100, puts a WebSocket proxy in front of it that
-// adds one-way latency, jitter and message loss, then drives a synthetic player
-// that uses the real shared prediction code. Reports measured RTT, snapshot
-// cadence, prediction error and effective loss per profile.
-//
-// This is message-level emulation, not `tc netem`: WebSocket still runs over
-// TCP, so head-of-line blocking is not modelled. See GAP-ANALYSIS.md.
+// Real NetClient + Prediction through an ordered WebSocket message relay.
+// Latencies below are ONE-WAY; 5% loss drops application messages, not TCP
+// packets. This validates cache/reconciliation recovery, not WAN HOL behavior.
 import { spawn } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
-import { performance } from 'node:perf_hooks';
-
-import { CFG, MATCH_STATE } from '../shared/config.js';
+import { CFG } from '../shared/config.js';
+import { RNG } from '../shared/math.js';
 import { World } from '../shared/world.js';
 import { Prediction } from '../src/prediction.js';
-import {
-  MSG, PROTOCOL_VERSION, encodeInput, decodeSnapshot, applySnapshot,
-  decodeControl, encodePing, decodePong, decodeEvents, decodeLoot,
-} from '../shared/protocol.js';
+import { NetClient } from '../src/net/client.js';
+import { MSG } from '../shared/protocol.js';
 
-const SERVER_PORT = 3100;
-const PROXY_PORT = 3101;
-const RUN_MS = 12000;
-const BOT_HZ = 60;
-
+const SERVER_PORT = Number(process.env.NET_SERVER_PORT || 3100);
+const PROXY_PORT = Number(process.env.NET_PROXY_PORT || 3101);
+const RUN_MS = Number(process.env.NET_SECONDS || 12) * 1000;
+const SEED = Number(process.env.SEED || 0x5eed);
 const PROFILES = [
   { name: 'local', oneWayMs: 0, jitterMs: 0, loss: 0 },
-  { name: '50ms+jitter+loss', oneWayMs: 50, jitterMs: 5, loss: 0.05 },
-  { name: '150ms+jitter+loss', oneWayMs: 150, jitterMs: 15, loss: 0.05 },
-  { name: '300ms no loss', oneWayMs: 300, jitterMs: 30, loss: 0 },
-  { name: '300ms+jitter+loss', oneWayMs: 300, jitterMs: 30, loss: 0.05 },
+  { name: '50ms one-way / 5% loss', oneWayMs: 50, jitterMs: 5, loss: .05 },
+  { name: '150ms one-way / 5% loss', oneWayMs: 150, jitterMs: 15, loss: .05 },
+  { name: '300ms one-way / no loss', oneWayMs: 300, jitterMs: 30, loss: 0 },
+  { name: '300ms one-way / 5% loss', oneWayMs: 300, jitterMs: 30, loss: .05 },
 ];
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const pct = (arr, p) => {
-  if (!arr.length) return 0;
-  const s = [...arr].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.floor(s.length * p))];
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const percentile = (values, p) => {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] || 0;
 };
 
-async function waitHealth(port, timeoutMs = 15000) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/health`);
-      if (r.ok) return;
-    } catch { /* not up yet */ }
-    await sleep(150);
-  }
-  throw new Error('server did not become healthy');
-}
-
-function startServer() {
-  const child = spawn(process.execPath, ['server/server.js'], {
-    cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, PORT: String(SERVER_PORT), HOST: '127.0.0.1', BOTS: '0' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  child.stdout.on('data', () => {});
-  child.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
-  return child;
-}
-
-// One-way delayed, reordered-safe, lossy WebSocket relay.
-function startProxy(profile) {
+function startProxy(profile, seed) {
+  const random = new RNG(seed);
   const wss = new WebSocketServer({ port: PROXY_PORT, host: '127.0.0.1' });
-  const stats = { dropped: 0, forwarded: 0 };
-  wss.on('connection', (client) => {
+  const timers = new Set(), sockets = new Set();
+  const stats = { dropped: 0, forwarded: 0, peakPendingTimers: 0 };
+  wss.on('connection', client => {
     const upstream = new WebSocket(`ws://127.0.0.1:${SERVER_PORT}/ws`);
-    upstream.binaryType = 'arraybuffer';
-    let lastClientAt = 0;
-    let lastServerAt = 0;
-    const schedule = (fn, oneWayMs, jitterMs, last) => {
-      const j = jitterMs ? (Math.random() * 2 - 1) * jitterMs : 0;
-      const at = Math.max(performance.now() + oneWayMs + j, last + 0.5);
-      setTimeout(fn, Math.max(0, at - performance.now()));
-      return at;
-    };
-    client.on('message', (data, isBinary) => {
-      const buf = isBinary ? data : data.toString();
-      if (profile.loss && isBinary && Math.random() < profile.loss) { stats.dropped++; return; }
-      const send = () => { if (upstream.readyState === WebSocket.OPEN) upstream.send(buf, { binary: isBinary }); };
-      if (upstream.readyState === WebSocket.OPEN) lastClientAt = schedule(send, profile.oneWayMs, profile.jitterMs, lastClientAt);
-      else upstream.once('open', send);
-      stats.forwarded++;
-    });
-    upstream.on('message', (data, isBinary) => {
-      const buf = isBinary ? data : data.toString();
-      if (profile.loss && isBinary && Math.random() < profile.loss) { stats.dropped++; return; }
-      lastServerAt = schedule(() => {
-        if (client.readyState === WebSocket.OPEN) client.send(buf, { binary: isBinary });
-      }, profile.oneWayMs, profile.jitterMs, lastServerAt);
-      stats.forwarded++;
-    });
-    upstream.on('open', () => {});
-    upstream.on('close', () => { try { client.close(); } catch {} });
-    client.on('close', () => { try { upstream.close(); } catch {} });
-    upstream.on('error', () => {});
-    client.on('error', () => {});
-  });
-  return {
-    stats,
-    close: () => new Promise((r) => wss.close(r)),
-  };
-}
-
-async function runProfile(profile) {
-  const proxy = startProxy(profile);
-  await sleep(150);
-  const result = {
-    name: profile.name,
-    sentInputs: 0, ackInputs: 0,
-    snapshots: 0, snapshotGaps: [], snapshotBytes: 0,
-    rtts: [], predErr: [],
-    dropped: 0, errors: [],
-    matchState: null,
-  };
-
-  const ws = new WebSocket(`ws://127.0.0.1:${PROXY_PORT}/ws`);
-  ws.binaryType = 'arraybuffer';
-  const client = {
-    id: null, cache: new Map(), world: null, pred: null,
-    lastSnap: null, seq: 0, pingT: 0,
-    lastSnapAt: 0, snapIntervals: [], posHistory: new Map(),
-  };
-
-  const welcomePromise = new Promise((res, rej) => {
-    const to = setTimeout(() => rej(new Error('no welcome')), 10000);
-    const onMsg = (data, isBinary) => {
-      if (isBinary) return;
-      const m = decodeControl(data.toString());
-      if (m && m.type === 'welcome') { clearTimeout(to); ws.off('message', onMsg); res(m); }
-    };
-    ws.on('message', onMsg);
-  });
-  const opened = new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
-  await opened;
-  ws.send(JSON.stringify({
-    type: 'join', name: 'NetProbe', room: 'NET' + Math.floor(Math.random() * 9000 + 1000),
-    mode: 'br', protocol: PROTOCOL_VERSION,
-  }));
-  const welcome = await welcomePromise;
-  client.id = welcome.playerId;
-  client.world = new World(welcome.mapSeed);
-  client.pred = new Prediction(client.world);
-  let reset = false;
-
-  ws.on('message', (data, isBinary) => {
-    if (!isBinary) return;
-    const buf = data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    const type = new DataView(buf).getUint8(0);
-    if (type === MSG.SNAPSHOT) {
-      const snap = decodeSnapshot(buf);
-      if (!snap) return;
-      const now = performance.now();
-      if (client.lastSnapAt) client.snapIntervals.push(now - client.lastSnapAt);
-      client.lastSnapAt = now;
-      client.lastSnap = snap;
-      result.snapshots++;
-      result.snapshotBytes += buf.byteLength;
-      applySnapshot(client.cache, snap);
-      const local = client.cache.get(client.id);
-      if (local) {
-        if (!reset) { client.pred.reset(local); reset = true; }
-        else {
-          // Prediction correction: the distance between the position the client
-          // had already predicted and the corrected position after replaying
-          // unacked inputs from the authoritative snapshot. This is the visible
-          // snap, not the expected latency gap.
-          const old = client.pred.player.pos.slice();
-          client.pred.reconcile(local, snap.ackInput);
-          const now = client.pred.player.pos;
-          result.predErr.push(Math.hypot(old[0] - now[0], old[1] - now[1], old[2] - now[2]));
+    sockets.add(client); sockets.add(upstream);
+    const last = [0, 0];
+    const queues = [[], []], pending = [false, false];
+    const scheduleHead = direction => {
+      const queue = queues[direction];
+      if (pending[direction] || !queue.length) return;
+      pending[direction] = true;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        pending[direction] = false;
+        const now = performance.now();
+        while (queue.length && queue[0].at <= now) {
+          const { target, data, isBinary } = queue.shift();
+          if (target.readyState === WebSocket.OPEN) target.send(isBinary ? data : data.toString(), { binary: isBinary });
         }
-        result.matchState = local.alive ? 'alive' : 'dead';
-      }
-    } else if (type === MSG.PONG) {
-      const p = decodePong(buf);
-      if (p) result.rtts.push(performance.now() - p.clientTime);
-    } else if (type === MSG.EVENTS) {
-      decodeEvents(buf);
-    } else if (type === MSG.LOOT) {
-      decodeLoot(buf);
+        scheduleHead(direction);
+      }, Math.max(1, Math.ceil(queue[0].at - performance.now())));
+      timers.add(timer);
+      stats.peakPendingTimers = Math.max(stats.peakPendingTimers, timers.size);
+    };
+    const relay = (target, data, isBinary, direction) => {
+      if (isBinary && random.next() < profile.loss) { stats.dropped++; return; }
+      const at = Math.max(performance.now() + profile.oneWayMs +
+        (random.next() * 2 - 1) * profile.jitterMs, last[direction] + .5);
+      last[direction] = at;
+      // A FIFO per direction guarantees ordering even when Node rounds two
+      // sub-millisecond deadlines differently. Independent timers did not.
+      queues[direction].push({ at, target, data, isBinary });
+      scheduleHead(direction);
+      stats.forwarded++;
+    };
+    client.on('message', (data, binary) => {
+      if (upstream.readyState === WebSocket.CONNECTING) upstream.once('open', () => relay(upstream, data, binary, 0));
+      else relay(upstream, data, binary, 0);
+    });
+    upstream.on('message', (data, binary) => relay(client, data, binary, 1));
+    for (const socket of [client, upstream]) {
+      socket.on('error', () => {});
+      socket.on('close', () => {
+        sockets.delete(socket);
+        const other = socket === client ? upstream : client;
+        if (other.readyState === WebSocket.OPEN) other.close();
+      });
     }
   });
-
-  const inputTimer = setInterval(() => {
-    if (!reset) return;
-    client.seq = (client.seq + 1) >>> 0;
-    const yaw = (client.seq * 0.0007) % (Math.PI * 2);
-    const inp = {
-      seq: client.seq, yaw, pitch: 0,
-      f: true, sprint: true, b: false, l: false, r: false,
-      jump: false, ads: false, shoot: false,
-      reload: false, grenade: false, smoke: false, heal: false,
-      interact: false, cycle: false, slot: -1, stance: 0,
-      viewTime: performance.now() / 1000,
-    };
-    // Keep the synthetic player inside the map.
-    const pos = client.pred.player.pos;
-    if (Math.abs(pos[0]) > 420 || Math.abs(pos[2]) > 420) { inp.yaw = yaw + Math.PI; }
-    client.pred.push(inp, CFG.SIM_DT);
-    const buf = encodeInput({
-      seq: inp.seq, clientTime: performance.now() / 1000,
-      yaw: inp.yaw, pitch: 0, buttons: 1 | 32, actions: 0,
-      slot: -1, stance: -1, enterVehicle: 0, viewTime: inp.viewTime,
-    });
-    if (ws.readyState === WebSocket.OPEN) ws.send(buf);
-    result.sentInputs++;
-  }, 1000 / BOT_HZ);
-
-  const pingTimer = setInterval(() => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    client.pingT = performance.now();
-    ws.send(encodePing(client.pingT));
-  }, 500);
-
-  await sleep(RUN_MS);
-  clearInterval(inputTimer);
-  clearInterval(pingTimer);
-  result.ackInputs = client.lastSnap?.ackInput ?? 0;
-  result.dropped = proxy.stats.dropped;
-  result.snapshotGaps = client.snapIntervals;
-  try { ws.close(); } catch {}
-  await proxy.close();
-
-  const intervals = result.snapshotGaps;
-  const meanInterval = intervals.length ? intervals.reduce((a, b) => a + b, 0) / intervals.length : 0;
-  const jitter = intervals.length
-    ? Math.sqrt(intervals.reduce((a, b) => a + (b - meanInterval) ** 2, 0) / intervals.length)
-    : 0;
-  return {
-    name: result.name,
-    snapshots: result.snapshots,
-    snapHz: +(1000 / (meanInterval || 1)).toFixed(1),
-    snapJitterMs: +jitter.toFixed(1),
-    rttP50: +pct(result.rtts, 0.5).toFixed(1),
-    rttP95: +pct(result.rtts, 0.95).toFixed(1),
-    predErrP50: +(pct(result.predErr, 0.5) * 100).toFixed(2),
-    predErrP95: +(pct(result.predErr, 0.95) * 100).toFixed(2),
-    predErrMax: +(Math.max(0, ...result.predErr) * 100).toFixed(2),
-    snapshotKBps: +((result.snapshotBytes / (RUN_MS / 1000)) / 1024).toFixed(2),
-    inputsSent: result.sentInputs,
-    inputsAcked: result.ackInputs,
-    droppedMessages: result.dropped,
-    note: result.matchState || 'no-local-state',
-  };
+  return { stats, close: async () => {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+    for (const socket of sockets) socket.terminate();
+    await new Promise(resolve => wss.close(resolve));
+  } };
 }
 
-const server = startServer();
+async function runProfile(profile, index) {
+  const proxy = startProxy(profile, SEED + index);
+  const net = new NetClient({ url: `ws://127.0.0.1:${PROXY_PORT}/ws`, name: 'NetProbe',
+    room: `NET${index}`, mode: 'br', WebSocket });
+  let prediction, ready = false, seq = 0, inputTimer, timeout;
+  const errors = [], corrections = [], appliedIntervals = [], wireIntervals = [];
+  let lastAppliedAt = 0, lastWireAt = 0, snapshots = 0, snapshotBytes = 0, ackBytes = 0, skipped = 0;
+  let measuring = false;
+  // Instrument traffic before the production decoder. Application behavior is
+  // the real NetClient; the harness has no second delta/ACK implementation.
+  const receive = net._onMessage.bind(net);
+  net._onMessage = data => {
+    if (measuring && data instanceof ArrayBuffer) {
+      const type = new DataView(data).getUint8(0), now = performance.now();
+      if (type === MSG.SNAPSHOT) {
+        snapshots++; snapshotBytes += data.byteLength;
+        if (lastWireAt) wireIntervals.push(now - lastWireAt);
+        lastWireAt = now;
+      } else if (type === MSG.ACK) ackBytes += data.byteLength;
+    }
+    receive(data);
+  };
+  net.onError = e => errors.push(e);
+  net.onWelcome = msg => { prediction = new Prediction(new World(msg.mapSeed)); };
+  const initialized = new Promise((resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error('No authoritative spawn received')), 15000);
+    net.onSnapshot = snapshot => {
+      const local = net.cache.get(net.playerId);
+      if (!local || !prediction) return;
+      if (!ready) {
+        prediction.reset(local); ready = true; clearTimeout(timeout); resolve();
+      } else if (snapshot.ackInput === null) {
+        if (measuring) skipped++;
+      } else {
+        const before = prediction.player.pos.slice();
+        prediction.reconcile(local, snapshot.ackInput);
+        if (measuring) corrections.push(Math.hypot(...before.map((v, i) => v - prediction.player.pos[i])));
+      }
+      if (measuring) {
+        const now = performance.now();
+        if (lastAppliedAt) appliedIntervals.push(now - lastAppliedAt);
+        lastAppliedAt = now;
+      }
+    };
+  });
+  try {
+    net.connect();
+    await initialized;
+    const ackMissStart = net.ackMisses, baseMissStart = net.baseMismatches, resyncStart = net.resyncRequests;
+    const appliedStart = net.snapshotCount;
+    const interval = 1000 / CFG.NET.inputHz;
+    let deadline = performance.now() + interval;
+    const pump = () => {
+      const now = performance.now();
+      let steps = 0;
+      while (now >= deadline && steps++ < 4) {
+        const pos = prediction.player.pos;
+        const yaw = Math.abs(pos[0]) > 420 || Math.abs(pos[2]) > 420
+          ? Math.atan2(pos[0], pos[2]) : seq * .0007;
+        const input = { seq: ++seq, yaw, pitch: 0, f: true, sprint: true,
+          b: false, l: false, r: false, jump: false, ads: false, shoot: false,
+          slot: -1, stance: null, viewTime: performance.now() / 1000 };
+        prediction.push(input, CFG.SIM_DT);
+        net.sendInput(input);
+        deadline += interval;
+      }
+      if (now - deadline > interval * 8) deadline = now + interval;
+      inputTimer = setTimeout(pump, Math.max(0, deadline - performance.now()));
+    };
+    measuring = true;
+    const startedAt = performance.now();
+    pump();
+    await sleep(RUN_MS);
+    const seconds = (performance.now() - startedAt) / 1000;
+    const applied = net.snapshotCount - appliedStart;
+    if (!applied || !corrections.length || errors.length) throw new Error(`No useful profile evidence: ${errors.join('; ')}`);
+    if (!profile.loss && (net.baseMismatches !== baseMissStart || net.ackMisses !== ackMissStart)) {
+      throw new Error('Ordered no-loss relay lost snapshot/ACK continuity');
+    }
+    return {
+      profile: profile.name, seed: SEED + index,
+      wireSnapHz: +(snapshots / seconds).toFixed(1), appliedSnapHz: +(applied / seconds).toFixed(1),
+      appliedGapP95Ms: +percentile(appliedIntervals, .95).toFixed(1),
+      appliedGapMaxMs: +Math.max(0, ...appliedIntervals).toFixed(1),
+      wireGapP95Ms: +percentile(wireIntervals, .95).toFixed(1),
+      rttP50Ms: +percentile(net.rttSamples, .5).toFixed(1),
+      rttP95Ms: +percentile(net.rttSamples, .95).toFixed(1),
+      correctionP50cm: +(percentile(corrections, .5) * 100).toFixed(2),
+      correctionP95cm: +(percentile(corrections, .95) * 100).toFixed(2),
+      correctionMaxCm: +(Math.max(...corrections) * 100).toFixed(2),
+      snapshotKiBps: +(snapshotBytes / seconds / 1024).toFixed(2),
+      ackKiBps: +(ackBytes / seconds / 1024).toFixed(2),
+      inputHz: +(seq / seconds).toFixed(2), inputsSent: seq, inputsAcked: net.lastAckInput,
+      ackMisses: net.ackMisses - ackMissStart, skippedReconciles: skipped,
+      missingBaseDeltas: net.baseMismatches - baseMissStart, resyncRequests: net.resyncRequests - resyncStart,
+      droppedMessages: proxy.stats.dropped, peakRelayTimers: proxy.stats.peakPendingTimers,
+    };
+  } finally {
+    clearTimeout(timeout); clearTimeout(inputTimer);
+    net.disconnect();
+    await proxy.close();
+  }
+}
+
+const server = spawn(process.execPath, ['server/server.js'], {
+  cwd: new URL('..', import.meta.url).pathname,
+  env: { ...process.env, PORT: String(SERVER_PORT), HOST: '127.0.0.1', BOTS: '0' },
+  stdio: ['ignore', 'ignore', 'pipe'],
+});
+server.stderr.on('data', data => process.stderr.write(data));
 try {
-  await waitHealth(SERVER_PORT);
+  const deadline = Date.now() + 15000;
+  let healthy = false;
+  while (Date.now() < deadline) {
+    if (server.exitCode !== null) throw new Error(`private net server exited (${server.exitCode})`);
+    try { healthy = (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).ok; } catch {}
+    if (healthy) break;
+    await sleep(150);
+  }
+  if (!healthy) throw new Error('private net server not ready');
   const rows = [];
-  for (const p of PROFILES) {
-    process.stdout.write(`running ${p.name} … `);
-    rows.push(await runProfile(p));
-    console.log('done');
-    await sleep(400);
+  for (let i = 0; i < PROFILES.length; i++) {
+    console.log(`Running ${PROFILES[i].name}`);
+    rows.push(await runProfile(PROFILES[i], i));
   }
   console.table(rows);
-  const stats = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/stats`)).json();
-  console.log('server memory MB:', stats.memoryMB);
-  console.log('\nNote: message-level emulation over TCP; prediction error (p50/p95/max) is in cm.');
+  console.log(JSON.stringify({ measuredAt: new Date().toISOString(), runSecondsPerProfile: RUN_MS / 1000, rows }, null, 2));
+  console.log('ONE-WAY message delays over loopback TCP; correction distances are cm. Not a WAN/TCP-loss or hardware-GPU measurement.');
 } finally {
   server.kill('SIGTERM');
 }

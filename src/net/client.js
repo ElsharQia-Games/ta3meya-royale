@@ -2,15 +2,21 @@
 // snapshot delta cache and the interpolation buffer. No rendering here.
 import {
   MSG, encodeInput, decodeSnapshot, applySnapshot, decodeEvents, decodeLoot,
-  decodeControl, encodePing, decodePong, decodePing, encodePong, PROTOCOL_VERSION,
+  decodeControl, encodePing, decodePong, decodePing, encodePong, decodeAck,
+  PROTOCOL_VERSION, isProtocolCompatible, snapshotAcceptance,
 } from '../../shared/protocol.js';
 import { SnapshotBuffer } from '../prediction.js';
 
 const RECONNECT_MAX_MS = 15000;
+// At most one keyframe request per window while a delta baseline is missing.
+// The server also emits a periodic keyframe, so recovery stays bounded even if
+// the request is lost.
+const RESYNC_MIN_MS = 250;
 
 export class NetClient {
   constructor(opts = {}) {
     this.url = opts.url || defaultUrl();
+    this.WebSocket = opts.WebSocket || globalThis.WebSocket;
     this.name = opts.name || 'Soldier';
     this.room = opts.room || 'ALPHA01';
     this.mode = opts.mode || 'br';
@@ -25,7 +31,17 @@ export class NetClient {
     this.buffer = new SnapshotBuffer();
     this.lastSnapshot = null;
     this.lastServerTime = 0;
+    this.lastAppliedSeq = null;
     this.ackInput = 0;
+    // Acks are keyed by snapshot sequence. A frame may be lost, so never use
+    // an ack that belongs to a different tick than the snapshot being applied.
+    this.acks = new Map();
+    this.lastAckSeq = -1;
+    this.lastAckInput = 0;
+    this.ackMisses = 0;
+    this.baseMismatches = 0;
+    this.resyncRequests = 0;
+    this.lastResyncAt = -Infinity;
     this.rtt = 0;
     this.jitter = 0;
     this.rttSamples = [];
@@ -52,13 +68,26 @@ export class NetClient {
   }
 
   connect() {
+    // Detach the previous socket before closing it: its queued callbacks can
+    // still run after the new connection is opened.
+    const previous = this.ws;
+    this.ws = null;
+    if (previous) { try { previous.close(); } catch {} }
+    this._stopPing();
+    this.connected = false;
+    this.joined = false;
     this.closed = false;
+    // A new socket is a new server epoch. Never carry acks, delta baselines or
+    // interpolation frames across it: snapshot seq 0 from the new session must
+    // not reuse an ack or cache from the previous one.
+    this._resetSessionState();
     this._status(this.reconnectAttempts ? 'reconnecting' : 'connecting');
     let ws;
-    try { ws = new WebSocket(this.url); } catch (e) { this._error(String(e.message || e)); this._scheduleReconnect(); return; }
+    try { ws = new this.WebSocket(this.url); } catch (e) { this._error(String(e.message || e)); this._scheduleReconnect(); return; }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.connected = true;
       this.reconnectAttempts = 0;
       this._sendJson({
@@ -68,8 +97,10 @@ export class NetClient {
       this._status('joined-pending');
       this._startPing();
     };
-    ws.onmessage = (ev) => this._onMessage(ev.data);
+    ws.onmessage = (ev) => { if (this.ws === ws) this._onMessage(ev.data); };
     ws.onclose = (ev) => {
+      if (this.ws !== ws) return;
+      this.ws = null;
       this.connected = false;
       this.joined = false;
       this._stopPing();
@@ -79,6 +110,7 @@ export class NetClient {
       this._scheduleReconnect();
     };
     ws.onerror = () => {
+      if (this.ws !== ws) return;
       if (!this.connected) this._error('Cannot reach the server');
     };
   }
@@ -87,8 +119,9 @@ export class NetClient {
     this.closed = true;
     this._stopPing();
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    if (this.ws) { try { this.ws.close(1000, 'client leave'); } catch {} }
+    const ws = this.ws;
     this.ws = null;
+    if (ws) { try { ws.close(1000, 'client leave'); } catch {} }
     this.connected = false;
     this.joined = false;
   }
@@ -96,6 +129,29 @@ export class NetClient {
   leave() {
     this._sendJson({ type: 'leave' });
     this.disconnect();
+  }
+
+  // Reset everything that is scoped to one server connection. Identity needed
+  // for reconnect (token, name, room, mode) and the caller-owned input sequence
+  // are intentionally preserved.
+  _resetSessionState() {
+    this.acks.clear();
+    this.ackInput = 0;
+    this.lastAckSeq = -1;
+    this.lastAckInput = 0;
+    this.ackMisses = 0;
+    this.baseMismatches = 0;
+    this.resyncRequests = 0;
+    this.lastResyncAt = -Infinity;
+    this.cache.clear();
+    this.buffer.clear();
+    this.lastSnapshot = null;
+    this.lastServerTime = 0;
+    this.lastAppliedSeq = null;
+    this.snapshotCount = 0;
+    this.droppedSnapshots = 0;
+    this.playerId = null;
+    this.roster = [];
   }
 
   _scheduleReconnect() {
@@ -135,7 +191,7 @@ export class NetClient {
   }
 
   sendChat(text) { this._sendJson({ type: 'chat', text }); }
-  requestKeyframe() { this._sendJson({ type: 'resync' }); }
+  requestKeyframe() { return this._sendJson({ type: 'resync' }); }
   spectate(id) { this._sendJson({ type: 'spectate', id }); }
   start() { this._sendJson({ type: 'start' }); }
 
@@ -156,6 +212,15 @@ export class NetClient {
       if (!msg) return;
       switch (msg.type) {
         case 'welcome':
+          if (!isProtocolCompatible(msg.protocol)) {
+            this._error(`Incompatible server protocol ${msg.protocol ?? 'none'} (client ${PROTOCOL_VERSION})`);
+            this.disconnect();
+            this._status('error');
+            break;
+          }
+          // Welcome marks the authoritative start of this connection epoch.
+          // Clear old acks/snapshot baseline before applying any frame.
+          this._resetSessionState();
           this.joined = true;
           this.playerId = msg.playerId;
           this.token = msg.token || this.token;
@@ -183,18 +248,38 @@ export class NetClient {
       return;
     }
 
-    const buf = data instanceof ArrayBuffer ? data : data.buffer;
+    const buf = data instanceof ArrayBuffer ? data : ArrayBuffer.isView(data)
+      ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : null;
     if (!buf || buf.byteLength < 1) return;
     this.bytesWindow += buf.byteLength;
     const type = new DataView(buf).getUint8(0);
-    if (type === MSG.SNAPSHOT) {
+    if (type === MSG.ACK) {
+      const ack = decodeAck(buf);
+      if (ack) this._onAck(ack);
+    } else if (type === MSG.SNAPSHOT) {
       const snap = decodeSnapshot(buf);
       if (!snap) return;
-      this.snapshotCount++;
-      if (snap.seq < this.lastSnapshot?.seq && snap.seq > 60000) return;
+      // Never apply a delta whose base was not the last applied snapshot, and
+      // never publish duplicate/stale frames. Doing so would either reconcile
+      // against a partial cache or double-apply a retransmit.
+      const verdict = snapshotAcceptance(snap, this.lastAppliedSeq);
+      if (verdict === 'duplicate' || verdict === 'stale') {
+        this.droppedSnapshots++;
+        return;
+      }
+      if (verdict === 'missing-base') {
+        this.droppedSnapshots++;
+        this.baseMismatches++;
+        this._requestResync();
+        return;
+      }
+      this.lastAppliedSeq = snap.seq;
       this.lastSnapshot = snap;
       this.lastServerTime = snap.serverTime;
-      this.ackInput = Math.max(this.ackInput, snap.ackInput);
+      this.snapshotCount++;
+      // Attach the ack that belongs to this exact snapshot. main.js and the
+      // prediction layer keep reading snap.ackInput, so the API is unchanged.
+      snap.ackInput = this._ackFor(snap.seq);
       applySnapshot(this.cache, snap);
       this.buffer.push(snap, this.cache);
       if (this.onSnapshot) this.onSnapshot(snap);
@@ -211,6 +296,43 @@ export class NetClient {
       const pong = decodePong(buf);
       if (pong) this._onPong(pong, now);
     }
+  }
+
+  _onAck(ack) {
+    const seq = ack.seq >>> 0;
+    const value = ack.ackInput >>> 0;
+    this.acks.set(seq, value);
+    // 256 entries is ~8.5 s at 30 Hz; older snapshots can no longer be applied.
+    while (this.acks.size > 256) this.acks.delete(this.acks.keys().next().value);
+    // WebSocket delivery is ordered. A maximum would keep a pre-wrap input
+    // sequence forever instead of exposing the latest received acknowledgement.
+    this.lastAckSeq = seq;
+    this.lastAckInput = value;
+    this.ackInput = value;
+  }
+
+  // Return the ack for this exact snapshot, or null when its ack frame was
+  // lost. Guessing an older ack would replay an extra input tick and roughly
+  // double the visible correction, so the caller skips reconciliation instead.
+  _ackFor(seq) {
+    const exact = this.acks.get(seq >>> 0);
+    // ACK precedes its snapshot on the same ordered stream. Entries retained
+    // for dropped snapshots must not become valid again after the u16 wrap.
+    this.acks.clear();
+    if (exact !== undefined) return exact;
+    this.ackMisses++;
+    return null;
+  }
+
+  // Ask for a full keyframe after a delta lost its baseline. Throttled so a
+  // burst of mismatched deltas cannot turn into a request flood; the server's
+  // periodic keyframe also bounds recovery if a request is lost.
+  _requestResync() {
+    const now = performance.now();
+    if (now - this.lastResyncAt < RESYNC_MIN_MS) return false;
+    this.lastResyncAt = now;
+    this.resyncRequests++;
+    return this.requestKeyframe();
   }
 
   _onPong(pong, now) {
