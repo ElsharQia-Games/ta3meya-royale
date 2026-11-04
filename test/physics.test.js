@@ -88,6 +88,24 @@ test('stance dimensions are ordered stand > crouch > prone', () => {
   assert.ok(stanceEye(STANCE.CROUCH) > stanceEye(STANCE.PRONE));
 });
 
+test('prone to crouch requires headroom and stance uses the current capsule height', () => {
+  const ceiling = { min: [-3, .8, -3], max: [3, 1, 3], tag: 'roof' };
+  const lowWorld = { terrainHeight: () => 0, terrainNormal: () => [0, 1, 0],
+    waterDepth: () => 0, lake: { level: -10 }, queryBoxes: () => [ceiling] };
+  const p = makePlayer(0, 0, 0);
+  p.stance = STANCE.PRONE; p.grounded = true;
+  const input = { ...emptyInput(), stance: STANCE.CROUCH };
+  movePlayer(lowWorld, p, input, CFG.SIM_DT);
+  assert.equal(p.stance, STANCE.PRONE);
+  ceiling.min[1] = 1.5; ceiling.max[1] = 1.7;
+  movePlayer(lowWorld, p, input, CFG.SIM_DT);
+  assert.equal(p.stance, STANCE.CROUCH);
+  input.stance = STANCE.STAND;
+  movePlayer(lowWorld, p, input, CFG.SIM_DT);
+  assert.equal(p.stance, STANCE.CROUCH);
+  assert.ok(p.pos[1] >= -.01);
+});
+
 test('support height on open terrain matches the terrain', () => {
   const x = 120, z = -220;
   const h = world.terrainHeight(x, z);

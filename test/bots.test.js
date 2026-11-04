@@ -30,7 +30,7 @@ function eligibleBuildings(world) {
 // then command it back outside. Returns the tick each stage completed on
 // (-1 means it never happened within maxTicks).
 function interiorRoundTrip(seed, buildingIndex, maxTicks = 1500) {
-  const g = new Game({ mode: 'br', seed });
+  const g = new Game({ mode: 'br', mapSeed: seed, seed });
   const [p] = spawnBots(g, 1, false);
   g.begin();
   g.matchState = MATCH_STATE.LIVE;
@@ -56,7 +56,8 @@ function interiorRoundTrip(seed, buildingIndex, maxTicks = 1500) {
   for (let t = 0; t < maxTicks; t++) {
     step();
     if (entered < 0 && insideBuilding(b, p.pos[0], p.pos[2])) entered = t;
-    if (Math.hypot(p.pos[0] - target.x, p.pos[2] - target.z) < p.bot.arriveRadius) {
+    if (p.bot.arrived && entered >= 0 &&
+      Math.hypot(p.pos[0] - target.x, p.pos[2] - target.z) < p.bot.arriveRadius + .1) {
       reached = t;
       break;
     }
@@ -78,8 +79,15 @@ test('bots enter buildings, reach interior objectives and come back out', (t) =>
   const seeds = [CFG.MAP.SEED, CFG.MAP.SEED ^ 0x2f6e2b1, CFG.MAP.SEED ^ 0x51ed270b];
   const perSeed = 6;
   const results = [];
-  for (const seed of seeds) {
-    const world = new Game({ mode: 'br', seed }).world;
+  // The fixture must vary the *map* seed: Game uses opts.mapSeed for World and
+  // opts.seed only for gameplay RNG. Passing seed alone silently reuses the
+  // default map for every advertised "seed".
+  const worlds = seeds.map(seed => new Game({ mode: 'br', mapSeed: seed, seed }).world);
+  assert.equal(new Set(worlds.map(w => w.seed)).size, seeds.length,
+    `expected distinct world seeds, got ${worlds.map(w => w.seed).join(', ')}`);
+  for (let si = 0; si < seeds.length; si++) {
+    const seed = seeds[si];
+    const world = worlds[si];
     const eligible = eligibleBuildings(world);
     assert.ok(eligible.length >= perSeed, `expected several enterable buildings for seed ${seed}`);
     const stride = Math.max(1, Math.floor(eligible.length / perSeed));

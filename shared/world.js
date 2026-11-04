@@ -5,6 +5,7 @@
 // ============================================================================
 import { CFG, MATERIALS } from './config.js';
 import { RNG, clamp, lerp, smoothstep, fbm2, hash2, TAU } from './math.js';
+import { rayVehicle } from './vehicle.js';
 
 const CELL = 8;
 
@@ -184,6 +185,7 @@ export class World {
     this.buildBoundary();
     this.buildLootAndSpawns();
     this.rebuildGrid();
+    this.resolveLootSpawns();
     this.computeStats();
   }
 
@@ -203,6 +205,44 @@ export class World {
     this.boxes.push(b);
     if (b.dynamic && b.hp > 0) this.destructibles.push({ box: b.id, hp: b.hp, maxHp: b.hp, kind: b.kind || 'crate' });
     return b;
+  }
+
+  resolveLootSpawns() {
+    // Random floor points sometimes landed inside furniture/partitions or over
+    // a stairwell. Move only invalid points to nearby supported clear floor;
+    // this consumes no RNG and preserves the building/layout/loot-count seed.
+    const offsets = [];
+    for (let z = -8; z <= 8; z++) for (let x = -8; x <= 8; x++) offsets.push([x * .4, z * .4]);
+    offsets.sort((a, b) => a[0] ** 2 + a[1] ** 2 - b[0] ** 2 - b[1] ** 2);
+    this.lootRelocations = 0;
+    this.lootPlacementFailures = 0;
+    for (const spawn of this.lootSpawns) {
+      const building = spawn.indoor ? this.buildings.find(b =>
+        Math.abs(spawn.x - b.x) < b.w / 2 && Math.abs(spawn.z - b.z) < b.d / 2) : null;
+      const valid = (x, z, y) => {
+        if (building && (Math.abs(x - building.x) > building.w / 2 - .7 || Math.abs(z - building.z) > building.d / 2 - .7)) return false;
+        const nearby = this.queryBoxes(x - .5, z - .5, x + .5, z + .5);
+        let support = this.terrainHeight(x, z) >= y - .3;
+        for (const b of nearby) {
+          if (b.tag === 'glass' || b.tag === 'void') continue;
+          const dx = x - clamp(x, b.min[0], b.max[0]), dz = z - clamp(z, b.min[2], b.max[2]);
+          if (dx * dx + dz * dz > .46 ** 2) continue;
+          if (b.max[1] <= y + .03 && b.max[1] >= y - .2) support = true;
+          if (b.max[1] > y + .1 && b.min[1] < y + 1.2) return false;
+        }
+        return support;
+      };
+      if (valid(spawn.x, spawn.z, spawn.y)) continue;
+      let resolved = false;
+      for (const [dx, dz] of offsets) {
+        const x = spawn.x + dx, z = spawn.z + dz;
+        const y = spawn.indoor ? spawn.y : this.terrainHeight(x, z) + .05;
+        if (!valid(x, z, y)) continue;
+        spawn.x = x; spawn.z = z; spawn.y = y;
+        this.lootRelocations++; resolved = true; break;
+      }
+      if (!resolved) this.lootPlacementFailures++;
+    }
   }
 
   // Wall along X or Z with rectangular openings (doors/windows).
@@ -300,7 +340,7 @@ export class World {
     this.flattenPad(cx, cz, hw + 1.2, hd + 1.2, padH, 2.4);
     const y0 = padH + 0.06;
     const wallT = 0.24;
-    const b = { x: cx, z: cz, w, d, floors, y0, floorH, type: townType, doors: [] };
+    const b = { x: cx, z: cz, w, d, floors, y0, floorH, wallT, type: townType, doors: [] };
     this.buildings.push(b);
 
     // Foundation pad (slightly larger, sits into terrain).
@@ -352,11 +392,22 @@ export class World {
 
       // interior partition with doorway
       if (w > 11) {
-        const px = cx + rng.range(-w * 0.18, w * 0.18);
+        const preferred = cx + rng.range(-w * 0.18, w * 0.18);
         const gapAt = rng.range(0.2, 0.8) * (d - 1.4);
-        this.wallWithOpenings('z', px, cz - hd + 0.1, cz + hd - 0.1, fy, floorH - 0.15, 0.16,
-          [{ at: gapAt, width: 1.25, bottom: 0, top: 2.2 }], 'plaster', 'interior');
-        addDoor('z', px, cz - hd + 0.1 + gapAt, 1.25, 'interior');
+        // Do not bisect an entrance with the partition. A random wall through
+        // a 1.45 m door can leave two gaps narrower than the actual capsule.
+        const entrances = b.doors.filter(dr => dr.floor === f && dr.axis === 'x');
+        const candidates = [preferred, ...entrances.flatMap(dr => [dr.a - 0.65, dr.b + 0.65])]
+          .filter(x => x > cx - hw + 2.0 && x < cx + hw - 2.0 &&
+            entrances.every(dr => x <= dr.a - 0.6 || x >= dr.b + 0.6))
+          .sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred));
+        const px = candidates[0];
+        // Use an open plan when the entrances leave no useful partition site.
+        if (px !== undefined) {
+          this.wallWithOpenings('z', px, cz - hd + 0.1, cz + hd - 0.1, fy, floorH - 0.15, 0.16,
+            [{ at: gapAt, width: 1.25, bottom: 0, top: 2.2 }], 'plaster', 'interior');
+          addDoor('z', px, cz - hd + 0.1 + gapAt, 1.25, 'interior');
+        }
       }
 
       // upper floor slab with a stairwell hole
@@ -679,6 +730,11 @@ export class World {
   // Ray vs world. Returns nearest {t, point, normal, box, tag, mat} or null.
   raycast(origin, dir, maxDist, opts = {}) {
     let best = null, bestT = maxDist;
+    for (const vehicle of this.vehicles || []) {
+      if (opts.ignoreVehicle === vehicle.id) continue;
+      const hit = rayVehicle(vehicle, origin, dir, bestT);
+      if (hit && hit.t < bestT) { bestT = hit.t; best = hit; }
+    }
     const stamp = ++this._stamp;
     // Terrain first (cheap raymarch).
     const terr = this.raycastTerrain(origin, dir, maxDist);

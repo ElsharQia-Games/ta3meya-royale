@@ -2,16 +2,19 @@
 // Server-side bot AI. Plain ES module: also used by the browser offline mode.
 //
 // Bots use the exact same input shape as network players, so the authoritative
-// simulation treats them identically. Navigation is a 2 m A* grid built from
-// the shared world (terrain slope, water, building/prop footprints) with
-// ground-floor doorway cells carved open and exact door-centre portals. This
-// lets bots path into and out of building interiors instead of only around
-// them.
+// simulation treats them identically. A coarse outdoor grid connects small,
+// capsule-clearance building grids. Doorways are represented by real free
+// space, rather than carving coarse cells through adjacent solid partitions.
 // ============================================================================
 import { CFG, STANCE, MATCH_STATE } from '../shared/config.js';
 import { clamp, yawTo, TAU } from '../shared/math.js';
+import { lootInReach } from '../shared/weapons.js';
 
-const navCache = new Map();
+const navCache = new WeakMap();
+const NAV_DIRS = [
+  [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
+  [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2],
+];
 
 class MinHeap {
   constructor() { this.a = []; }
@@ -42,6 +45,142 @@ class MinHeap {
   }
 }
 
+// Fine grids are bounded to one building and its approaches. Sampling the same
+// capsule clearance as movement makes narrow doors navigable without allowing
+// a path to cross a neighbouring wall. Grids are built before the first tick.
+class BuildingNav {
+  constructor(world, building, margin) {
+    this.world = world;
+    this.building = building;
+    this.cell = CFG.BOT.interiorNavCell;
+    this.x0 = building.x - building.w / 2 - margin;
+    this.z0 = building.z - building.d / 2 - margin;
+    this.nx = Math.ceil((building.w + margin * 2) / this.cell);
+    this.nz = Math.ceil((building.d + margin * 2) / this.cell);
+    this.boxes = world.queryBoxes(this.x0 - 1, this.z0 - 1,
+      this.x0 + this.nx * this.cell + 1, this.z0 + this.nz * this.cell + 1);
+    this.walk = new Uint8Array(this.nx * this.nz);
+    this.floor = new Float32Array(this.walk.length);
+    this.g = new Float32Array(this.walk.length);
+    this.came = new Int32Array(this.walk.length);
+    this.seen = new Uint32Array(this.walk.length);
+    this.closed = new Uint32Array(this.walk.length);
+    this.stamp = 0;
+    for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) {
+      const [px, pz] = this.center(x, z);
+      const y = this.support(px, pz);
+      const i = z * this.nx + x;
+      if (y !== null) { this.walk[i] = 1; this.floor[i] = y; }
+    }
+  }
+
+  contains(x, z) {
+    return x >= this.x0 && z >= this.z0 &&
+      x < this.x0 + this.nx * this.cell && z < this.z0 + this.nz * this.cell;
+  }
+
+  center(x, z) { return [this.x0 + (x + 0.5) * this.cell, this.z0 + (z + 0.5) * this.cell]; }
+
+  support(x, z) {
+    const w = this.world, p = CFG.PLAYER, r = p.RADIUS + 0.025;
+    if (w.waterDepth(x, z) > 0.25) return null;
+    const ground = w.terrainHeight(x, z);
+    let feet = ground;
+    const overlaps = b => {
+      const dx = x - clamp(x, b.min[0], b.max[0]);
+      const dz = z - clamp(z, b.min[2], b.max[2]);
+      return dx * dx + dz * dz < r * r;
+    };
+    for (const b of this.boxes) {
+      if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;
+      if (b.max[1] <= ground + p.STEP_HEIGHT + 0.02 && b.max[1] >= ground - 0.7 && overlaps(b)) {
+        feet = Math.max(feet, b.max[1]);
+      }
+    }
+    for (const b of this.boxes) {
+      if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;
+      if (b.max[1] <= feet + 0.02 || b.min[1] >= feet + p.HEIGHT) continue;
+      if (overlaps(b)) return null;
+    }
+    return feet;
+  }
+
+  clearSegment(a, b) {
+    const steps = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.18));
+    let lastY = null;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const y = this.support(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+      if (y === null || (lastY !== null && Math.abs(y - lastY) > CFG.PLAYER.STEP_HEIGHT + 0.03)) return false;
+      lastY = y;
+    }
+    return true;
+  }
+
+  nearest(x, z, requireClear) {
+    const ix = Math.floor((x - this.x0) / this.cell), iz = Math.floor((z - this.z0) / this.cell);
+    let best = -1, distance = Infinity;
+    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      const cx = ix + dx, cz = iz + dz;
+      if (cx < 0 || cz < 0 || cx >= this.nx || cz >= this.nz) continue;
+      const i = cz * this.nx + cx;
+      if (!this.walk[i]) continue;
+      const point = this.center(cx, cz);
+      const d = Math.hypot(x - point[0], z - point[1]);
+      if (d >= distance || (requireClear && !this.clearSegment([x, z], point))) continue;
+      best = i; distance = d;
+    }
+    return best;
+  }
+
+  findPath(sx, sz, tx, tz) {
+    if (!this.contains(sx, sz) || !this.contains(tx, tz)) return null;
+    const start = this.nearest(sx, sz, true), goal = this.nearest(tx, tz, false);
+    if (start < 0 || goal < 0) return null;
+    if (++this.stamp === 0xffffffff) { this.seen.fill(0); this.closed.fill(0); this.stamp = 1; }
+    const stamp = this.stamp, open = new MinHeap();
+    const gx = goal % this.nx, gz = Math.floor(goal / this.nx);
+    const heuristic = (x, z) => Math.hypot(gx - x, gz - z);
+    this.g[start] = 0; this.came[start] = -1; this.seen[start] = stamp;
+    open.push({ idx: start, f: heuristic(start % this.nx, Math.floor(start / this.nx)) });
+    while (open.size) {
+      const { idx } = open.pop();
+      if (this.closed[idx] === stamp) continue;
+      this.closed[idx] = stamp;
+      if (idx === goal) {
+        const path = [];
+        for (let i = goal; i !== -1; i = this.came[i]) path.push(this.center(i % this.nx, Math.floor(i / this.nx)));
+        path.reverse();
+        // Use the actual endpoint when clear; pickups embedded in a prop are
+        // approached to the nearest standable point, never through that prop.
+        if (this.clearSegment(path.at(-1), [tx, tz])) path.push([tx, tz]);
+        const out = [[sx, sz, CFG.BOT.doorwayTolerance]];
+        for (let i = 0; i < path.length;) {
+          let next = i;
+          while (next + 1 < path.length && this.clearSegment(out.at(-1), path[next + 1])) next++;
+          out.push([...path[next], CFG.BOT.doorwayTolerance]);
+          i = next + 1;
+        }
+        return out;
+      }
+      const x = idx % this.nx, z = Math.floor(idx / this.nx);
+      for (const [dx, dz, cost] of NAV_DIRS) {
+        const nx = x + dx, nz = z + dz;
+        if (nx < 0 || nz < 0 || nx >= this.nx || nz >= this.nz) continue;
+        const ni = nz * this.nx + nx;
+        if (!this.walk[ni] || this.closed[ni] === stamp) continue;
+        if (dx && dz && (!this.walk[z * this.nx + nx] || !this.walk[nz * this.nx + x])) continue;
+        if (Math.abs(this.floor[ni] - this.floor[idx]) > CFG.PLAYER.STEP_HEIGHT + 0.03) continue;
+        const g = this.g[idx] + cost;
+        if (this.seen[ni] === stamp && g >= this.g[ni]) continue;
+        this.seen[ni] = stamp; this.g[ni] = g; this.came[ni] = idx;
+        open.push({ idx: ni, f: g + heuristic(nx, nz) });
+      }
+    }
+    return null;
+  }
+}
+
 export class NavGrid {
   constructor(world) {
     this.world = world;
@@ -49,7 +188,7 @@ export class NavGrid {
     this.half = CFG.MAP.SIZE / 2;
     this.n = Math.ceil(CFG.MAP.SIZE / this.cell);
     this.walk = new Uint8Array(this.n * this.n);
-    this.doors = [];
+    this.buildingNav = new Map();
     // Reusable A* scratch space. Allocating typed arrays per path call was
     // several MB of garbage every couple of seconds with 32 bots.
     this._g = new Float32Array(this.n * this.n);
@@ -58,6 +197,7 @@ export class NavGrid {
     this._seen = new Uint32Array(this.n * this.n);
     this._searchStamp = 0;
     this.build();
+    for (const b of world.buildings) this.buildingNav.set(b, new BuildingNav(world, b, this.cell + 4));
   }
 
   idx(ix, iz) { return iz * this.n + ix; }
@@ -107,36 +247,13 @@ export class NavGrid {
       }
     }
 
-    // Carve doorways. A 1.25-1.45 m opening is narrower than a nav cell, so
-    // the generic footprint test marks the whole wall ring (and often the
-    // interior) unwalkable. For every ground-floor door, force a band of
-    // cells across the wall to walkable. The band is padded just enough that
-    // at least one cell centre always falls inside the opening; findPath then
-    // snaps the crossing to the exact door centre (applyPortals), so the bot
-    // does not clip the jamb.
-    this.doors.length = 0;
+    // Outdoor paths route around complete building footprints. Ground-floor
+    // interiors use the fine grids; opening coarse cells also erases nearby
+    // partitions and produces routes the capsule can never traverse.
     for (const bd of W.buildings) {
-      for (const d of bd.doors) {
-        if (d.floor !== 0) continue;
-        this.doors.push(d);
-        const pad = Math.max(0.45, (c - d.width) / 2 + 0.15);
-        const perp = Math.max(c * 1.6, 2.0);
-        const x0 = d.axis === 'x' ? d.a - pad : d.fixed - perp;
-        const x1 = d.axis === 'x' ? d.b + pad : d.fixed + perp;
-        const z0 = d.axis === 'x' ? d.fixed - perp : d.a - pad;
-        const z1 = d.axis === 'x' ? d.fixed + perp : d.b + pad;
-        const ix0 = Math.max(0, Math.floor((x0 + this.half) / c));
-        const ix1 = Math.min(this.n - 1, Math.floor((x1 + this.half) / c));
-        const iz0 = Math.max(0, Math.floor((z0 + this.half) / c));
-        const iz1 = Math.min(this.n - 1, Math.floor((z1 + this.half) / c));
-        for (let iz = iz0; iz <= iz1; iz++) {
-          for (let ix = ix0; ix <= ix1; ix++) {
-            const [x, z] = this.center(ix, iz);
-            if (x < x0 || x > x1 || z < z0 || z > z1) continue;
-            this.walk[this.idx(ix, iz)] = 1;
-          }
-        }
-      }
+      const [x0, z0] = this.toCell(bd.x - bd.w / 2 - c / 2, bd.z - bd.d / 2 - c / 2);
+      const [x1, z1] = this.toCell(bd.x + bd.w / 2 + c / 2, bd.z + bd.d / 2 + c / 2);
+      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) this.walk[this.idx(x, z)] = 0;
     }
   }
 
@@ -174,25 +291,56 @@ export class NavGrid {
     return best;
   }
 
-  buildingRect(b, inset = 0.45) {
-    return {
-      x0: b.x - b.w / 2 + inset, x1: b.x + b.w / 2 - inset,
-      z0: b.z - b.d / 2 + inset, z1: b.z + b.d / 2 - inset,
-    };
+  buildingAt(x, z) {
+    return this.world.buildings.find(b => Math.abs(x - b.x) <= b.w / 2 + 0.6 && Math.abs(z - b.z) <= b.d / 2 + 0.6);
   }
 
-  findPath(sx, sz, tx, tz, maxExpansions = 12000) {
+  approaches(b, x, z, otherX, otherZ, exiting) {
+    const local = this.buildingNav.get(b);
+    const doors = b.doors.filter(d => d.floor === 0 && d.kind !== 'interior')
+      .sort((a, b) => Math.hypot(a.cx - otherX, a.cz - otherZ) - Math.hypot(b.cx - otherX, b.cz - otherZ));
+    const options = [];
+    for (const d of doors) {
+      const [ix, iz] = this.toCell(d.cx + d.nx * (this.cell + 1), d.cz + d.nz * (this.cell + 1));
+      const candidates = [];
+      for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+        if (!this.walkable(ix + dx, iz + dz)) continue;
+        const point = this.center(ix + dx, iz + dz);
+        if (local.contains(...point)) candidates.push(point);
+      }
+      candidates.sort((a, b) => Math.hypot(a[0] - d.cx, a[1] - d.cz) - Math.hypot(b[0] - d.cx, b[1] - d.cz));
+      for (const anchor of candidates.slice(0, 6)) {
+        const path = exiting ? local.findPath(x, z, ...anchor) : local.findPath(...anchor, x, z);
+        if (path) { options.push({ anchor, path }); break; }
+      }
+    }
+    return options;
+  }
+
+  findPath(sx, sz, tx, tz, maxExpansions = 2400) {
+    const from = this.buildingAt(sx, sz), to = this.buildingAt(tx, tz);
+    for (const b of new Set([from, to])) {
+      if (!b) continue;
+      const local = this.buildingNav.get(b);
+      if (local.contains(sx, sz) && local.contains(tx, tz)) {
+        const path = local.findPath(sx, sz, tx, tz);
+        if (path) return path;
+      }
+    }
+    const starts = from ? this.approaches(from, sx, sz, tx, tz, true) : [{ anchor: [sx, sz], path: [] }];
+    const ends = to ? this.approaches(to, tx, tz, sx, sz, false) : [{ anchor: [tx, tz], path: [] }];
+    for (const a of starts) for (const b of ends) {
+      const outside = this.findOutdoorPath(...a.anchor, ...b.anchor, maxExpansions);
+      if (outside) return [...a.path, ...outside, ...b.path];
+    }
+    return null;
+  }
+
+  findOutdoorPath(sx, sz, tx, tz, maxExpansions) {
     const [six, siz] = this.toCell(sx, sz);
     const [tix, tiz] = this.toCell(tx, tz);
-    // If an endpoint is inside a building, keep its cell inside that building
-    // so the nearest-cell search cannot snap through a wall to the street.
-    let startRect = null, goalRect = null;
-    for (const b of this.world.buildings) {
-      if (Math.abs(sx - b.x) <= b.w / 2 && Math.abs(sz - b.z) <= b.d / 2) startRect = this.buildingRect(b);
-      if (Math.abs(tx - b.x) <= b.w / 2 && Math.abs(tz - b.z) <= b.d / 2) goalRect = this.buildingRect(b);
-    }
-    const start = this.nearestWalkable(six, siz, 5, startRect, sx, sz) || this.nearestWalkable(six, siz, 5, null, sx, sz);
-    const goal = this.nearestWalkable(tix, tiz, 10, goalRect, tx, tz) || this.nearestWalkable(tix, tiz, 10, null, tx, tz);
+    const start = this.nearestWalkable(six, siz, 5, null, sx, sz);
+    const goal = this.nearestWalkable(tix, tiz, 8, null, tx, tz);
     if (!start || !goal) return null;
     if (start[0] === goal[0] && start[1] === goal[1]) return [this.center(goal[0], goal[1])];
 
@@ -209,10 +357,6 @@ export class NavGrid {
     seen[startIdx] = stamp; g[startIdx] = 0; came[startIdx] = -1; closed[startIdx] = 0;
     open.push({ idx: startIdx, ix: start[0], iz: start[1], g: 0, f: h(start[0], start[1]) });
     let expansions = 0;
-    const dirs = [
-      [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
-      [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2],
-    ];
     while (open.size && expansions++ < maxExpansions) {
       const cur = open.pop();
       if (closed[cur.idx]) continue;
@@ -226,9 +370,9 @@ export class NavGrid {
           i = came[i];
         }
         path.reverse();
-        return this.applyPortals(path);
+        return path;
       }
-      for (const [dx, dz, cost] of dirs) {
+      for (const [dx, dz, cost] of NAV_DIRS) {
         const nx = cur.ix + dx, nz = cur.iz + dz;
         if (!this.walkable(nx, nz)) continue;
         // Do not cut diagonal corners through blocked cells.
@@ -245,59 +389,11 @@ export class NavGrid {
     return null;
   }
 
-  // Insert exact door-centre waypoints where a grid segment crosses a wall
-  // opening. The coarse cells only guarantee a *nearby* walkable cell; this
-  // gives the character controller a straight line through the actual gap.
-  applyPortals(path) {
-    if (!path || path.length < 2) return path;
-    const out = [path[0]];
-    for (let i = 1; i < path.length; i++) {
-      const prev = path[i - 1], cur = path[i];
-      const d = this.crossedDoor(prev, cur);
-      if (d) {
-        const pOut = [d.cx + d.nx * 0.9, d.cz + d.nz * 0.9];
-        const mid = [d.cx, d.cz];
-        const pIn = [d.cx - d.nx * 0.9, d.cz - d.nz * 0.9];
-        const side = (prev[0] - d.cx) * d.nx + (prev[1] - d.cz) * d.nz;
-        const seq = side >= 0 ? [pOut, mid, pIn] : [pIn, mid, pOut];
-        for (const p of seq) {
-          const last = out[out.length - 1];
-          if (Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.05) out.push(p);
-        }
-      }
-      const last = out[out.length - 1];
-      if (Math.hypot(cur[0] - last[0], cur[1] - last[1]) > 0.05) out.push(cur);
-    }
-    return out;
-  }
-
-  crossedDoor(a, b) {
-    const margin = Math.max(0.6, this.cell * 0.6);
-    for (const d of this.doors) {
-      let da, db, along;
-      if (d.axis === 'x') {
-        da = a[1] - d.fixed; db = b[1] - d.fixed;
-        if (da * db >= -1e-9) continue;
-        const t = da / (da - db);
-        along = a[0] + (b[0] - a[0]) * t;
-        if (along < d.a - margin || along > d.b + margin) continue;
-      } else {
-        da = a[0] - d.fixed; db = b[0] - d.fixed;
-        if (da * db >= -1e-9) continue;
-        const t = da / (da - db);
-        along = a[1] + (b[1] - a[1]) * t;
-        if (along < d.a - margin || along > d.b + margin) continue;
-      }
-      return d;
-    }
-    return null;
-  }
 }
 
 export function getNav(world) {
-  const key = world.seed;
-  if (!navCache.has(key)) navCache.set(key, new NavGrid(world));
-  return navCache.get(key);
+  if (!navCache.has(world)) navCache.set(world, new NavGrid(world));
+  return navCache.get(world);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +453,11 @@ export class BotBrain {
   // still fights when it sees an enemy; otherwise it paths to the point and
   // clears the objective on arrival.
   commandTo(x, z) {
-    this.objective = { x, z };
+    // An indoor objective is only reached from inside that building. A loose
+    // pickup-sized radius must not complete it from the other side of a wall.
+    const building = this.game.world.buildings.find(b =>
+      Math.abs(x - b.x) < b.w / 2 && Math.abs(z - b.z) < b.d / 2) || null;
+    this.objective = { x, z, building };
     this.arrived = false;
     this.path = null;
     this.pathIdx = 0;
@@ -365,6 +465,16 @@ export class BotBrain {
     this.stuckT = 0;
     this.goal = { x, z };
     return this;
+  }
+
+  reachedObjective() {
+    const goal = this.objective, p = this.p;
+    if (!goal || Math.hypot(goal.x - p.pos[0], goal.z - p.pos[2]) >= this.arriveRadius) return false;
+    const b = goal.building;
+    if (b && (Math.abs(p.pos[0] - b.x) >= b.w / 2 - CFG.PLAYER.RADIUS ||
+      Math.abs(p.pos[2] - b.z) >= b.d / 2 - CFG.PLAYER.RADIUS)) return false;
+    const targetY = b ? b.y0 + 1 : this.game.world.terrainHeight(goal.x, goal.z) + 1;
+    return this.game.world.lineOfSight(this.eye(), [goal.x, targetY, goal.z], .05);
   }
 
   clearObjective() {
@@ -458,7 +568,7 @@ export class BotBrain {
     const diff = Math.atan2(Math.sin(desired - p.yaw), Math.cos(desired - p.yaw));
     const turn = 7.0 * (this._dt || CFG.SIM_DT);
     input.yaw = p.yaw + clamp(diff, -turn, turn);
-    input.f = Math.abs(diff) < 1.2;
+    input.f = Math.abs(diff) < (d < 1.2 ? 0.35 : 0.7);
     input.sprint = sprint && d > 12;
     return d;
   }
@@ -472,7 +582,7 @@ export class BotBrain {
       const wp = this.path[this.pathIdx];
       const dx = wp[0] - p.pos[0], dz = wp[1] - p.pos[2];
       const d = Math.hypot(dx, dz);
-      if (d < step) { this.pathIdx++; continue; }
+      if (d < (wp[2] ?? step)) { this.pathIdx++; continue; }
       this.steerTo(input, wp[0], wp[1]);
       // Jump small ledges when pinned against one.
       if (this.stuckT > 0.5) { input.jump = true; this.stuckT = 0; }
@@ -598,8 +708,7 @@ export class BotBrain {
     const z = this.game.zone;
     const inZone = Math.hypot(p.pos[0] - z.cx, p.pos[2] - z.cz) < z.r * 0.86;
     if (this.objective) {
-      const od = Math.hypot(this.objective.x - p.pos[0], this.objective.z - p.pos[2]);
-      if (od < this.arriveRadius) {
+      if (this.reachedObjective()) {
         this.objective = null;
         this.arrived = true;
         this.path = null;
@@ -624,7 +733,9 @@ export class BotBrain {
       const loot = this.lootT <= 0 ? this.nearestLoot() : null;
       if (loot) {
         const d = Math.hypot(loot.x - p.pos[0], loot.z - p.pos[2]);
-        if (d < CFG.LOOT.pickupRange) { input.interact = true; this.lootT = 0.35; this.path = null; }
+        if (d < CFG.LOOT.pickupRange && lootInReach(this.game.world, p.pos, p.eyeHeight(), loot)) {
+          input.interact = true; this.lootT = 0.35; this.path = null;
+        }
         else {
           if (this.repathT <= 0) this.setPathTo(loot.x, loot.z);
           if (!this.followPath(input)) this.steerTo(input, loot.x, loot.z);
@@ -638,8 +749,8 @@ export class BotBrain {
 
     // ---- unstick / fallback ----
     // Repath on little progress, then sidestep, then abandon the path and head
-    // straight for the goal. This guarantees a bot is never permanently pinned
-    // against a jamb or prop.
+    // straight for the goal. This is a recovery attempt; route tests establish
+    // which doorway/partition layouts actually complete.
     if (this.lastInputMoving && this.stuckT > 0.45) {
       if (this.repathT > 0) this.repathT = 0;
       if (this.detourT <= 0) { this.detourSign = -this.detourSign; this.detourT = 0.45; }

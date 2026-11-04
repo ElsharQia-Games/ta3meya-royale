@@ -110,7 +110,7 @@ export function solveBallistic(world, origin, dir, W, targets, shooterId, shoote
     }
     if (wh) {
       const point = wh.point;
-      impacts.push({ point, zone: null, targetId: null, damage: 0, dist: dist + wh.t, tag: wh.tag, mat: wh.mat, normal: wh.normal, box: wh.box });
+      impacts.push({ point, zone: null, targetId: null, damage: 0, dist: dist + wh.t, tag: wh.tag, mat: wh.mat, normal: wh.normal, box: wh.box, vehicle: wh.vehicle });
       segments.push(point);
       // penetration: only thin boxes / glass / wood
       const thickness = (wh.tmax !== undefined && isFinite(wh.tmax) ? wh.tmax - wh.t : Infinity);
@@ -176,11 +176,13 @@ export function tryFire(game, p, input, targets, opts = {}) {
     const end = res.segments[res.segments.length - 1];
     tracerEnds.push([+end[0].toFixed(2), +end[1].toFixed(2), +end[2].toFixed(2)]);
     for (const im of res.impacts) {
+      if (im.vehicle) game.damageVehicle(im.vehicle, W.dmg * .85, p.id);
       // Destructible props take structural damage from bullet impacts.
       if (im.box && im.box.dynamic && !im.box.destroyed) {
         im.box.hp -= W.dmg * 0.75;
-        if (im.box.hp <= 0) {
-          im.box.destroyed = true;
+          if (im.box.hp <= 0) {
+            im.box.destroyed = true;
+            game.destroyedBoxes.add(im.box.id);
           game.events.push({
             k: 'destroy', id: im.box.id, kind: im.box.kind || im.box.tag,
             x: +(im.box.min[0] + im.box.max[0]) / 2, y: im.box.min[1],
@@ -229,6 +231,7 @@ export function applyDamage(game, victim, amount, attackerId, zone, point, weapo
     dmg -= absorbed;
   }
   victim.health -= dmg;
+  victim.healT = 0; victim.healItem = null;
   victim.lastAttacker = attackerId;
   victim.lastDamageAt = game.time;
   victim.damageTaken = (victim.damageTaken || 0) + dmg;
@@ -248,7 +251,7 @@ export function tryReload(game, p) {
   if (!slot || slot.mag >= W.mag || slot.reserve <= 0) return false;
   p.reloadT = W.reload;
   p.reloadKey = key;
-  p.healT = 0;
+  p.healT = 0; p.healItem = null;
   game.events.push({ k: 'reload', id: p.id, w: key, dur: W.reload });
   return true;
 }
@@ -267,6 +270,7 @@ export function switchWeapon(game, p, slotIndex) {
   if (!p.weapons[slotIndex]) return false;
   p.curSlot = slotIndex;
   p.reloadT = 0; p.reloadKey = null;
+  p.healT = 0; p.healItem = null;
   p.switchT = CFG.WEAPONS[p.weapons[slotIndex]].switchTime;
   game.events.push({ k: 'switch', id: p.id, w: p.weapons[slotIndex] });
   return true;
@@ -278,7 +282,8 @@ export function throwGrenade(game, p, smoke = false) {
   if (p.cooldown > 0 || p.switchT > 0) return false;
   if (smoke) p.smokes--; else p.grenades--;
   p.cooldown = 0.75;
-  p.healT = 0;
+  p.healT = 0; p.healItem = null;
+  p.reloadT = 0; p.reloadKey = null;
   const eye = [p.pos[0], p.pos[1] + p.eyeHeight(), p.pos[2]];
   const dir = dirFromAngles(p.yaw, p.pitch + 0.12);
   const speed = CFG.GRENADE.throwSpeed;
@@ -350,6 +355,10 @@ export function stepProjectiles(game, dt) {
 
 export function explode(game, pos, dmg, radius, owner) {
   game.events.push({ k: 'boom', x: pos[0], y: pos[1], z: pos[2], r: radius });
+  for (const v of game.vehicles || []) {
+    const distance = Math.hypot(...pos.map((n, i) => n - v.pos[i]));
+    if (distance < radius) game.damageVehicle(v, dmg * 1.5 * (1 - distance / radius), owner);
+  }
   // Blast damage to destructible props.
   const boxes = game.world.queryBoxes(pos[0] - radius, pos[2] - radius, pos[0] + radius, pos[2] + radius);
   for (const b of boxes) {
@@ -360,6 +369,7 @@ export function explode(game, pos, dmg, radius, owner) {
     b.hp -= dmg * (1 - d / radius);
     if (b.hp <= 0) {
       b.destroyed = true;
+      game.destroyedBoxes.add(b.id);
       game.events.push({
         k: 'destroy', id: b.id, kind: b.kind || b.tag, x: cx, y: b.min[1], z: cz,
         sx: +(b.max[0] - b.min[0]).toFixed(2), sy: +(b.max[1] - b.min[1]).toFixed(2),
@@ -420,13 +430,19 @@ export function spawnWorldLoot(game) {
   }
 }
 
+export function lootInReach(world, feet, eyeHeight, item) {
+  if (Math.hypot(item.x - feet[0], item.y - feet[1], item.z - feet[2]) > CFG.LOOT.pickupRange) return false;
+  return world.lineOfSight([feet[0], feet[1] + eyeHeight, feet[2]], [item.x, item.y + .18, item.z], .18);
+}
+
 export function tryInteract(game, p) {
-  if (p.inVehicle) { game.exitVehicle(p); return true; }
+  if (!p.alive) return false;
+  if (p.inVehicle) return game.exitVehicle(p);
   // Nearest loot wins over a vehicle when it is closer to the player.
   let loot = null, lootD = CFG.LOOT.pickupRange;
   for (const it of game.loot) {
     const d = Math.hypot(it.x - p.pos[0], it.z - p.pos[2]);
-    if (d < lootD) { lootD = d; loot = it; }
+    if (d < lootD && lootInReach(game.world, p.pos, p.eyeHeight(), it)) { lootD = d; loot = it; }
   }
   let vehicle = null, vehD = CFG.VEHICLE.enterRange;
   for (const v of game.vehicles) {
@@ -440,21 +456,29 @@ export function tryInteract(game, p) {
 }
 
 export function pickupLoot(game, p, item) {
+  if (!p.alive || !game.loot.includes(item)) return false;
   if (item.type === 'weapon') {
     const W = CFG.WEAPONS[item.weapon];
-    // Prefer an empty slot, else replace current.
-    let slot = p.weapons[0] ? (p.weapons[1] ? p.curSlot : 1) : 0;
-    if (p.weapons[slot]) {
-      const old = p.weapons[slot];
-      const oldInv = p.inv[old];
-      game.loot.push({ id: game.nextId++, type: 'weapon', weapon: old, mag: oldInv.mag, reserve: oldInv.reserve, x: p.pos[0] + 0.5, y: p.pos[1] + 0.1, z: p.pos[2] + 0.5, rot: game.rng.next() * TAU });
-      delete p.inv[old];
+    if (p.weapons.includes(item.weapon)) {
+      // Inventory is keyed by weapon class. A second slot with the same key
+      // would alias/overwrite its magazine; an owned weapon supplies spare ammo.
+      p.inv[item.weapon].reserve += (item.mag ?? W.mag) + (item.reserve ?? 0);
+    } else {
+      // Prefer an empty slot, else replace current.
+      const slot = p.weapons[0] ? (p.weapons[1] ? p.curSlot : 1) : 0;
+      if (p.weapons[slot]) {
+        const old = p.weapons[slot];
+        const oldInv = p.inv[old];
+        game.loot.push({ id: game.nextId++, type: 'weapon', weapon: old, mag: oldInv.mag, reserve: oldInv.reserve, x: p.pos[0] + 0.5, y: p.pos[1] + 0.1, z: p.pos[2] + 0.5, rot: game.rng.next() * TAU });
+        delete p.inv[old];
+      }
+      p.weapons[slot] = item.weapon;
+      p.inv[item.weapon] = { mag: item.mag ?? W.mag, reserve: item.reserve ?? Math.round(W.reserve * 0.5) };
+      p.curSlot = slot;
+      p.switchT = W.switchTime;
+      p.reloadT = 0; p.reloadKey = null;
+      p.healT = 0; p.healItem = null;
     }
-    p.weapons[slot] = item.weapon;
-    p.inv[item.weapon] = { mag: item.mag ?? W.mag, reserve: item.reserve ?? Math.round(W.reserve * 0.5) };
-    p.curSlot = slot;
-    p.switchT = W.switchTime;
-    p.reloadT = 0;
   } else if (item.type === 'ammo') {
     let added = false;
     for (const w of p.weapons) {
