@@ -7,6 +7,7 @@ export const DEFAULTS = {
   fov: 80,
   invertY: false,
   volume: 0.65,
+  muted: false,
   quality: 'high',        // high | medium | low
   shadows: true,
   bloom: true,

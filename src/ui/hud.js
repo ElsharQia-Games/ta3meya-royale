@@ -18,10 +18,17 @@ const WEAPON_LABEL = {
   shotgun: 'M12 BREACHER', sniper: 'AX-50', lmg: 'M249 SAW',
 };
 
+const mapName = (names, id) => {
+  if (names === undefined || names === null) return null;
+  if (typeof names.get === 'function') return names.get(id) ?? null;
+  return names[id] ?? null;
+};
+
 export class HUD {
   constructor(settings) {
     this.settings = settings;
     this.playerId = null;
+    this.localTeam = null;
     this.killFeed = [];
     this.damageMarks = [];
     this.hitT = 0;
@@ -30,13 +37,24 @@ export class HUD {
     this.prompt = '';
     this.chatOpen = false;
     this.scoreboardOpen = false;
+    this.settingsOpen = false;
+    this.reconnectText = null;
+    this.spectating = null;
     this._last = {};
     this._minimapTimer = 0;
+    this._mapBase = null;
+    this._mapSeed = null;
+    this._settingsSnapshot = null;
+    this._openedAt = 0;
+    this._chatOpenedAt = 0;
     this._build();
   }
 
   _build() {
     const root = $('hud');
+
+    // Low-health vignette sits behind every other HUD element.
+    this.lowHp = el('div', 'lowhp', root);
 
     // ---- compass ----
     this.compass = el('canvas', 'compass', root);
@@ -77,6 +95,7 @@ export class HUD {
     this.magText = el('span', 'mag', ammoRow, '0');
     this.reserveText = el('span', 'reserve', ammoRow, '/ 0');
     this.fireMode = el('div', 'firemode', ammo, 'AUTO');
+    this.reloadTag = el('div', 'reload-tag', ammo, 'RELOADING');
 
     // ---- inventory ----
     this.inv = el('div', 'inventory', root);
@@ -117,6 +136,7 @@ export class HUD {
     // ---- scoreboard ----
     this.scoreboard = el('div', 'scoreboard hidden', root);
     el('h2', '', this.scoreboard, 'SCOREBOARD');
+    this.scoreSub = el('div', 'score-sub', this.scoreboard, '');
     this.scoreTable = el('div', 'score-table', this.scoreboard);
 
     // ---- chat ----
@@ -127,6 +147,10 @@ export class HUD {
     this.chatInput.placeholder = 'Say something… (Enter to send, Esc to cancel)';
     this.chatForm.addEventListener('submit', (e) => {
       e.preventDefault();
+      // The Enter that opens the chat can also implicitly submit the form
+      // once focus lands on the input. Ignore submits from that same press so
+      // the player actually gets to type.
+      if (performance.now() - this._chatOpenedAt < 150) return;
       const text = this.chatInput.value.trim();
       this.chatInput.value = '';
       this.closeChat();
@@ -188,41 +212,92 @@ export class HUD {
     this.invertInput = $('set-invert');
     this.shadowsInput = $('set-shadows');
     this.bloomInput = $('set-bloom');
+    this.muteInput = $('set-mute');
     this.showFpsInput = $('set-fps');
+    this.sensVal = $('sens-val');
+    this.adsVal = $('ads-val');
+    this.fovVal = $('fov-val');
+    this.volVal = $('vol-val');
+
+    this._syncSettingsInputs();
+    this._syncSettingLabels();
+
+    // Every control applies live (and persists through onSettings) while the
+    // panel is open; APPLY just closes it.
+    const live = [this.sensInput, this.adsSensInput, this.fovInput, this.volInput];
+    for (const input of live) input.addEventListener('input', () => this._commitSettings(false));
+    for (const input of [this.qualityInput, this.invertInput, this.shadowsInput,
+      this.bloomInput, this.muteInput, this.showFpsInput]) {
+      input.addEventListener('change', () => this._commitSettings(false));
+    }
+
+    $('settings-close').onclick = () => this._cancelSettings();
+    $('settings-save').onclick = () => this._commitSettings(true);
+    $('settings-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
+    $('settings-resume').onclick = () => { this._commitSettings(false); this.toggleSettings(false); };
+  }
+
+  _syncSettingsInputs() {
     const s = this.settings;
     this.sensInput.value = s.sensitivity;
     this.adsSensInput.value = s.adsSensitivity;
     this.fovInput.value = s.fov;
     this.volInput.value = s.volume;
     this.qualityInput.value = s.quality;
-    this.invertInput.checked = s.invertY;
-    this.shadowsInput.checked = s.shadows;
-    this.bloomInput.checked = s.bloom;
-    this.showFpsInput.checked = s.showFps;
-    $('settings-close').onclick = () => this.toggleSettings(false);
-    $('settings-save').onclick = () => {
-      s.sensitivity = +this.sensInput.value;
-      s.adsSensitivity = +this.adsSensInput.value;
-      s.fov = +this.fovInput.value;
-      s.volume = +this.volInput.value;
-      s.quality = this.qualityInput.value;
-      s.invertY = this.invertInput.checked;
-      s.shadows = this.shadowsInput.checked;
-      s.bloom = this.bloomInput.checked;
-      s.showFps = this.showFpsInput.checked;
-      this.stats.style.display = s.showFps ? '' : 'none';
-      if (this.onSettings) this.onSettings(s);
-      this.toggleSettings(false);
-    };
-    $('settings-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
-    $('settings-resume').onclick = () => this.toggleSettings(false);
+    this.invertInput.checked = !!s.invertY;
+    this.shadowsInput.checked = !!s.shadows;
+    this.bloomInput.checked = !!s.bloom;
+    this.muteInput.checked = !!s.muted;
+    this.showFpsInput.checked = !!s.showFps;
+  }
+
+  _syncSettingLabels() {
+    const s = this.settings;
+    this.sensVal.textContent = (+s.sensitivity).toFixed(2);
+    this.adsVal.textContent = (+s.adsSensitivity).toFixed(2);
+    this.fovVal.textContent = `${Math.round(s.fov)}°`;
+    this.volVal.textContent = `${Math.round(s.volume * 100)}%`;
+  }
+
+  _commitSettings(close) {
+    const s = this.settings;
+    s.sensitivity = +this.sensInput.value;
+    s.adsSensitivity = +this.adsSensInput.value;
+    s.fov = +this.fovInput.value;
+    s.volume = +this.volInput.value;
+    s.quality = this.qualityInput.value;
+    s.invertY = this.invertInput.checked;
+    s.shadows = this.shadowsInput.checked;
+    s.bloom = this.bloomInput.checked;
+    s.muted = this.muteInput.checked;
+    s.showFps = this.showFpsInput.checked;
+    this._syncSettingLabels();
+    if (this.onSettings) this.onSettings(s);
+    if (close) this.toggleSettings(false);
+  }
+
+  _cancelSettings() {
+    if (this._settingsSnapshot) {
+      try { Object.assign(this.settings, JSON.parse(this._settingsSnapshot)); } catch {}
+      this._syncSettingsInputs();
+      this._syncSettingLabels();
+      if (this.onSettings) this.onSettings(this.settings);
+    }
+    this.toggleSettings(false);
   }
 
   toggleSettings(v) {
-    this.settingsOpen = v;
+    this.settingsOpen = !!v;
+    if (v) {
+      this._settingsSnapshot = JSON.stringify(this.settings);
+      this._syncSettingsInputs();
+      this._syncSettingLabels();
+      this._openedAt = performance.now();
+    }
     this.settingsPanel.classList.toggle('hidden', !v);
     if (v) this.releasePointer?.();
-    else this.requestPointer?.();
+    else if (!this.endShown) this.requestPointer?.();
+    this.onUiMode?.();
   }
 
   // -------------------------------------------------------------------------
@@ -240,7 +315,11 @@ export class HUD {
   showEnd(winner, scoreboard, mode, score = null) {
     this.endPanel.classList.remove('hidden');
     this.releasePointer?.();
-    const youWon = winner && winner.id === this.playerId;
+    let youWon = false;
+    if (winner) {
+      if (winner.id !== null && winner.id !== undefined) youWon = winner.id === this.playerId;
+      else if (winner.team !== null && winner.team !== undefined) youWon = winner.team === this.localTeam;
+    }
     this.endTitle.textContent = youWon ? 'VICTORY' : (winner?.name ? `${winner.name} WINS` : 'MATCH OVER');
     this.endTitle.className = youWon ? 'win' : 'lose';
     const s = Array.isArray(score) ? score : [0, 0];
@@ -252,7 +331,8 @@ export class HUD {
     for (const p of rows) {
       const row = el('div', 'end-row', this.endTable);
       el('span', '', row, p.name + (p.bot ? ' ·BOT' : ''));
-      el('span', 'end-kd', row, `${p.kills} kills · ${p.deaths} deaths`);
+      const pts = p.score ?? (p.kills || 0) * 100;
+      el('span', 'end-kd', row, `${p.kills} kills · ${p.deaths} deaths · ${pts} pts`);
     }
   }
 
@@ -275,8 +355,12 @@ export class HUD {
   // -------------------------------------------------------------------------
   update(dt, ctx) {
     const { player, state, roster, vehicles, loot, cameraYaw, spectator } = ctx;
-    const root = $('hud');
     if (!player) return;
+
+    if (roster) {
+      const me = roster.find(p => p.id === this.playerId);
+      if (me) this.localTeam = me.team;
+    }
 
     // health / armour
     const hp = Math.max(0, Math.round(player.hp ?? 100));
@@ -286,6 +370,7 @@ export class HUD {
       this.hpText.textContent = hp;
       this.hpBar.classList.toggle('low', hp <= 30);
     }
+    this.lowHp.classList.toggle('show', !!player.alive && hp > 0 && hp <= 30);
     const ar = Math.round(player.armor ?? 0);
     if (this._last.ar !== ar) {
       this._last.ar = ar;
@@ -298,7 +383,7 @@ export class HUD {
       this.stanceText.textContent = stance;
     }
 
-    // weapon / ammo
+    // weapon / ammo / reload
     const wkey = player.weapon;
     const label = WEAPON_LABEL[wkey] || '—';
     if (this._last.weapon !== label) {
@@ -309,8 +394,13 @@ export class HUD {
     if (this._last.mag !== mag) { this._last.mag = mag; this.magText.textContent = mag; this.magText.classList.toggle('empty', mag === 0); }
     if (this._last.res !== res) { this._last.res = res; this.reserveText.textContent = `/ ${res}`; }
     const W = CFG.WEAPONS[wkey];
-    const mode = W ? (W.rpm > 500 ? 'AUTO' : 'SEMI') : '';
+    const mode = W ? (W.auto ? 'AUTO' : 'SEMI') : '';
     if (this._last.mode !== mode) { this._last.mode = mode; this.fireMode.textContent = mode; }
+    const reloading = (player.reloadT ?? 0) > 0;
+    if (this._last.reloading !== reloading) {
+      this._last.reloading = reloading;
+      this.reloadTag.classList.toggle('show', reloading);
+    }
 
     // inventory slots
     const weapons = player.weapons || [];
@@ -342,6 +432,7 @@ export class HUD {
     this.crossLines[3].style.transform = `translate(${px}px, -50%)`;
     this.cross.classList.toggle('ads', !!player.ads);
     this.cross.style.opacity = player.ads ? 0.35 : 1;
+    this.cross.dataset.gap = px.toFixed(2);
 
     // compass
     this._drawCompass(cameraYaw);
@@ -353,25 +444,44 @@ export class HUD {
       this._drawMinimap(player, state, roster, vehicles, loot);
     }
 
-    // zone
+    // zone countdown / warning
     if (state?.zone) {
       const z = state.zone;
-      const phaseTxt = z.shrinking ? 'CLOSING' : 'HOLD';
-      const timeLeft = z.shrinking ? Math.ceil(z.phaseT) : Math.ceil(z.phaseT);
-      this.zoneInfo.innerHTML = `<b>${phaseTxt}</b> · ${timeLeft}s · ${Math.round(z.r)}m`;
+      const ph = CFG.ZONE.phases[z.phase];
+      let phaseTxt, left;
+      if (z.phase >= CFG.ZONE.phases.length) {
+        phaseTxt = 'FINAL ZONE'; left = 0;
+      } else if (z.shrinking) {
+        phaseTxt = 'CLOSING';
+        left = Math.max(0, Math.ceil((ph?.shrink ?? 0) - z.phaseT));
+      } else {
+        phaseTxt = 'SHRINKS IN';
+        left = Math.max(0, Math.ceil((ph?.wait ?? 0) - z.phaseT));
+      }
+      const info = `${phaseTxt} · ${left}s · ${Math.round(z.r)}m`;
+      if (this._last.zoneInfo !== info) {
+        this._last.zoneInfo = info;
+        this.zoneInfo.innerHTML = `<b>${phaseTxt}</b> · ${left}s · ${Math.round(z.r)}m`;
+        this.zoneTimer.textContent = z.phase >= CFG.ZONE.phases.length ? 'FINAL' : `${left}s`;
+      }
+      this.zoneInfo.classList.toggle('closing', !!z.shrinking);
       const d = Math.hypot(player.x - z.cx, player.z - z.cz);
-      this.zoneWarn.classList.toggle('show', d > z.r && player.alive);
+      const outside = d > z.r && player.alive;
+      this.zoneWarn.classList.toggle('show', outside);
+      this.zoneWarn.textContent = z.shrinking ? 'ZONE CLOSING — GET INSIDE' : 'OUTSIDE THE ZONE — MOVE';
     } else {
       this.zoneWarn.classList.remove('show');
+      this.zoneInfo.classList.remove('closing');
     }
 
-    // match countdown / state
+    // centre message priority: reconnect > spectate > countdown
     let center = '';
-    if (state?.matchState === MATCH_STATE.WARMUP || state?.matchState === MATCH_STATE.LOBBY) {
+    if (this.reconnectText) center = this.reconnectText;
+    else if (spectator) center = `SPECTATING ${spectator}${state?.mode === 'br' ? ' · Q NEXT' : ''}`;
+    else if (state?.matchState === MATCH_STATE.WARMUP || state?.matchState === MATCH_STATE.LOBBY) {
       center = `DEPLOYING IN ${Math.max(0, Math.ceil(state.countdown))}`;
-    } else if (state?.matchState === MATCH_STATE.ENDED) {
-      center = '';
     }
+    this.spectating = spectator || null;
     if (this._last.center !== center) { this._last.center = center; this.center.textContent = center; }
     this.center.classList.toggle('show', !!center);
 
@@ -383,12 +493,6 @@ export class HUD {
     if (this._last.respawn !== rtxt) { this._last.respawn = rtxt; this.respawn.textContent = rtxt; }
     this.respawn.classList.toggle('show', !!rtxt);
 
-    // spectator
-    if (spectator) {
-      this.center.textContent = `SPECTATING ${spectator}`;
-      this.center.classList.add('show');
-    }
-
     // prompt
     if (this.prompt !== (this._last.prompt ?? '')) {
       this._last.prompt = this.prompt;
@@ -397,12 +501,11 @@ export class HUD {
     }
 
     // hitmarker fade
-    if (this.hitT > 0) {
-      this.hitT -= dt;
-      this.hitmarker.classList.toggle('show', this.hitT > 0);
-      this.hitmarker.classList.toggle('kill', this.killT > 0);
-      this.hitmarker.classList.toggle('head', this.headshotT > 0);
-    }
+    if (this.hitT > 0) this.hitT = Math.max(0, this.hitT - dt);
+    if (this.hitT <= 0) { this.killT = 0; this.headshotT = 0; }
+    this.hitmarker.classList.toggle('show', this.hitT > 0);
+    this.hitmarker.classList.toggle('kill', this.killT > 0);
+    this.hitmarker.classList.toggle('head', this.headshotT > 0);
 
     // damage direction markers
     for (let i = this.damageMarks.length - 1; i >= 0; i--) {
@@ -411,6 +514,9 @@ export class HUD {
       d.el.style.opacity = Math.max(0, d.t / 1.1).toFixed(2);
       if (d.t <= 0) { d.el.remove(); this.damageMarks.splice(i, 1); }
     }
+
+    // scoreboard (kept fresh while open)
+    if (this.scoreboardOpen) this.setScoreboard(roster, state?.score, state?.mode);
 
     // diagnostics
     this.latency.textContent = ctx.netStats || '';
@@ -449,10 +555,29 @@ export class HUD {
     ctx.closePath(); ctx.fill();
   }
 
+  // Contacts visible on the minimap. TDM shows living teammates only; BR is a
+  // solo radar (the map never reveals enemies, which would be an information
+  // leak the server does not authorise).
+  _minimapContacts(state, roster) {
+    const out = [];
+    if (!roster || state?.mode !== 'tdm') return out;
+    for (const p of roster) {
+      if (p.id === this.playerId || !p.alive) continue;
+      if (p.team !== this.localTeam) continue;
+      const pos = this._rosterPos?.[p.id];
+      if (!pos) continue;
+      out.push({ id: p.id, x: pos[0], z: pos[2], team: p.team });
+    }
+    return out;
+  }
+
   _drawMinimap(player, state, roster, vehicles, loot) {
     const c = this.minimap, ctx = c.getContext('2d');
     const S = c.width;
-    if (!this._mapBase) this._mapBase = this._renderMapBase(S);
+    if (!this._mapBase || this._mapSeed !== this.world?.seed) {
+      this._mapBase = this._renderMapBase(S);
+      this._mapSeed = this.world?.seed;
+    }
     ctx.clearRect(0, 0, S, S);
     ctx.drawImage(this._mapBase, 0, 0);
 
@@ -493,20 +618,15 @@ export class HUD {
       }
     }
     // teammates
-    if (roster) {
-      for (const p of roster) {
-        if (p.id === this.playerId || !p.alive) continue;
-        const pos = this._rosterPos?.[p.id];
-        if (!pos) continue;
-        const [x, y] = toMap(pos[0], pos[2]);
-        ctx.beginPath();
-        ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = TEAMS[p.team]?.css || '#fff';
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
+    for (const p of this._minimapContacts(state, roster)) {
+      const [x, y] = toMap(p.x, p.z);
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = TEAMS[p.team]?.css || '#fff';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
     // self arrow
     const [px, py] = toMap(player.x, player.z);
@@ -535,6 +655,18 @@ export class HUD {
     ctx.arc(0, 0, 34, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5);
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
+    // north marker (the map is north-up)
+    ctx.save();
+    ctx.font = 'bold 10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(6,10,14,0.72)';
+    ctx.fillRect(S / 2 - 9, 3, 18, 14);
+    ctx.fillStyle = '#f2b63a';
+    ctx.fillText('N', S / 2, 14);
+    ctx.beginPath();
+    ctx.moveTo(S / 2, 17); ctx.lineTo(S / 2 - 3, 22); ctx.lineTo(S / 2 + 3, 22);
+    ctx.closePath(); ctx.fill();
     ctx.restore();
 
     this.mmLabel.textContent = this._gridLabel(player.x, player.z);
@@ -617,14 +749,18 @@ export class HUD {
   }
 
   addKill(ev, names) {
-    const hasKiller = ev.killer > 0;
-    const killer = hasKiller ? (names?.[ev.killer] || 'Unknown') : 'ZONE';
-    const victim = names?.[ev.victim] || 'Unknown';
+    const hasKiller = Number.isFinite(ev.killer) && ev.killer >= 0;
+    const killer = hasKiller ? (mapName(names, ev.killer) || 'Unknown') : 'ZONE';
+    const victim = mapName(names, ev.victim) || 'Unknown';
     const row = el('div', 'feed-row', this.feed);
+    row.dataset.killer = killer;
+    row.dataset.victim = victim;
+    row.dataset.kteam = String(ev.kteam ?? -1);
     const k = el('span', 'feed-killer', row, killer);
-    if (hasKiller) k.style.color = TEAMS[ev.team ?? 0]?.css || '#fff';
+    if (hasKiller) k.style.color = TEAMS[ev.kteam]?.css || '#fff';
     const icon = el('span', 'feed-icon', row, ev.zone === 'head' ? '⌖' : '›');
     const v = el('span', 'feed-victim', row, victim);
+    v.style.color = TEAMS[ev.team]?.css || '#c3ccd5';
     if (ev.zone === 'head') row.classList.add('headshot');
     this.killFeed.push(row);
     while (this.killFeed.length > 6) this.killFeed.shift().remove();
@@ -647,46 +783,61 @@ export class HUD {
   }
 
   damageFrom(angle, yaw) {
-    // angle is world-space direction to the attacker; rotate into view space.
-    const rel = angle - yaw;
+    // angle is the world-space bearing to the attacker; rotate into view space.
+    // Positive CSS rotation is clockwise, so the relative bearing is yaw-angle.
+    const rel = Math.atan2(Math.sin(yaw - angle), Math.cos(yaw - angle));
     const div = el('div', 'dmg-mark', this.dmgWrap);
     div.style.transform = `rotate(${rel}rad)`;
+    div.dataset.angle = rel.toFixed(3);
     this.damageMarks.push({ el: div, t: 1.1 });
   }
 
   openChat() {
     this.chatOpen = true;
+    this._chatOpenedAt = performance.now();
     this.chatForm.classList.remove('hidden');
     this.chatInput.focus();
     this.releasePointer?.();
+    this.onUiMode?.();
   }
 
   closeChat() {
     this.chatOpen = false;
     this.chatForm.classList.add('hidden');
     this.chatInput.blur();
-    this.requestPointer?.();
+    if (!this.settingsOpen && !this.endShown) this.requestPointer?.();
+    this.onUiMode?.();
   }
 
   toggleScoreboard(v) {
-    this.scoreboardOpen = v;
+    this.scoreboardOpen = !!v;
     this.scoreboard.classList.toggle('hidden', !v);
+    if (!v) this.scoreTable.innerHTML = '';
   }
 
   setScoreboard(roster, score, mode) {
-    if (!this.scoreboardOpen) return;
+    if (!this.scoreboardOpen || !roster) return;
+    const s = Array.isArray(score) ? score : [0, 0];
+    const alive = roster.filter(p => p.alive).length;
+    this.scoreSub.textContent = mode === 'tdm'
+      ? `${TEAMS[0]?.name ?? 'Team 1'} ${s[0] ?? 0} : ${s[1] ?? 0} ${TEAMS[1]?.name ?? 'Team 2'} · ${alive}/${roster.length} alive`
+      : `${alive}/${roster.length} alive · Battle Royale`;
     this.scoreTable.innerHTML = '';
     const header = el('div', 'score-row head', this.scoreTable);
-    for (const h of ['PLAYER', 'TEAM', 'K', 'D', 'PING']) el('span', '', header, h);
+    for (const h of ['PLAYER', 'TEAM', 'K', 'D', 'SCORE', 'PING']) el('span', '', header, h);
     const sorted = [...roster].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
     for (const p of sorted) {
       const row = el('div', 'score-row', this.scoreTable);
       if (p.id === this.playerId) row.classList.add('me');
+      row.dataset.team = String(p.team ?? 0);
       el('span', 'score-name', row, p.name + (p.bot ? ' ·BOT' : ''));
       const t = el('span', '', row, TEAMS[p.team]?.name || '—');
       t.style.color = TEAMS[p.team]?.css || '#fff';
-      el('span', '', row, String(p.kills));
-      el('span', '', row, String(p.deaths));
+      el('span', '', row, String(p.kills ?? 0));
+      el('span', '', row, String(p.deaths ?? 0));
+      // The wire roster has no per-player score yet; elimination points are a
+      // deterministic derivation of the real kill count (documented in QA).
+      el('span', '', row, String(p.score ?? (p.kills ?? 0) * 100));
       el('span', '', row, String(p.ping ?? '—'));
     }
   }
@@ -698,11 +849,12 @@ export class HUD {
   setSpectating(name) { this.spectating = name; }
 
   showReconnect(text) {
+    this.reconnectText = text;
     this.center.textContent = text;
     this.center.classList.add('show');
   }
 
   hideReconnect() {
-    if (!this.spectating) this.center.classList.remove('show');
+    this.reconnectText = null;
   }
 }

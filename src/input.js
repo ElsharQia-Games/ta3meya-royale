@@ -20,6 +20,9 @@ export class Input {
     this.stance = STANCE.STAND;
     this.pendingSlot = -1;
     this.pendingEnter = undefined;
+    // Set while the player is typing chat / editing a menu. Suppresses every
+    // gameplay binding (movement, fire, stance, actions) at the source.
+    this.textMode = false;
     this.actions = {
       reload: false, grenade: false, smoke: false, heal: false,
       interact: false, cycle: false,
@@ -33,6 +36,9 @@ export class Input {
   _bind() {
     addEventListener('keydown', (e) => {
       if (e.code === 'Tab') e.preventDefault();
+      // OS key repeat must never re-trigger edge actions (reload, stance, ...).
+      if (e.repeat) return;
+      if (this.textMode) return;
       if (this.keys.has(e.code)) return;
       this.keys.add(e.code);
       if (!this.enabled) return;
@@ -56,9 +62,9 @@ export class Input {
       if (this.onKey) this.onKey(e.code);
     });
     addEventListener('keyup', (e) => { this.keys.delete(e.code); });
-    addEventListener('blur', () => { this.keys.clear(); this.mouse.left = false; this.mouse.right = false; });
+    addEventListener('blur', () => { this.clearHeld(); });
     this.canvas.addEventListener('mousedown', (e) => {
-      if (!this.enabled) return;
+      if (!this.enabled || this.textMode) return;
       if (!this.pointerLocked) { this.requestLock(); return; }
       if (e.button === 0) this.mouse.left = true;
       if (e.button === 2) this.mouse.right = true;
@@ -69,7 +75,7 @@ export class Input {
     });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('mousemove', (e) => {
-      if (!this.pointerLocked) return;
+      if (!this.pointerLocked || this.textMode) return;
       // Browsers can report a huge synthetic delta on the first event after
       // the pointer is locked. Discarding it prevents the camera snapping.
       if (this._lockFresh) { this._lockFresh = false; return; }
@@ -78,9 +84,27 @@ export class Input {
     });
     document.addEventListener('pointerlockchange', () => {
       this.pointerLocked = document.pointerLockElement === this.canvas;
-      if (this.pointerLocked) this._lockFresh = true;
-      if (!this.pointerLocked) { this.mouse.left = false; this.mouse.right = false; }
+      if (this.pointerLocked) { this._lockFresh = true; this.mouse.dx = 0; this.mouse.dy = 0; }
+      else this.clearHeld();
     });
+  }
+
+  // Drop all held state. Used on blur, tab-out, menu/chat focus and pointer
+  // lock loss so no key, mouse button or edge action can stay stuck.
+  clearHeld() {
+    this.keys.clear();
+    this.mouse.left = false;
+    this.mouse.right = false;
+    this.mouse.dx = 0;
+    this.mouse.dy = 0;
+    this.actions.reload = false;
+    this.actions.grenade = false;
+    this.actions.smoke = false;
+    this.actions.heal = false;
+    this.actions.interact = false;
+    this.actions.cycle = false;
+    this.pendingSlot = -1;
+    this.pendingEnter = undefined;
   }
 
   requestLock() {

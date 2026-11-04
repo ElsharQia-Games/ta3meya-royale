@@ -96,7 +96,8 @@ class App {
     this.hud.onSettings = (s) => this.applySettings(s);
     this.hud.onLeave = () => this.leave();
     this.hud.onRestart = () => this.restart();
-    this.hud.releasePointer = () => this.input.releaseLock();
+    this.hud.onUiMode = () => this.syncInputMode();
+    this.hud.releasePointer = () => { this.input.clearHeld(); this.input.releaseLock(); };
     this.hud.requestPointer = () => { if (this.active) this.input.requestLock(); };
 
     this.initLobby();
@@ -159,6 +160,7 @@ class App {
     const { name, room, mode } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
+    this.audio.setMuted(this.settings.muted);
     this.setLobbyStatus('Connecting to the server…');
     $('join').disabled = true;
 
@@ -168,7 +170,7 @@ class App {
       if (state === 'connecting') this.setLobbyStatus('Connecting…');
       else if (state === 'reconnecting') {
         this.setLobbyStatus(`Reconnecting in ${Math.round((extra || 0) / 100) / 10}s…`);
-        if (this.active) this.hud.showReconnect('CONNECTION LOST — RECONNECTING');
+        if (this.active) this.hud.showReconnect('CONNECTION LOST — RECONNECTING · P TO RETRY');
       } else if (state === 'joined-pending') this.setLobbyStatus('Joining room…');
       else if (state === 'disconnected') this.setLobbyStatus('Disconnected.', true);
       else if (state === 'closed') { /* intentional */ }
@@ -192,6 +194,7 @@ class App {
     this.hud.playerId = msg.playerId;
     this.mode = 'online';
     this.audio.setVolume(this.settings.volume);
+    this.audio.setMuted(this.settings.muted);
 
     const first = !this.world;
     if (first) {
@@ -222,7 +225,7 @@ class App {
       this.teams.set(p.id, p.team);
     }
     const me = this.roster.find(p => p.id === this.localId);
-    if (me) this.hud.playerId = me.id;
+    if (me) { this.hud.playerId = me.id; this.hud.localTeam = me.team; }
     this.hud.setLobbyRoster(this.roster, msg.mode, msg.state);
   }
 
@@ -250,6 +253,7 @@ class App {
     const { name, mode } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
+    this.audio.setMuted(this.settings.muted);
     this.setLobbyStatus('Generating the battlefield…');
     setTimeout(() => {
       this.buildSession(CFG.MAP.SEED);
@@ -288,8 +292,10 @@ class App {
 
   applySettings(s) {
     this.settings = s;
+    this.hud.settings = s;
     saveSettings(s);
     this.audio.setVolume(s.volume);
+    this.audio.setMuted(s.muted);
     this.input.sensitivity = s.sensitivity;
     this.input.invertY = s.invertY;
     this.renderer.settings = s;
@@ -297,6 +303,22 @@ class App {
     this.renderer.camera.fov = s.fov;
     this.renderer.camera.updateProjectionMatrix();
     this.hud.stats.style.display = s.showFps ? '' : 'none';
+    this.syncInputMode();
+  }
+
+  syncInputMode() {
+    this.input.textMode = this.uiBlocked();
+  }
+
+  forceReconnect() {
+    const net = this.net;
+    if (!net) return;
+    if (net.connected && net.joined) return;
+    if (net.reconnectTimer) { clearTimeout(net.reconnectTimer); net.reconnectTimer = null; }
+    net.disconnect();
+    net.reconnectAttempts = 0;
+    this.hud.showReconnect('RECONNECTING…');
+    net.connect();
   }
 
   leave() {
@@ -351,6 +373,8 @@ class App {
     // Look is consumed once per rendered frame so multiple fixed steps share it.
     this.prevAimYaw = this.aimYaw;
     this.prevAimPitch = this.aimPitch;
+    this.syncInputMode();
+    if (this.input.textMode) { this.input.mouse.dx = 0; this.input.mouse.dy = 0; }
     this.input.sensitivity = this.settings.sensitivity * (this.adsF > 0.5 ? this.settings.adsSensitivity : 1);
     this.input.invertY = this.settings.invertY;
     const [yaw, pitch] = this.input.look(this.aimYaw, this.aimPitch);
@@ -809,6 +833,10 @@ class App {
         });
         view.vx = p.vx; view.vz = p.vz;
         view.update(dt, camPos);
+        const spd = Math.hypot(p.vx || 0, p.vz || 0);
+        if (p.alive && p.grounded && spd > 1.8) {
+          this.audio.footstep(this.surfaceAt(p.x, p.y, p.z), spd, p.x, p.y, p.z, id);
+        }
       }
       for (const [id, view] of this.characters) {
         if (seen.has(id)) continue;
@@ -833,6 +861,10 @@ class App {
         });
         view.vx = p.vel[0]; view.vz = p.vel[2];
         view.update(dt, camPos);
+        const spd = Math.hypot(p.vel[0] || 0, p.vel[2] || 0);
+        if (p.alive && p.grounded && spd > 1.8) {
+          this.audio.footstep(this.surfaceAt(p.pos[0], p.pos[1], p.pos[2]), spd, p.pos[0], p.pos[1], p.pos[2], p.id);
+        }
       }
       for (const [id, view] of this.characters) {
         if (seen.has(id)) continue;
@@ -923,24 +955,29 @@ class App {
     rosterPos[this.localId] = [lp.x, lp.y, lp.z];
     this.hud._rosterPos = rosterPos;
 
+    const roster = this.rosterForHud();
+    const me = roster.find(p => p.id === this.localId);
+    if (me) this.hud.localTeam = me.team;
+
     // Interaction prompt.
     this.hud.setPrompt(this.interactionPrompt(lp));
+
+    // Zone alarm follows the same authoritative zone data the HUD shows.
+    const z = this.state?.zone;
+    const outside = !!z && lp.alive && Math.hypot(lp.x - z.cx, lp.z - z.cz) > z.r;
+    this.audio.zoneAlarm(outside);
 
     const spectator = this.spectatorName();
     this.hud.update(dt, {
       player: lp,
       state: this.state,
-      roster: this.rosterForHud(),
+      roster,
       vehicles: this.state?.vehicles,
       loot: this.loot,
       cameraYaw: camLp?.yaw ?? lp.yaw,
       spectator,
       netStats: this.latencyText,
     });
-
-    if (this.hud.scoreboardOpen) {
-      this.hud.setScoreboard(this.rosterForHud(), this.state?.score, this.state?.mode);
-    }
 
     // Stats panel.
     if (this.settings.showFps) {
@@ -1032,6 +1069,15 @@ class App {
     this.net?.spectate(next.id);
   }
 
+  // Manual spectator cycle (Q while dead in BR). Automatic rotation continues
+  // every 3 s; this just advances immediately.
+  cycleSpectate() {
+    const lp = this.getLocalPlayer();
+    if (!lp || lp.alive) return;
+    this.spectateT = 0;
+    this.updateSpectate(0.001, lp);
+  }
+
   spectatorName() {
     if (!this.spectateId) return null;
     return this.names.get(this.spectateId)
@@ -1047,12 +1093,36 @@ class App {
     addEventListener('keydown', (e) => {
       if (e.code === 'Tab') {
         e.preventDefault();
-        if (this.active) this.hud.toggleScoreboard(true);
+        if (this.active && !this.hud.chatOpen) this.hud.toggleScoreboard(true);
       }
-      if (e.code === 'Enter' && this.active && !this.hud.chatOpen && !this.endShown) {
+      if (e.code === 'Enter' && this.active && !this.hud.chatOpen
+        && !this.hud.settingsOpen && !this.endShown) {
+        e.preventDefault();
         this.hud.openChat();
       }
-      if (e.code === 'Escape' && this.hud.chatOpen) this.hud.closeChat();
+      if (e.code === 'Escape') {
+        if (this.hud.chatOpen) {
+          this.hud.closeChat();
+        } else if (this.hud.settingsOpen) {
+          // Ignore the same physical Esc that just opened the panel after a
+          // pointer-lock release, otherwise the menu flickers shut.
+          if (performance.now() - this.hud._openedAt > 250) this.hud.toggleSettings(false);
+        } else if (this.active && !this.endShown) {
+          this.hud.toggleSettings(true);
+        }
+      }
+      if (e.code === 'KeyM' && this.active && !this.hud.chatOpen && !this.hud.settingsOpen) {
+        this.settings.muted = !this.settings.muted;
+        this.applySettings(this.settings);
+        this.hud.notify(this.settings.muted ? 'AUDIO MUTED' : 'AUDIO ON');
+      }
+      if (e.code === 'KeyP' && this.active && !this.hud.chatOpen && !this.hud.settingsOpen
+        && this.net && !this.net.connected) {
+        this.forceReconnect();
+      }
+      if (e.code === 'KeyQ' && this.active && !this.hud.chatOpen && !this.hud.settingsOpen) {
+        this.cycleSpectate();
+      }
     });
     addEventListener('keyup', (e) => {
       if (e.code === 'Tab') this.hud.toggleScoreboard(false);
@@ -1060,15 +1130,17 @@ class App {
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === this.canvas;
       if (locked) { this.hadLock = true; return; }
-      if (this.hadLock && this.active && !this.hud.chatOpen && !this.endShown && !this.hud.settingsOpen) {
+      this.input.clearHeld();
+      if (this.hadLock && this.active && !this.hud.chatOpen && !this.endShown
+        && !this.hud.settingsOpen && performance.now() - this.hud._openedAt > 250) {
         this.hud.toggleSettings(true);
       }
+      this.syncInputMode();
     });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
-        this.input.keys.clear();
-        this.input.mouse.left = false;
-        this.input.mouse.right = false;
+        this.input.clearHeld();
+        this.syncInputMode();
       }
     });
   }
