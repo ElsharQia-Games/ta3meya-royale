@@ -446,16 +446,23 @@ export class HUD {
     this.ammoRoot.classList.toggle('hidden', driving || !wkey);
     if (vehicle) {
       const reverse = vehicle.forwardSpeed < -.1;
-      this.vehicleRole.textContent = `${vehicle.type === 'truck' ? 'TRANSPORT' : 'UTILITY'} / ${driving ? 'DRIVER' : `SEAT ${player.seat + 1}`}`;
-      this.vehicleSpeed.textContent = `${reverse ? 'R ' : ''}${Math.round(vehicle.speed * 3.6)}`;
+      const roleStr = `${vehicle.type === 'truck' ? 'TRANSPORT' : 'UTILITY'} / ${driving ? 'DRIVER' : `SEAT ${player.seat + 1}`}`;
+      if (this.vehicleRole.textContent !== roleStr) this.vehicleRole.textContent = roleStr;
+      const spdStr = `${reverse ? 'R ' : ''}${Math.round(vehicle.speed * 3.6)}`;
+      if (this.vehicleSpeed.textContent !== spdStr) this.vehicleSpeed.textContent = spdStr;
       const condition = Math.round(clamp(vehicle.health / CFG.VEHICLE.health, 0, 1) * 100);
-      this.vehicleCondition.textContent = vehicle.health <= 0 ? 'VEHICLE DISABLED' : vehicle.submerged
+      const condStr = vehicle.health <= 0 ? 'VEHICLE DISABLED' : vehicle.submerged
         ? 'WATER / ENGINE CUT' : vehicle.braking ? 'BRAKING' : `HULL INTEGRITY / ${condition}%`;
-      this.vehicleHealth.style.width = `${condition}%`;
+      if (this.vehicleCondition.textContent !== condStr) this.vehicleCondition.textContent = condStr;
+      const wStr = `${condition}%`;
+      if (this.vehicleHealth.style.width !== wStr) this.vehicleHealth.style.width = wStr;
       this.vehiclePanel.classList.toggle('critical', condition < 25 || vehicle.submerged);
-      this.vehicleSeats.textContent = `OCCUPIED / ${vehicle.occupants.filter(id => id !== null).length} OF ${vehicle.occupants.length}`;
-      this.vehicleDriveHelp.textContent = driving ? 'W / S THROTTLE · A / D STEER' : 'LMB FIRE · RMB AIM';
-      this.vehicleExitHelp.textContent = driving ? 'SPACE BRAKE · E EXIT' : 'E EXIT VEHICLE';
+      const seatsStr = `OCCUPIED / ${vehicle.occupants.filter(id => id !== null).length} OF ${vehicle.occupants.length}`;
+      if (this.vehicleSeats.textContent !== seatsStr) this.vehicleSeats.textContent = seatsStr;
+      const driveHelpStr = driving ? 'W / S THROTTLE · A / D STEER' : 'LMB FIRE · RMB AIM';
+      if (this.vehicleDriveHelp.textContent !== driveHelpStr) this.vehicleDriveHelp.textContent = driveHelpStr;
+      const exitHelpStr = driving ? 'SPACE BRAKE · E EXIT' : 'E EXIT VEHICLE';
+      if (this.vehicleExitHelp.textContent !== exitHelpStr) this.vehicleExitHelp.textContent = exitHelpStr;
     }
     const healing = player.alive && player.healT > 0;
     this.healPanel.classList.toggle('hidden', !healing);
@@ -489,11 +496,15 @@ export class HUD {
 
     // crosshair spread
     const spread = player.spread ?? 0.02;
-    const px = clamp(spread * 900, 3, 70);
-    this.crossLines[0].style.transform = `translate(-50%, ${-px}px)`;
-    this.crossLines[1].style.transform = `translate(-50%, ${px}px)`;
-    this.crossLines[2].style.transform = `translate(${-px}px, -50%)`;
-    this.crossLines[3].style.transform = `translate(${px}px, -50%)`;
+    const px = Math.round(clamp(spread * 900, 3, 70));
+    if (px !== this._lastCrossPx) {
+      this._lastCrossPx = px;
+      this.crossLines[0].style.transform = `translate(-50%, ${-px}px)`;
+      this.crossLines[1].style.transform = `translate(-50%, ${px}px)`;
+      this.crossLines[2].style.transform = `translate(${-px}px, -50%)`;
+      this.crossLines[3].style.transform = `translate(${px}px, -50%)`;
+      this.cross.dataset.gap = String(px);
+    }
     this.cross.classList.toggle('ads', !!player.ads);
     this.cross.style.opacity = player.ads || driving || healing || !player.alive ? 0 : 1;
     this.cross.classList.toggle('hidden', !!player.ads || driving || healing || !player.alive);
@@ -596,6 +607,8 @@ export class HUD {
   }
 
   _drawCompass(yaw) {
+    if (this._lastCompassYaw !== undefined && Math.abs(yaw - this._lastCompassYaw) < 0.002) return;
+    this._lastCompassYaw = yaw;
     const c = this.compass, ctx = c.getContext('2d');
     const w = c.width, h = c.height;
     ctx.clearRect(0, 0, w, h);
@@ -885,33 +898,59 @@ export class HUD {
   toggleScoreboard(v) {
     this.scoreboardOpen = !!v;
     this.scoreboard.classList.toggle('hidden', !v);
-    if (!v) this.scoreTable.innerHTML = '';
   }
 
   setScoreboard(roster, score, mode) {
     if (!this.scoreboardOpen || !roster) return;
     const s = Array.isArray(score) ? score : [0, 0];
     const alive = roster.filter(p => p.alive).length;
-    this.scoreSub.textContent = mode === 'tdm'
+    const subText = mode === 'tdm'
       ? `${TEAMS[0]?.name ?? 'Team 1'} ${s[0] ?? 0} : ${s[1] ?? 0} ${TEAMS[1]?.name ?? 'Team 2'} · ${alive}/${roster.length} alive`
       : `${alive}/${roster.length} alive · Battle Royale`;
-    this.scoreTable.innerHTML = '';
-    const header = el('div', 'score-row head', this.scoreTable);
-    for (const h of ['PLAYER', 'TEAM', 'K', 'D', 'SCORE', 'PING']) el('span', '', header, h);
+    if (this.scoreSub.textContent !== subText) this.scoreSub.textContent = subText;
+
+    if (!this._scoreHeader) {
+      this._scoreHeader = el('div', 'score-row head', this.scoreTable);
+      for (const h of ['PLAYER', 'TEAM', 'K', 'D', 'SCORE', 'PING']) el('span', '', this._scoreHeader, h);
+      this._scoreRows = [];
+    }
+
     const sorted = [...roster].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
-    for (const p of sorted) {
-      const row = el('div', 'score-row', this.scoreTable);
-      if (p.id === this.playerId) row.classList.add('me');
-      row.dataset.team = String(p.team ?? 0);
-      el('span', 'score-name', row, p.name + (p.bot ? ' ·BOT' : ''));
-      const t = el('span', '', row, TEAMS[p.team]?.name || '—');
-      t.style.color = TEAMS[p.team]?.css || '#fff';
-      el('span', '', row, String(p.kills ?? 0));
-      el('span', '', row, String(p.deaths ?? 0));
-      // The wire roster has no per-player score yet; elimination points are a
-      // deterministic derivation of the real kill count (documented in QA).
-      el('span', '', row, String(p.score ?? (p.kills ?? 0) * 100));
-      el('span', '', row, String(p.ping ?? '—'));
+    for (let i = 0; i < sorted.length; i++) {
+      const p = sorted[i];
+      let entry = this._scoreRows[i];
+      if (!entry) {
+        const row = el('div', 'score-row', this.scoreTable);
+        const name = el('span', 'score-name', row);
+        const team = el('span', '', row);
+        const kills = el('span', '', row);
+        const deaths = el('span', '', row);
+        const scoreSpan = el('span', '', row);
+        const ping = el('span', '', row);
+        entry = { row, name, team, kills, deaths, scoreSpan, ping };
+        this._scoreRows.push(entry);
+      }
+      entry.row.style.display = '';
+      entry.row.classList.toggle('me', p.id === this.playerId);
+      entry.row.dataset.team = String(p.team ?? 0);
+      const nameText = p.name + (p.bot ? ' ·BOT' : '');
+      if (entry.name.textContent !== nameText) entry.name.textContent = nameText;
+      const teamName = TEAMS[p.team]?.name || '—';
+      if (entry.team.textContent !== teamName) {
+        entry.team.textContent = teamName;
+        entry.team.style.color = TEAMS[p.team]?.css || '#fff';
+      }
+      const kStr = String(p.kills ?? 0);
+      if (entry.kills.textContent !== kStr) entry.kills.textContent = kStr;
+      const dStr = String(p.deaths ?? 0);
+      if (entry.deaths.textContent !== dStr) entry.deaths.textContent = dStr;
+      const scStr = String(p.score ?? (p.kills ?? 0) * 100);
+      if (entry.scoreSpan.textContent !== scStr) entry.scoreSpan.textContent = scStr;
+      const pStr = String(p.ping ?? '—');
+      if (entry.ping.textContent !== pStr) entry.ping.textContent = pStr;
+    }
+    for (let i = sorted.length; i < this._scoreRows.length; i++) {
+      this._scoreRows[i].row.style.display = 'none';
     }
   }
 

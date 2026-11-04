@@ -443,9 +443,27 @@ export class AudioEngine {
     this.playSample(`ui-${action}`, { gain: .18 });
   }
 
+  stopVehicleLoop() {
+    if (!this._engine) return;
+    try {
+      this._engine.fundamental.stop();
+      this._engine.exhaust.stop();
+      this._engine.fundamental.disconnect();
+      this._engine.exhaust.disconnect();
+      this._engine.filter.disconnect();
+      this._engine.gain.disconnect();
+      this._engine.pan.disconnect();
+    } catch {}
+    this._engine = null;
+  }
+
   vehicleLoop(vehicle) {
     if (!this.enabled) return;
-    if (!this._engine && vehicle) {
+    if (!vehicle) {
+      if (this._engine) this.stopVehicleLoop();
+      return;
+    }
+    if (!this._engine) {
       const gain = this.ctx.createGain(); gain.gain.value = 0;
       const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 500;
       const pan = this._panner(0);
@@ -457,11 +475,10 @@ export class AudioEngine {
       fundamental.start(); exhaust.start();
       this._engine = { gain, filter, pan, fundamental, exhaust };
     }
-    if (!this._engine) return;
     const loop = this._engine, now = this.ctx.currentTime;
-    const spatial = vehicle ? this.spatial(vehicle.x, vehicle.y, vehicle.z) : { gain: 0, pan: 0, dist: Infinity };
-    const active = vehicle && vehicle.health > 0 && !vehicle.submerged && spatial.dist < 90;
-    const speed = vehicle?.speed || 0;
+    const spatial = this.spatial(vehicle.x, vehicle.y, vehicle.z);
+    const active = vehicle.health > 0 && !vehicle.submerged && spatial.dist < 90;
+    const speed = vehicle.speed || 0;
     loop.gain.gain.setTargetAtTime(active ? .12 * spatial.gain : 0, now, .15);
     loop.fundamental.frequency.setTargetAtTime(55 + speed * 6, now, .1);
     loop.exhaust.frequency.setTargetAtTime(27.5 + speed * 3, now, .1);

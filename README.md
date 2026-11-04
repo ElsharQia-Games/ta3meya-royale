@@ -1,9 +1,13 @@
-# FRONTLINE / BLACKSHORE
+# TA3MEYA ROYALE
 
 An original browser tactical shooter with an authoritative Node/WebSocket
-server, a1km² coastal battlefield, Battle Royale, Team Deathmatch and local
-training. Blackshore's interface, equipment/animation contracts and asset pipeline
-are the foundation for subsequent development; see [DESIGN.md](DESIGN.md).
+server, a 1km² coastal battlefield, Battle Royale, Team Deathmatch and local
+training.
+
+## Play
+
+- **Hosted (Training / Offline Bot Simulation)**: https://elsharqia-games.github.io/ta3meya-royale/
+- **Local / LAN server**: Run locally with Node.js and play multiplayer with friends over WebSocket.
 
 ## Run
 

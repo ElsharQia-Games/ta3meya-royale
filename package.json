@@ -1,7 +1,7 @@
 {
-  "name": "frontline",
+  "name": "ta3meya-royale",
   "version": "0.2.0",
-  "description": "Frontline - browser tactical shooter with an authoritative Node server",
+  "description": "Ta3meya Royale - browser tactical shooter with an authoritative Node server",
   "type": "module",
   "private": true,
   "engines": {

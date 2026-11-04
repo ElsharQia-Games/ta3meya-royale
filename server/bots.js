@@ -409,6 +409,15 @@ function idleInput() {
   };
 }
 
+function resetInput(input) {
+  input.f = false; input.b = false; input.l = false; input.r = false;
+  input.jump = false; input.sprint = false; input.ads = false;
+  input.shoot = false; input.reload = false; input.grenade = false; input.smoke = false; input.heal = false;
+  input.interact = false; input.cycle = false; input.slot = -1; input.stance = null; input.enterVehicle = undefined;
+  input.yaw = 0; input.pitch = 0; input.seq = 0; input.viewTime = 0;
+  return input;
+}
+
 export class BotBrain {
   constructor(game, player) {
     this.game = game;
@@ -433,7 +442,7 @@ export class BotBrain {
     this.strafeT = 0;
     this.lootT = 0;
     this.stuckT = 0;
-    this.lastPos = player.pos.slice();
+    this.lastPos = [player.pos[0], player.pos[1], player.pos[2]];
     this.lastProgressT = 0;
     this.patrol = null;
     this.stanceT = 0;
@@ -448,6 +457,10 @@ export class BotBrain {
     this.unstickT = 0;
     this.detourT = 0;
     this.detourSign = 1;
+    this._input = idleInput();
+    this._eye = [0, 0, 0];
+    this._chest = [0, 0, 0];
+    this.scanT = 0;
   }
 
   // Scripted objective (used by tests and future objective modes). The brain
@@ -484,12 +497,22 @@ export class BotBrain {
     this.goal = null;
   }
 
-  eye() { return [this.p.pos[0], this.p.pos[1] + this.p.eyeHeight(), this.p.pos[2]]; }
-  chest(q) { return [q.pos[0], q.pos[1] + q.height() * 0.62, q.pos[2]]; }
+  eye(out = null) {
+    const o = out || [0, 0, 0];
+    o[0] = this.p.pos[0]; o[1] = this.p.pos[1] + this.p.eyeHeight(); o[2] = this.p.pos[2];
+    return o;
+  }
+  chest(q, out = null) {
+    const o = out || [0, 0, 0];
+    o[0] = q.pos[0]; o[1] = q.pos[1] + q.height() * 0.62; o[2] = q.pos[2];
+    return o;
+  }
 
   findEnemy(requireLos) {
     const p = this.p;
     let best = null, bestScore = Infinity;
+    const a = requireLos ? this.eye(this._eye || (this._eye = [0, 0, 0])) : null;
+    const b = this._chest || (this._chest = [0, 0, 0]);
     for (const q of this.game.players.values()) {
       if (!q.alive || q.id === p.id) continue;
       if (this.game.mode === 'tdm' && q.team === p.team) continue;
@@ -497,7 +520,7 @@ export class BotBrain {
       const d = Math.hypot(dx, dz);
       if (d > CFG.BOT.viewRange) continue;
       if (requireLos) {
-        const a = this.eye(), b = this.chest(q);
+        this.chest(q, b);
         if (!this.game.world.lineOfSight(a, b, 0.1)) continue;
         if (smokeObscures(this.game.smokes, a, b)) continue;
       }
@@ -595,7 +618,7 @@ export class BotBrain {
 
   update(dt) {
     const p = this.p;
-    const input = idleInput();
+    const input = resetInput(this._input);
     this._dt = dt;
     input.yaw = p.yaw;
     input.pitch = p.pitch;
@@ -609,22 +632,48 @@ export class BotBrain {
     this.burstPause -= dt;
     this.stanceT -= dt;
     this.detourT -= dt;
+    this.scanT -= dt;
 
     // Stuck detection: little progress while trying to move. Compare against
     // last tick's movement intent (input.f is still false at this point in the
     // old code, so stuckT never accumulated and the unstick fallback was dead).
     const moved = Math.hypot(p.pos[0] - this.lastPos[0], p.pos[2] - this.lastPos[2]);
-    this.lastPos = p.pos.slice();
+    this.lastPos[0] = p.pos[0]; this.lastPos[1] = p.pos[1]; this.lastPos[2] = p.pos[2];
     if (moved < 0.03 && this.lastInputMoving) this.stuckT += dt;
     else this.stuckT = Math.max(0, this.stuckT - dt * 2);
 
-    const visible = this.findEnemy(true);
-    const anyEnemy = visible || this.findEnemy(false);
+    let visible = null;
+    let anyEnemy = null;
+    if (this.game.players.size > 1) {
+      if (this.targetId !== null) {
+        const cur = this.game.players.get(this.targetId);
+        if (cur && cur.alive && (this.game.mode !== 'tdm' || cur.team !== p.team)) {
+          const dx = cur.pos[0] - p.pos[0], dz = cur.pos[2] - p.pos[2];
+          const d = Math.hypot(dx, dz);
+          if (d <= CFG.BOT.viewRange) {
+            const a = this.eye(this._eye), b = this.chest(cur, this._chest);
+            if (this.game.world.lineOfSight(a, b, 0.1) && !smokeObscures(this.game.smokes, a, b)) {
+              visible = cur;
+            }
+          }
+        }
+      }
+      if (!visible && (this.scanT <= 0 || this.targetId === null)) {
+        this.scanT = 0.1;
+        visible = this.findEnemy(true);
+      } else if (visible && this.scanT <= 0) {
+        this.scanT = 0.2;
+        const closer = this.findEnemy(true);
+        if (closer) visible = closer;
+      }
+      anyEnemy = visible || this.findEnemy(false);
+    }
     if (visible) {
       if (this.targetId !== visible.id) this.reactionT = CFG.BOT.reaction * (0.75 + this.rng.next() * 0.5);
       this.targetId = visible.id;
       this.targetVisible = true;
-      this.lastKnown = visible.pos.slice();
+      if (!this.lastKnown) this.lastKnown = [0, 0, 0];
+      this.lastKnown[0] = visible.pos[0]; this.lastKnown[1] = visible.pos[1]; this.lastKnown[2] = visible.pos[2];
       this.lastTargetSeenAt = this.game.time;
     } else {
       this.targetVisible = false;

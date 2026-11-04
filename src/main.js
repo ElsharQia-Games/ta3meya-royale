@@ -517,6 +517,7 @@ class App {
   }
 
   frame(now) {
+    this._frameLp = null;
     const raw = (now - this.last) / 1000;
     this.last = now;
     const dt = Math.min(0.1, Math.max(0, raw));
@@ -921,14 +922,15 @@ class App {
   // -------------------------------------------------------------------------
   // Local player view model
   // -------------------------------------------------------------------------
-  getLocalPlayer() {
+  getLocalPlayer(force = false) {
     if (!this.world) return null;
+    if (!force && this._frameLp) return this._frameLp;
     if (this.mode === 'offline') {
       const p = this.offlinePlayer;
       if (!p) return null;
       const w = p.curWeapon();
       const inv = w ? p.inv[w] : null;
-      return {
+      const res = {
         x: p.pos[0], y: p.pos[1], z: p.pos[2],
         vx: p.vel[0], vz: p.vel[2],
         yaw: p.yaw, pitch: p.pitch,
@@ -944,6 +946,8 @@ class App {
         spread: this.spreadFor(p, w),
         cameraPos: [p.pos[0], p.pos[1], p.pos[2]],
       };
+      this._frameLp = res;
+      return res;
     }
     if (!this.prediction) return null;
     const snap = this.localSnap || {};
@@ -951,7 +955,7 @@ class App {
     const pos = this.prediction.renderPos();
     const w = snap.w ? weaponKey(snap.w) : this.localWeapons[snap.slot ?? 0];
     const spread = this.spreadFor(pred, w, snap);
-    return {
+    const res = {
       x: pos[0], y: pos[1], z: pos[2],
       vx: pred.vel[0], vz: pred.vel[2],
       yaw: pred.yaw, pitch: pred.pitch,
@@ -968,6 +972,8 @@ class App {
       spread,
       cameraPos: pos,
     };
+    this._frameLp = res;
+    return res;
   }
 
   respawnIn(snap, pred) {

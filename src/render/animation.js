@@ -26,26 +26,66 @@ export function boltMotion(age) {
   };
 }
 
-export function solveTwoBone(shoulder, target, pole, upper, lower) {
-  const delta = target.map((v, i) => v - shoulder[i]);
-  const raw = Math.hypot(...delta);
-  const axis = raw > 1e-8 ? delta.map(v => v / raw) : [0, -1, 0];
-  const distance = clamp(raw, Math.abs(upper - lower) + 1e-6, upper + lower - 1e-6);
-  let bend = pole.map((v, i) => v - shoulder[i]);
-  const projected = bend.reduce((s, v, i) => s + v * axis[i], 0);
-  bend = bend.map((v, i) => v - axis[i] * projected);
-  if (Math.hypot(...bend) < 1e-8) {
-    const fallback = Math.abs(axis[0]) < .8 ? [1, 0, 0] : [0, 0, 1];
-    const dot = fallback.reduce((s, v, i) => s + v * axis[i], 0);
-    bend = fallback.map((v, i) => v - axis[i] * dot);
+export function solveTwoBone(shoulder, target, pole, upper, lower, out = null) {
+  const sx = shoulder[0], sy = shoulder[1], sz = shoulder[2];
+  const tx = target[0], ty = target[1], tz = target[2];
+  const dx = tx - sx, dy = ty - sy, dz = tz - sz;
+  const raw = Math.hypot(dx, dy, dz);
+
+  let ax = 0, ay = -1, az = 0;
+  if (raw > 1e-8) {
+    const invRaw = 1 / raw;
+    ax = dx * invRaw;
+    ay = dy * invRaw;
+    az = dz * invRaw;
   }
-  const length = Math.hypot(...bend);
-  bend = bend.map(v => v / length);
+
+  const distance = clamp(raw, Math.abs(upper - lower) + 1e-6, upper + lower - 1e-6);
+
+  let bx = pole[0] - sx, by = pole[1] - sy, bz = pole[2] - sz;
+  const projected = bx * ax + by * ay + bz * az;
+  bx -= ax * projected;
+  by -= ay * projected;
+  bz -= az * projected;
+
+  let bendLen = Math.hypot(bx, by, bz);
+  if (bendLen < 1e-8) {
+    let fx = 0, fy = 0, fz = 0;
+    if (Math.abs(ax) < 0.8) fx = 1; else fz = 1;
+    const dot = fx * ax + fy * ay + fz * az;
+    bx = fx - ax * dot;
+    by = fy - ay * dot;
+    bz = fz - az * dot;
+    bendLen = Math.hypot(bx, by, bz);
+  }
+
+  const invBend = 1 / bendLen;
+  bx *= invBend;
+  by *= invBend;
+  bz *= invBend;
+
   const along = (upper * upper - lower * lower + distance * distance) / (2 * distance);
   const height = Math.sqrt(Math.max(0, upper * upper - along * along));
+
+  const ex = sx + ax * along + bx * height;
+  const ey = sy + ay * along + by * height;
+  const ez = sz + az * along + bz * height;
+
+  const hx = sx + ax * distance;
+  const hy = sy + ay * distance;
+  const hz = sz + az * distance;
+
+  const reachable = raw <= upper + lower && raw >= Math.abs(upper - lower);
+
+  if (out) {
+    out.elbow[0] = ex; out.elbow[1] = ey; out.elbow[2] = ez;
+    out.hand[0] = hx; out.hand[1] = hy; out.hand[2] = hz;
+    out.reachable = reachable;
+    return out;
+  }
   return {
-    elbow: shoulder.map((v, i) => v + axis[i] * along + bend[i] * height),
-    hand: shoulder.map((v, i) => v + axis[i] * distance),
-    reachable: raw <= upper + lower && raw >= Math.abs(upper - lower),
+    elbow: [ex, ey, ez],
+    hand: [hx, hy, hz],
+    reachable,
   };
 }

@@ -9,6 +9,12 @@ import { vehiclePlayerContact } from './vehicle.js';
 const P = CFG.PLAYER;
 const MAX_SUBSTEP = 0.16;
 
+const _supportBoxes = [];
+const _resHBoxes = [];
+const _resVBoxes = [];
+const _blockedBoxes = [];
+const _contactPos = [0, 0, 0];
+
 export function stanceHeight(stance) {
   return stance === 2 ? P.PRONE_HEIGHT : stance === 1 ? P.CROUCH_HEIGHT : P.HEIGHT;
 }
@@ -19,7 +25,7 @@ export function stanceEye(stance) {
 // Highest walkable surface under the capsule at (x,z), within [feetY-0.6, feetY+step].
 export function supportHeight(world, x, z, feetY, radius, step = P.STEP_HEIGHT) {
   let support = world.terrainHeight(x, z);
-  const boxes = world.queryBoxes(x - radius - 0.5, z - radius - 0.5, x + radius + 0.5, z + radius + 0.5);
+  const boxes = world.queryBoxes(x - radius - 0.5, z - radius - 0.5, x + radius + 0.5, z + radius + 0.5, _supportBoxes);
   for (const b of boxes) {
     if (b.destroyed || b.tag === 'glass') continue;
     const top = b.max[1];
@@ -37,7 +43,7 @@ export function supportHeight(world, x, z, feetY, radius, step = P.STEP_HEIGHT) 
 function resolveHorizontal(world, p, height, grounded) {
   let stepped = false;
   const r = P.RADIUS;
-  const boxes = world.queryBoxes(p.pos[0] - r - 1, p.pos[2] - r - 1, p.pos[0] + r + 1, p.pos[2] + r + 1);
+  const boxes = world.queryBoxes(p.pos[0] - r - 1, p.pos[2] - r - 1, p.pos[0] + r + 1, p.pos[2] + r + 1, _resHBoxes);
   for (let iter = 0; iter < 2; iter++) {
     for (const b of boxes) {
       if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;
@@ -86,7 +92,7 @@ function resolveHorizontal(world, p, height, grounded) {
 
 export function capsuleBlocked(world, x, y, z, height) {
   const r = P.RADIUS;
-  const boxes = world.queryBoxes(x - r - 0.2, z - r - 0.2, x + r + 0.2, z + r + 0.2);
+  const boxes = world.queryBoxes(x - r - 0.2, z - r - 0.2, x + r + 0.2, z + r + 0.2, _blockedBoxes);
   for (const b of boxes) {
     if (b.destroyed || b.tag === 'glass') continue;
     if (y + height <= b.min[1] + 0.02 || y >= b.max[1]) continue;
@@ -94,14 +100,15 @@ export function capsuleBlocked(world, x, y, z, height) {
     const dx = x - cx, dz = z - cz;
     if (dx * dx + dz * dz < r * r) return true;
   }
-  for (const v of world.vehicles || []) if (vehiclePlayerContact(v, [x, y, z], r, height)) return true;
+  _contactPos[0] = x; _contactPos[1] = y; _contactPos[2] = z;
+  for (const v of world.vehicles || []) if (vehiclePlayerContact(v, _contactPos, r, height)) return true;
   return false;
 }
 
 // Resolve vertical motion, ceilings, and ground contact.
 function resolveVertical(world, p, height, dt) {
   const r = P.RADIUS;
-  const boxes = world.queryBoxes(p.pos[0] - r - 0.2, p.pos[2] - r - 0.2, p.pos[0] + r + 0.2, p.pos[2] + r + 0.2);
+  const boxes = world.queryBoxes(p.pos[0] - r - 0.2, p.pos[2] - r - 0.2, p.pos[0] + r + 0.2, p.pos[2] + r + 0.2, _resVBoxes);
   // Ceiling
   for (const b of boxes) {
     if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;

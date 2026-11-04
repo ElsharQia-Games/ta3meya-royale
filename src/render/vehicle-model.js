@@ -2,10 +2,50 @@
 // pivots and shared dimensions keep the driving view tied to simulation data.
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { vehicleShape, vehicleRideHeight } from '../../shared/vehicle.js';
 import { CFG } from '../../shared/config.js';
 import { texture, stencil } from './textures.js';
 import { batchStaticParts } from './geometry.js';
+
+let _wheelTreadsGeo = null;
+const _wheelBoltsGeo = { '1': null, '-1': null };
+
+function getWheelTreadsGeo() {
+  if (_wheelTreadsGeo) return _wheelTreadsGeo;
+  const geos = [];
+  const base = new THREE.BoxGeometry(.275, .055, .095);
+  for (let i = 0; i < 16; i++) {
+    const a = i * Math.PI * 2 / 16;
+    const g = base.clone();
+    const m = new THREE.Matrix4().makeRotationX(a);
+    m.setPosition(0, Math.cos(a) * .414, Math.sin(a) * .414);
+    g.applyMatrix4(m);
+    geos.push(g);
+  }
+  base.dispose();
+  _wheelTreadsGeo = mergeGeometries(geos, false);
+  geos.forEach(g => g.dispose());
+  return _wheelTreadsGeo;
+}
+
+function getWheelBoltsGeo(side) {
+  const key = String(side);
+  if (_wheelBoltsGeo[key]) return _wheelBoltsGeo[key];
+  const geos = [];
+  const base = new THREE.SphereGeometry(.025, 6, 4);
+  for (let i = 0; i < 6; i++) {
+    const a = i * Math.PI / 3;
+    const g = base.clone();
+    const m = new THREE.Matrix4().setPosition(side * .151, Math.cos(a) * .12, Math.sin(a) * .12);
+    g.applyMatrix4(m);
+    geos.push(g);
+  }
+  base.dispose();
+  _wheelBoltsGeo[key] = mergeGeometries(geos, false);
+  geos.forEach(g => g.dispose());
+  return _wheelBoltsGeo[key];
+}
 
 export function createVehicleModel(type) {
   const truck = type === 'truck', shape = vehicleShape(type), offset = vehicleRideHeight();
@@ -128,16 +168,10 @@ export function createVehicleModel(type) {
     tyre.rotation.z = Math.PI / 2; spin.add(tyre);
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(.235, .235, .287, 16), mats.steel);
     hub.rotation.z = Math.PI / 2; spin.add(hub);
-    for (let i = 0; i < 16; i++) {
-      const a = i * Math.PI * 2 / 16;
-      const tread = new THREE.Mesh(new THREE.BoxGeometry(.275, .055, .095), mats.dark);
-      tread.position.set(0, Math.cos(a) * .414, Math.sin(a) * .414); tread.rotation.x = a; spin.add(tread);
-    }
-    for (let i = 0; i < 6; i++) {
-      const a = i * Math.PI / 3;
-      const bolt = new THREE.Mesh(new THREE.SphereGeometry(.025, 6, 4), mats.dark);
-      bolt.position.set(side * .151, Math.cos(a) * .12, Math.sin(a) * .12); spin.add(bolt);
-    }
+    const treads = new THREE.Mesh(getWheelTreadsGeo(), mats.dark);
+    spin.add(treads);
+    const bolts = new THREE.Mesh(getWheelBoltsGeo(side), mats.dark);
+    spin.add(bolts);
     const arch = add(new THREE.TorusGeometry(.47, .064, 6, 18, Math.PI), 'dark', side * shape.track / 2, .47, z);
     arch.rotation.y = Math.PI / 2;
     // Physics wheel order is front-right/front-left/rear-right/rear-left.
@@ -148,6 +182,9 @@ export function createVehicleModel(type) {
   return { group, chassis, wheels, steering, mats,
     dispose() {
       const geometries = new Set(); group.traverse(o => { if (o.geometry) geometries.add(o.geometry); });
-      geometries.forEach(g => g.dispose()); Object.values(mats).forEach(m => m.dispose()); group.removeFromParent();
+      geometries.forEach(g => {
+        if (g !== _wheelTreadsGeo && g !== _wheelBoltsGeo['1'] && g !== _wheelBoltsGeo['-1']) g.dispose();
+      });
+      Object.values(mats).forEach(m => m.dispose()); group.removeFromParent();
     } };
 }

@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 
+const SCALE_ONE = new THREE.Vector3(1, 1, 1);
+const _rotEuler = new THREE.Euler();
+const _rotQuat = new THREE.Quaternion();
+
 // A small cosmetic brass pool; authoritative hits never query these objects.
 export class Casings {
   constructor(scene, renderer, world) {
@@ -18,6 +22,7 @@ export class Casings {
 
   update(dt) {
     this.time += dt;
+    let dirty = false;
     for (let i = this.pending.length - 1; i >= 0; i--) {
       const pending = this.pending[i];
       if (pending.at > this.time) continue;
@@ -30,13 +35,23 @@ export class Casings {
         rotation, age: 0, landed: false };
       this.next = (this.next + 1) % 48;
       this.mesh.count = Math.max(this.mesh.count, this.items.length);
+      dirty = true;
     }
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
-      if (!item || (item.age += dt) > 3) { this.items[i] = null; this.mesh.setMatrixAt(i, this.matrix.makeScale(0, 0, 0)); continue; }
+      if (!item) continue;
+      if ((item.age += dt) > 3) {
+        this.items[i] = null;
+        this.mesh.setMatrixAt(i, this.matrix.makeScale(0, 0, 0));
+        dirty = true;
+        continue;
+      }
       if (!item.landed) {
+        dirty = true;
         item.velocity.y -= 9.81 * dt; item.position.addScaledVector(item.velocity, dt);
-        item.rotation.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(dt * 13, dt * 6, dt * 9)));
+        _rotEuler.set(dt * 13, dt * 6, dt * 9);
+        _rotQuat.setFromEuler(_rotEuler);
+        item.rotation.multiply(_rotQuat);
         const ground = this.world.terrainHeight(item.position.x, item.position.z) + .008;
         if (item.position.y < ground) {
           item.position.y = ground;
@@ -44,9 +59,9 @@ export class Casings {
           item.velocity.y = Math.abs(item.velocity.y) * .3; item.velocity.x *= .45; item.velocity.z *= .45;
         }
       }
-      this.matrix.compose(item.position, item.rotation, new THREE.Vector3(1, 1, 1));
+      this.matrix.compose(item.position, item.rotation, SCALE_ONE);
       this.mesh.setMatrixAt(i, this.matrix);
     }
-    this.mesh.instanceMatrix.needsUpdate = true;
+    if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
   }
 }

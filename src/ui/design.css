@@ -201,7 +201,7 @@ kbd { display: inline-block; padding: 4px 6px; border: 1px solid #82958d66; bord
 .death-killer { color: #e2bd91; font: 700 21px var(--display); }
 .death-weapon { color: #abbda7; font: 400 10px var(--mono); margin-top: 13px; }
 .death-status { color: var(--accent); font: 500 10px var(--mono); margin-top: 25px; }
-.death-progress { height: 3px; background: #ceddad24; margin-top: 10px; }.death-progress i { display: block; height: 100%; background: var(--accent); transition: width .1s linear; }
+.death-progress { height: 3px; background: #ceddad24; margin-top: 10px; }.death-progress i { display: block; height: 100%; background: var(--accent); }
 .elimination-confirmation { position: absolute; top: 60%; left: 50%; transform: translateX(-50%); opacity: 0; text-align: center; padding: 10px 25px; background: linear-gradient(90deg,#15271d00,#13261adc,#15271d00); }
 .elimination-confirmation b { display: block; color: var(--accent); font: 700 23px var(--display); letter-spacing: .13em; }.elimination-confirmation span { display: block; margin-top: 5px; font: 400 10px var(--mono); color: #d4dcc6; }
 .scene-curtain { position: fixed; inset: 0; pointer-events: none; opacity: 0; display: grid; place-items: center; background: #0a1515; color: var(--accent); font: 700 31px var(--display); letter-spacing: .18em; z-index: 100; }

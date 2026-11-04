@@ -8,6 +8,10 @@ export class CombatFeedback {
     this.panel.setAttribute('aria-live', 'polite');
     this.panel.innerHTML = '<div class="death-eyebrow">OPERATOR DOWN <span>FL / SIGNAL LOST</span></div><h2>YOU WERE ELIMINATED</h2><div class="death-detail"><span>ELIMINATED BY</span><b class="death-killer"></b></div><div class="death-weapon"></div><div class="death-status"></div><div class="death-progress"><i></i></div>';
     root.append(this.panel);
+    this.deathKiller = this.panel.querySelector('.death-killer');
+    this.deathWeapon = this.panel.querySelector('.death-weapon');
+    this.deathStatus = this.panel.querySelector('.death-status');
+    this.deathProgress = this.panel.querySelector('.death-progress i');
     this.vignette = document.createElement('div'); this.vignette.className = 'death-vignette'; root.prepend(this.vignette);
     this.confirmation = document.createElement('div'); this.confirmation.className = 'elimination-confirmation'; root.append(this.confirmation);
     this.curtain = document.createElement('div'); this.curtain.className = 'scene-curtain'; document.body.append(this.curtain);
@@ -16,9 +20,9 @@ export class CombatFeedback {
 
   eliminated(event) {
     this.dead = true;
-    this.panel.querySelector('.death-killer').textContent = event.kname || 'UNKNOWN';
+    this.deathKiller.textContent = event.kname || 'UNKNOWN';
     const weapon = CFG.WEAPONS[event.w]?.name || (event.w === 'zone' ? 'PERIMETER' : event.w === 'fall' ? 'FALL IMPACT' : String(event.w || 'COMBAT').toUpperCase());
-    this.panel.querySelector('.death-weapon').textContent = `${weapon}  /  ${Math.round(event.dist || 0)} METRES${event.zone === 'head' ? '  /  HEADSHOT' : ''}`;
+    this.deathWeapon.textContent = `${weapon}  /  ${Math.round(event.dist || 0)} METRES${event.zone === 'head' ? '  /  HEADSHOT' : ''}`;
     this.panel.classList.remove('hidden'); this.vignette.classList.add('active');
     this.panel.animate([{ opacity: 0, transform: 'translate(-50%, 16px)' }, { opacity: 1, transform: 'translate(-50%, 0)' }], { duration: 320, easing: 'cubic-bezier(.2,.8,.2,1)' });
   }
@@ -31,10 +35,11 @@ export class CombatFeedback {
     this.vignette.classList.toggle('active', !spectator);
     this.panel.classList.toggle('spectating', !!spectator);
     this.panel.classList.toggle('hidden', state?.matchState === 3);
-    const text = this.panel.querySelector('.death-status');
-    text.textContent = state?.mode === 'tdm' ? `REDEPLOYING IN ${Math.ceil(player.respawnIn || 0)}s` : 'OBSERVING THE BATTLEFIELD  /  Q NEXT OPERATOR';
-    this.panel.querySelector('.death-progress i').style.width = state?.mode === 'tdm'
+    const statusText = state?.mode === 'tdm' ? `REDEPLOYING IN ${Math.ceil(player.respawnIn || 0)}s` : 'OBSERVING THE BATTLEFIELD  /  Q NEXT OPERATOR';
+    if (this.deathStatus.textContent !== statusText) this.deathStatus.textContent = statusText;
+    const progressWidth = state?.mode === 'tdm'
       ? `${Math.max(0, Math.min(1, 1 - (player.respawnIn || 0) / CFG.MODES.tdm.respawn)) * 100}%` : '100%';
+    if (this.deathProgress.style.width !== progressWidth) this.deathProgress.style.width = progressWidth;
   }
 
   confirm(event) {

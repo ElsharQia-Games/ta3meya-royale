@@ -44,6 +44,7 @@ export class Effects {
     this.blastTexture = blastTexture();
     this.dustTexture = dustTexture();
     this.puffs = []; this.shockwaves = [];
+    this._puffPool = [];
     this.casings = new Casings(this.scene, renderer, world);
   }
 
@@ -460,13 +461,30 @@ export class Effects {
   }
 
   puff(position, velocity, color, size, life, opacity = .35) {
-    if (this.puffs.length >= 80) {
-      const old = this.puffs.shift(); old.mesh.removeFromParent(); old.mesh.material.dispose();
+    let p = this._puffPool.pop();
+    if (!p) {
+      if (this.puffs.length >= 80) {
+        p = this.puffs.shift();
+      } else {
+        const material = new THREE.SpriteMaterial({ map: this.dustTexture, color, transparent: true, opacity,
+          depthWrite: false, rotation: Math.random() * Math.PI * 2 });
+        const mesh = new THREE.Sprite(material);
+        this.scene.add(mesh);
+        p = { mesh, velocity: new THREE.Vector3(), size, life, max: life, opacity };
+      }
     }
-    const material = new THREE.SpriteMaterial({ map: this.dustTexture, color, transparent: true, opacity,
-      depthWrite: false, rotation: Math.random() * Math.PI * 2 });
-    const mesh = new THREE.Sprite(material); mesh.position.set(...position); mesh.scale.setScalar(size);
-    this.scene.add(mesh); this.puffs.push({ mesh, velocity: new THREE.Vector3(...velocity), size, life, max: life, opacity });
+    p.mesh.position.set(position[0], position[1], position[2]);
+    p.mesh.scale.setScalar(size);
+    p.mesh.material.color.set(color);
+    p.mesh.material.opacity = opacity;
+    p.mesh.material.rotation = Math.random() * Math.PI * 2;
+    p.mesh.visible = true;
+    p.velocity.set(velocity[0], velocity[1], velocity[2]);
+    p.size = size;
+    p.life = life;
+    p.max = life;
+    p.opacity = opacity;
+    this.puffs.push(p);
   }
 
   syncProjectiles(list) {
@@ -506,7 +524,12 @@ export class Effects {
     this.casings.update(dt);
     for (let i = this.puffs.length - 1; i >= 0; i--) {
       const p = this.puffs[i]; p.life -= dt;
-      if (p.life <= 0) { p.mesh.removeFromParent(); p.mesh.material.dispose(); this.puffs.splice(i, 1); continue; }
+      if (p.life <= 0) {
+        p.mesh.visible = false;
+        this.puffs.splice(i, 1);
+        this._puffPool.push(p);
+        continue;
+      }
       const t = 1 - p.life / p.max;
       p.mesh.position.addScaledVector(p.velocity, dt); p.velocity.multiplyScalar(Math.exp(-1.8 * dt));
       p.mesh.position.x += dt * .19; p.mesh.position.y += dt * .2;

@@ -9,6 +9,22 @@ import { solveTwoBone, boltMotion } from './animation.js';
 import { texture } from './textures.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
+const _vmStart = new THREE.Vector3();
+const _vmElbow = new THREE.Vector3();
+const _vmEnd = new THREE.Vector3();
+const _vmDir = new THREE.Vector3();
+const _vmTargetArray = [0, 0, 0];
+const _vmPose = { elbow: [0, 0, 0], hand: [0, 0, 0], reachable: false };
+const _vmQuat = new THREE.Quaternion();
+const _vmEuler = new THREE.Euler();
+
+function vmPlace(mesh, a, b) {
+  _vmDir.subVectors(b, a);
+  mesh.position.copy(a).add(b).multiplyScalar(0.5);
+  mesh.scale.y = _vmDir.length();
+  _vmDir.normalize();
+  mesh.quaternion.setFromUnitVectors(UP, _vmDir);
+}
 
 export class ViewModel {
   constructor(camera, scene, renderer = null) {
@@ -81,19 +97,19 @@ export class ViewModel {
   poseArm(arm, target) {
     const shoulder = arm.side < 0 ? [-.2, -.28, -.05] : [.23, -.28, -.015];
     const pole = [arm.side * .55, -.53, -.12];
-    const pose = solveTwoBone(shoulder, target.toArray(), pole, .39, .39);
-    const start = new THREE.Vector3(...shoulder), elbow = new THREE.Vector3(...pose.elbow), end = new THREE.Vector3(...pose.hand);
-    const place = (mesh, a, b) => {
-      const dir = new THREE.Vector3().subVectors(b, a);
-      mesh.position.copy(a).add(b).multiplyScalar(.5);
-      mesh.scale.y = dir.length();
-      mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
-    };
-    place(arm.upper, start, elbow); place(arm.lower, elbow, end);
-    arm.elbow.position.copy(elbow); arm.hand.position.copy(end);
-    arm.hand.quaternion.copy(this.root.quaternion).multiply(new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(arm.side < 0 ? -.35 : -.1, arm.side < 0 ? -.2 : .12, arm.side < 0 ? .45 : -.1)));
-    arm.reachable = pose.reachable;
+    _vmTargetArray[0] = target.x; _vmTargetArray[1] = target.y; _vmTargetArray[2] = target.z;
+    solveTwoBone(shoulder, _vmTargetArray, pole, .39, .39, _vmPose);
+    _vmStart.set(shoulder[0], shoulder[1], shoulder[2]);
+    _vmElbow.set(_vmPose.elbow[0], _vmPose.elbow[1], _vmPose.elbow[2]);
+    _vmEnd.set(_vmPose.hand[0], _vmPose.hand[1], _vmPose.hand[2]);
+    vmPlace(arm.upper, _vmStart, _vmElbow);
+    vmPlace(arm.lower, _vmElbow, _vmEnd);
+    arm.elbow.position.copy(_vmElbow);
+    arm.hand.position.copy(_vmEnd);
+    _vmEuler.set(arm.side < 0 ? -.35 : -.1, arm.side < 0 ? -.2 : .12, arm.side < 0 ? .45 : -.1);
+    _vmQuat.setFromEuler(_vmEuler);
+    arm.hand.quaternion.copy(this.root.quaternion).multiply(_vmQuat);
+    arm.reachable = _vmPose.reachable;
   }
 
   fire(strength = 1) {

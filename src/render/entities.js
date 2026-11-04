@@ -16,6 +16,23 @@ import { torsoGeometry, carrierPlate, headGeometry } from './character-shapes.js
 const SKIN = [0xc99a72, 0x9c6b4a, 0x6f4a32, 0xe0b48c, 0x8a5a3c];
 const UNIFORM = [0x737961, 0x80765d, 0x60746c, 0x807763];
 
+const _armA = new THREE.Vector3();
+const _armB = new THREE.Vector3();
+const _armC = new THREE.Vector3();
+const _armDelta = new THREE.Vector3();
+const _armUp = new THREE.Vector3(0, 1, 0);
+const _armTargetArray = [0, 0, 0];
+const _armPoleArray = [0, 0, 0];
+const _armPose = { elbow: [0, 0, 0], hand: [0, 0, 0], reachable: false };
+
+function placeBone(mesh, from, to) {
+  _armDelta.subVectors(to, from);
+  mesh.position.copy(from).add(to).multiplyScalar(0.5);
+  mesh.scale.y = _armDelta.length();
+  _armDelta.normalize();
+  mesh.quaternion.setFromUnitVectors(_armUp, _armDelta);
+}
+
 function part(geo, mat, x, y, z) {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
@@ -383,16 +400,16 @@ export class CharacterView {
     for (let i = 0; i < m.arms.length; i++) {
       const arm = m.arms[i], target = hands[i];
       const shoulder = [arm.side * .245, .405, 0];
-      const pose = solveTwoBone(shoulder, target.toArray(), [arm.side * .5, .02, .03], .29, .3);
-      const a = new THREE.Vector3(...shoulder), b = new THREE.Vector3(...pose.elbow), c = new THREE.Vector3(...pose.hand);
-      const place = (mesh, from, to) => {
-        const delta = new THREE.Vector3().subVectors(to, from);
-        mesh.position.copy(from).add(to).multiplyScalar(.5);
-        mesh.scale.y = delta.length();
-        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.normalize());
-      };
-      place(arm.upper, a, b); place(arm.lower, b, c);
-      arm.elbow.position.copy(b); arm.hand.position.copy(c);
+      _armTargetArray[0] = target.x; _armTargetArray[1] = target.y; _armTargetArray[2] = target.z;
+      _armPoleArray[0] = arm.side * .5; _armPoleArray[1] = .02; _armPoleArray[2] = .03;
+      solveTwoBone(shoulder, _armTargetArray, _armPoleArray, .29, .3, _armPose);
+      _armA.set(shoulder[0], shoulder[1], shoulder[2]);
+      _armB.set(_armPose.elbow[0], _armPose.elbow[1], _armPose.elbow[2]);
+      _armC.set(_armPose.hand[0], _armPose.hand[1], _armPose.hand[2]);
+      placeBone(arm.upper, _armA, _armB);
+      placeBone(arm.lower, _armB, _armC);
+      arm.elbow.position.copy(_armB);
+      arm.hand.position.copy(_armC);
       arm.hand.quaternion.copy(m.gun.quaternion);
     }
   }

@@ -8,6 +8,8 @@ import { RNG, clamp, lerp, smoothstep, fbm2, hash2, TAU } from './math.js';
 import { rayVehicle } from './vehicle.js';
 
 const CELL = 8;
+const _queryScratch = [];
+const _losDir = [0, 0, 0];
 
 export class World {
   constructor(seed = CFG.MAP.SEED) {
@@ -95,6 +97,9 @@ export class World {
     }
     lake.level = Math.max(CFG.MAP.WATER_LEVEL, minLake + 2.2);
     this.heights.set(raw);
+    let maxH = -Infinity;
+    for (let i = 0; i < raw.length; i++) if (raw[i] > maxH) maxH = raw[i];
+    this.maxTerrainH = maxH;
     this.waterBodies.push({ x: lake.x, z: lake.z, r: lake.r, level: lake.level });
   }
 
@@ -732,6 +737,8 @@ export class World {
     let best = null, bestT = maxDist;
     for (const vehicle of this.vehicles || []) {
       if (opts.ignoreVehicle === vehicle.id) continue;
+      const vdx = vehicle.pos[0] - origin[0], vdz = vehicle.pos[2] - origin[2];
+      if (Math.abs(vdx) > bestT + 4 || Math.abs(vdz) > bestT + 4) continue;
       const hit = rayVehicle(vehicle, origin, dir, bestT);
       if (hit && hit.t < bestT) { bestT = hit.t; best = hit; }
     }
@@ -785,6 +792,7 @@ export class World {
 
   raycastTerrain(origin, dir, maxDist) {
     const oy = origin[1];
+    if (dir[1] >= 0 && oy >= (this.maxTerrainH ?? 100)) return null;
     const th0 = this.terrainHeight(origin[0], origin[2]);
     if (oy < th0) return { t: 0, point: origin.slice(), normal: this.terrainNormal(origin[0], origin[2]), box: null, tag: 'terrain', mat: 'dirt' };
     let step = 0.75;
@@ -815,8 +823,11 @@ export class World {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
     const len = Math.hypot(dx, dy, dz);
     if (len < 1e-4) return true;
-    const dir = [dx / len, dy / len, dz / len];
-    const hit = this.raycast(a, dir, len - pad);
+    const invLen = 1 / len;
+    _losDir[0] = dx * invLen;
+    _losDir[1] = dy * invLen;
+    _losDir[2] = dz * invLen;
+    const hit = this.raycast(a, _losDir, len - pad);
     return !hit || hit.t >= len - pad;
   }
 
