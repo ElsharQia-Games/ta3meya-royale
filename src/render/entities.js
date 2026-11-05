@@ -122,7 +122,7 @@ function makeCharacter(color, skin) {
   };
   addHead(headGeometry(), skin);
   const helmet = new THREE.SphereGeometry(.139, 24, 16, 0, Math.PI * 2, 0, Math.PI * .57);
-  helmet.scale.set(1, .87, 1.08); helmet.translate(0, .037, .005);
+  helmet.scale(1, .87, 1.08); helmet.translate(0, .037, .005);
   addHead(helmet, 0x657056);
   const hVis = new RoundedBoxGeometry(.22, .014, .06, 2, .009); hVis.translate(0, .06, -.125); addHead(hVis, 0x657056);
   const hGog = new RoundedBoxGeometry(.2, .049, .034, 2, .013); hGog.translate(0, .008, -.105); addHead(hGog, 0x303a2d);
