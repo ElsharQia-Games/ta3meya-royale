@@ -165,6 +165,7 @@ export function createVehicleModel(type) {
     pivot.position.set(side * shape.track / 2, -.17, z);
     pivot.add(spin); group.add(pivot);
     const tyre = new THREE.Mesh(new THREE.CylinderGeometry(.42, .42, .27, 20), mats.rubber);
+    tyre.userData.primaryShadowCaster = true;
     tyre.rotation.z = Math.PI / 2; spin.add(tyre);
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(.235, .235, .287, 16), mats.steel);
     hub.rotation.z = Math.PI / 2; spin.add(hub);
@@ -177,7 +178,14 @@ export function createVehicleModel(type) {
     // Physics wheel order is front-right/front-left/rear-right/rear-left.
     wheels.push({ pivot, spin, front: axle === 0, contact: axle * 2 + (side > 0 ? 0 : 1) });
   }
-  group.traverse(o => { if (o.isMesh && o.material !== mats.glass) { o.castShadow = true; o.receiveShadow = true; } });
+  chassis.userData.primaryShadowCaster = true;
+  chassis.traverse(o => { if (o.isMesh) o.userData.primaryShadowCaster = true; });
+  group.traverse(o => {
+    if (o.isMesh) {
+      o.receiveShadow = true;
+      o.castShadow = o.material !== mats.glass && !!o.userData.primaryShadowCaster;
+    }
+  });
   batchStaticParts(group);
   return { group, chassis, wheels, steering, mats,
     dispose() {

@@ -47,6 +47,103 @@ function boxGeometry(b) {
   return applyWorldUVs(geo, TILE[b.mat] || 2.5);
 }
 
+export function prepareStaticGeometry(geo, color) {
+  const nonIndexed = geo.index ? geo.toNonIndexed() : geo.clone();
+  if (!nonIndexed.attributes.normal) nonIndexed.computeVertexNormals();
+  const count = nonIndexed.attributes.position.count;
+  if (!nonIndexed.attributes.uv) {
+    nonIndexed.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
+  }
+  const colors = new Float32Array(count * 3);
+  const r = color ? (color.r !== undefined ? color.r : 1) : 1;
+  const g = color ? (color.g !== undefined ? color.g : 1) : 1;
+  const b = color ? (color.b !== undefined ? color.b : 1) : 1;
+  for (let i = 0; i < count; i++) {
+    colors[i * 3] = r;
+    colors[i * 3 + 1] = g;
+    colors[i * 3 + 2] = b;
+  }
+  nonIndexed.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return nonIndexed;
+}
+
+class ArchetypePool {
+  constructor(key, meshes, boxes) {
+    this.key = key;
+    this.meshes = meshes;
+    this.maxCount = boxes.length;
+    this.activeCount = boxes.length;
+    this.boxIdToIndex = new Map();
+    this.indexToBoxId = new Array(boxes.length);
+    this.baseMatrices = new Map();
+
+    const matrix = new THREE.Matrix4();
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      const cx = (b.min[0] + b.max[0]) / 2, cy = b.min[1], cz = (b.min[2] + b.max[2]) / 2;
+      matrix.makeTranslation(cx, cy, cz);
+      for (const im of meshes) im.setMatrixAt(i, matrix);
+      this.boxIdToIndex.set(b.id, i);
+      this.indexToBoxId[i] = b.id;
+      this.baseMatrices.set(b.id, matrix.clone());
+    }
+    for (const im of meshes) {
+      im.count = this.activeCount;
+      im.instanceMatrix.needsUpdate = true;
+      im.computeBoundingSphere();
+    }
+  }
+
+  removeBox(boxId) {
+    const idx = this.boxIdToIndex.get(boxId);
+    if (idx === undefined || idx >= this.activeCount) return;
+
+    const lastIdx = this.activeCount - 1;
+    if (idx !== lastIdx) {
+      const lastBoxId = this.indexToBoxId[lastIdx];
+      const tempMatrix = new THREE.Matrix4();
+      for (const im of this.meshes) {
+        im.getMatrixAt(lastIdx, tempMatrix);
+        im.setMatrixAt(idx, tempMatrix);
+      }
+      this.boxIdToIndex.set(lastBoxId, idx);
+      this.indexToBoxId[idx] = lastBoxId;
+      this.indexToBoxId[lastIdx] = boxId;
+      this.boxIdToIndex.set(boxId, lastIdx);
+    }
+
+    this.activeCount--;
+    for (const im of this.meshes) {
+      im.count = this.activeCount;
+      im.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  syncDestruction(destroyedSet) {
+    let i = 0;
+    for (const [boxId, mat] of this.baseMatrices) {
+      this.boxIdToIndex.set(boxId, i);
+      this.indexToBoxId[i] = boxId;
+      for (const im of this.meshes) {
+        im.setMatrixAt(i, mat);
+      }
+      i++;
+    }
+    this.activeCount = this.maxCount;
+
+    for (const id of destroyedSet) {
+      if (this.baseMatrices.has(id)) {
+        this.removeBox(id);
+      }
+    }
+
+    for (const im of this.meshes) {
+      im.count = this.activeCount;
+      im.instanceMatrix.needsUpdate = true;
+    }
+  }
+}
+
 function makeMaterials(renderer) {
   const mats = {};
   for (const [key, def] of Object.entries(MATERIALS)) {
@@ -84,6 +181,18 @@ export class WorldRenderer {
       renderer.registerMaterial(new THREE.MeshStandardMaterial({ color, map: texture('plaster'), roughness: .9 })));
     this.buildingStyles = new Map(world.buildings.map((building, index) => [building, index % this.facadeMaterials.length]));
     this.fieldAssets = new FieldAssets(renderer, this.mats);
+    this.masterStructureMat = renderer.registerMaterial(new THREE.MeshStandardMaterial({
+      color: 0xffffff, map: texture('plaster'), roughness: 0.88, metalness: 0.08, vertexColors: true
+    }));
+    this.masterBrickMat = renderer.registerMaterial(new THREE.MeshStandardMaterial({
+      color: 0xffffff, map: texture('brick'), roughness: 0.95, metalness: 0.0, vertexColors: true
+    }));
+    this.masterDetailMat = renderer.registerMaterial(new THREE.MeshStandardMaterial({
+      color: 0xffffff, map: texture('plaster'), roughness: 0.9, metalness: 0.05, vertexColors: true
+    }));
+    this.pools = new Map();
+    this.boxPools = new Map();
+    this.pendingDetailGeos = [];
     this.dynamicMeshes = new Map();
     this.dynamicInstances = new Map();
     this.dynamicInstancedGroups = [];
@@ -99,6 +208,7 @@ export class WorldRenderer {
     this._buildBoxes();
     this._buildArchitecture();
     addCoastalDetails(this);
+    this._mergeDetailGeometries();
     this._buildTrees();
     this._buildRocks();
     this._buildWater();
@@ -263,10 +373,10 @@ export class WorldRenderer {
   // Boxes
   // -------------------------------------------------------------------------
   _buildBoxes() {
-    const byMat = new Map();
-    const collect = (material, geometry) => {
-      const list = byMat.get(material) || []; list.push(geometry); byMat.set(material, list);
-    };
+    const structureGeos = [];
+    const brickGeos = [];
+    const glassGeos = [];
+    const decalBins = new Map();
 
     const archetypeBins = new Map();
     const nonArchetypeDynamic = [];
@@ -286,27 +396,73 @@ export class WorldRenderer {
         }
         continue;
       }
+
+      if (b.tag === 'glass') {
+        const geo = boxGeometry(b);
+        glassGeos.push(geo.index ? geo.toNonIndexed() : geo);
+        continue;
+      }
+
       const model = this.fieldAssets.create(b);
       if (model) {
         model.updateMatrixWorld(true);
         model.traverse(part => {
           if (!part.isMesh) return;
-          const geometry = part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone();
-          geometry.applyMatrix4(part.matrixWorld); collect(part.material, geometry); part.geometry.dispose();
+          const geometry = (part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone()).applyMatrix4(part.matrixWorld);
+          if (part.material.transparent || part.material.userData?.noShadow) {
+            if (part.material.map && part.material.alphaTest) {
+              const list = decalBins.get(part.material) || []; list.push(geometry); decalBins.set(part.material, list);
+            } else {
+              geometry.dispose();
+            }
+          } else if (b.tag === 'furniture') {
+            this.pendingDetailGeos.push(prepareStaticGeometry(geometry, part.material.color));
+            geometry.dispose();
+          } else {
+            structureGeos.push(prepareStaticGeometry(geometry, part.material.color));
+            geometry.dispose();
+          }
         });
       } else {
         const original = boxGeometry(b);
-        collect(this.facadeMaterial(b), original.toNonIndexed()); original.dispose();
+        const mat = this.facadeMaterial(b);
+        const color = mat ? mat.color : new THREE.Color(MATERIALS[b.mat]?.color || 0xcccccc);
+        if (['floor', 'stairs', 'furniture', 'interior', 'foundation'].includes(b.tag)) {
+          this.pendingDetailGeos.push(prepareStaticGeometry(original, color));
+        } else if (b.tag === 'wall' && b.mat === 'brick' && mat === this.mats.brick) {
+          brickGeos.push(prepareStaticGeometry(original, color));
+        } else {
+          structureGeos.push(prepareStaticGeometry(original, color));
+        }
+        original.dispose();
       }
     }
 
-    for (const [mat, geos] of byMat) {
-      const meshes = mergeSpatialGeometry(geos, mat, `static_${mat.id}`);
-      for (const mesh of meshes) mesh.castShadow = !mat.userData.noShadow;
+    if (structureGeos.length) {
+      const meshes = mergeSpatialGeometry(structureGeos, this.masterStructureMat, 'static_structure', 160);
+      for (const mesh of meshes) { mesh.castShadow = true; mesh.receiveShadow = true; }
       this.scene.add(...meshes); this.staticMeshes.push(...meshes);
     }
 
-    // Build instanced dynamic archetypes
+    if (brickGeos.length) {
+      const meshes = mergeSpatialGeometry(brickGeos, this.masterBrickMat, 'static_brick', 160);
+      for (const mesh of meshes) { mesh.castShadow = true; mesh.receiveShadow = true; }
+      this.scene.add(...meshes); this.staticMeshes.push(...meshes);
+    }
+
+    if (glassGeos.length) {
+      const meshes = mergeSpatialGeometry(glassGeos, this.mats.glass, 'static_glass', 160);
+      for (const mesh of meshes) { mesh.castShadow = false; mesh.receiveShadow = true; }
+      this.scene.add(...meshes); this.staticMeshes.push(...meshes);
+    }
+
+    for (const [mat, geos] of decalBins) {
+      const meshes = mergeSpatialGeometry(geos, mat, `static_decal_${mat.id}`, 160);
+      for (const mesh of meshes) { mesh.castShadow = false; mesh.receiveShadow = true; }
+      this.scene.add(...meshes); this.staticMeshes.push(...meshes);
+    }
+
+    // Build instanced dynamic archetypes with swap-and-pop pool
     for (const [archetypeKey, boxes] of archetypeBins) {
       const sampleBox = boxes[0];
       const sampleModel = this.fieldAssets.create(sampleBox);
@@ -333,23 +489,10 @@ export class WorldRenderer {
         return im;
       });
 
-      const matrix = new THREE.Matrix4();
-      for (let i = 0; i < boxes.length; i++) {
-        const b = boxes[i];
-        const cx = (b.min[0] + b.max[0]) / 2, cy = b.min[1], cz = (b.min[2] + b.max[2]) / 2;
-        matrix.makeTranslation(cx, cy, cz);
-        for (const im of instancedMeshes) im.setMatrixAt(i, matrix);
-        this.dynamicInstances.set(b.id, {
-          archetype: archetypeKey,
-          index: i,
-          originalMatrix: matrix.clone(),
-          meshes: instancedMeshes
-        });
-      }
-
-      for (const im of instancedMeshes) {
-        im.instanceMatrix.needsUpdate = true;
-        im.computeBoundingSphere();
+      const pool = new ArchetypePool(archetypeKey, instancedMeshes, boxes);
+      this.pools.set(archetypeKey, pool);
+      for (const b of boxes) {
+        this.boxPools.set(b.id, pool);
       }
 
       sampleModel.traverse(c => { c.geometry?.dispose(); });
@@ -364,6 +507,18 @@ export class WorldRenderer {
     }
   }
 
+  _mergeDetailGeometries() {
+    if (!this.pendingDetailGeos.length) return;
+    const meshes = mergeSpatialGeometry(this.pendingDetailGeos, this.masterDetailMat, 'static_detail', 160);
+    for (const m of meshes) {
+      m.castShadow = false;
+      m.receiveShadow = true;
+    }
+    this.scene.add(...meshes);
+    this.staticMeshes.push(...meshes);
+    this.pendingDetailGeos = [];
+  }
+
   facadeMaterial(box) {
     if (box.tag !== 'wall' || !['plaster', 'brick'].includes(box.mat)) return this.mats[box.mat];
     const x = (box.min[0] + box.max[0]) / 2, z = (box.min[2] + box.max[2]) / 2;
@@ -376,13 +531,9 @@ export class WorldRenderer {
   removeBox(id) {
     const box = this.world.boxes[id];
     if (box?.dynamic) box.destroyed = true;
-    const entry = this.dynamicInstances.get(id);
-    if (entry) {
-      const zero = new THREE.Matrix4().makeScale(0, 0, 0);
-      for (const mesh of entry.meshes) {
-        mesh.setMatrixAt(entry.index, zero);
-        mesh.instanceMatrix.needsUpdate = true;
-      }
+    const pool = this.boxPools.get(id);
+    if (pool) {
+      pool.removeBox(id);
       return;
     }
     const mesh = this.dynamicMeshes.get(id);
@@ -394,27 +545,22 @@ export class WorldRenderer {
 
   syncDestruction(ids) {
     const destroyed = new Set(ids);
+    for (const pool of this.pools.values()) {
+      pool.syncDestruction(destroyed);
+    }
     for (const b of this.world.boxes) {
       if (!b.dynamic || !b.render) continue;
       const gone = destroyed.has(b.id);
       b.destroyed = gone;
+      if (this.boxPools.has(b.id)) continue;
       if (gone) {
         this.removeBox(b.id);
-      } else {
-        const entry = this.dynamicInstances.get(b.id);
-        if (entry) {
-          b.hp = b.maxHp;
-          for (const mesh of entry.meshes) {
-            mesh.setMatrixAt(entry.index, entry.originalMatrix);
-            mesh.instanceMatrix.needsUpdate = true;
-          }
-        } else if (!this.dynamicMeshes.has(b.id)) {
-          b.hp = b.maxHp;
-          const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
-          mesh.castShadow = true; mesh.receiveShadow = true;
-          mesh.name = `dyn_${b.id}`;
-          this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
-        }
+      } else if (!this.dynamicMeshes.has(b.id)) {
+        b.hp = b.maxHp;
+        const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.name = `dyn_${b.id}`;
+        this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
       }
     }
   }
@@ -423,7 +569,10 @@ export class WorldRenderer {
     this.disposed = true;
     this.nature?.dispose();
     this.scene.removeFromParent();
-    const geometries = new Set(), materials = new Set(Object.values(this.mats));
+    const geometries = new Set(), materials = new Set([
+      ...Object.values(this.mats),
+      this.masterStructureMat, this.masterBrickMat, this.masterDetailMat
+    ].filter(Boolean));
     this.scene.traverse(o => {
       if (o.geometry) geometries.add(o.geometry);
       if (o.material) for (const m of Array.isArray(o.material) ? o.material : [o.material]) materials.add(m);
@@ -477,13 +626,18 @@ export class WorldRenderer {
     });
     const atlas = new THREE.CanvasTexture(labels); atlas.colorSpace = THREE.SRGBColorSpace;
     this.ownedTextures.push(atlas);
-    for (const [geometries, material, name] of [
-      [trim, new THREE.MeshStandardMaterial({ color: 0xada98b, roughness: .9 }), 'architecture_trim'],
-      [bands, new THREE.MeshStandardMaterial({ color: 0x667366, roughness: .93 }), 'painted_plinths'],
-      [signGeometries, new THREE.MeshStandardMaterial({ map: atlas, roughness: .85 }), 'building_serials'],
-    ]) {
-      if (!geometries.length) continue;
-      const meshes = mergeSpatialGeometry(geometries, this.renderer.registerMaterial(material), name);
+    for (const g of trim) {
+      this.pendingDetailGeos.push(prepareStaticGeometry(g, new THREE.Color(0xada98b)));
+      g.dispose();
+    }
+    for (const g of bands) {
+      this.pendingDetailGeos.push(prepareStaticGeometry(g, new THREE.Color(0x667366)));
+      g.dispose();
+    }
+    if (signGeometries.length) {
+      const serialMat = this.renderer.registerMaterial(new THREE.MeshStandardMaterial({ map: atlas, roughness: .85 }));
+      const meshes = mergeSpatialGeometry(signGeometries, serialMat, 'building_serials', 160);
+      for (const m of meshes) { m.castShadow = false; m.receiveShadow = true; }
       this.scene.add(...meshes); this.staticMeshes.push(...meshes);
     }
   }

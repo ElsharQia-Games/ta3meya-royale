@@ -35,7 +35,7 @@ export function createWeaponModel(key = 'ar', detailed = true) {
   const ownMaterials = new Set(Object.values(materials));
   const mesh = (geometry, material, position, parent = root, name) => {
     const m = new THREE.Mesh(geometry, materials[material] || material);
-    m.position.set(...position); m.castShadow = !detailed; m.receiveShadow = !detailed;
+    m.position.set(...position); m.castShadow = false; m.receiveShadow = !detailed;
     if (name) m.name = name;
     parent.add(m); return m;
   };

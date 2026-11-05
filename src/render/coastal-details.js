@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { mergeSpatialGeometry } from './geometry.js';
 import { texture } from './textures.js';
+import { prepareStaticGeometry } from './world.js';
 
 export function addCoastalDetails(view) {
   const bins = new Map();
@@ -110,10 +111,21 @@ export function addCoastalDetails(view) {
   atlas.anisotropy = 4; view.ownedTextures.push(atlas);
   const palette = { trim: 0x404e49, roof: 0x536255, accent: 0xc99753, crane: 0x99754a, steel: 0x526564, glass: 0x97aba2, sign: 0xffffff, paint: 0xcacbb0 };
   for (const [key, geometries] of bins) {
-    const material = view.renderer.registerMaterial(new THREE.MeshStandardMaterial({ color: palette[key], roughness: key === 'glass' ? .3 : .85, metalness: .22,
-      map: key === 'sign' ? atlas : key === 'paint' ? null : texture('equipment'),
-      ...(key === 'sign' ? { transparent: true, alphaTest: .03, polygonOffset: true, polygonOffsetFactor: -1 } : {}) }));
-    const meshes = mergeSpatialGeometry(geometries, material, `coastal_${key}`, 120);
-    view.scene.add(...meshes);
+    if (key === 'sign') {
+      const material = view.renderer.registerMaterial(new THREE.MeshStandardMaterial({
+        color: palette[key], roughness: .85, metalness: .1, map: atlas,
+        transparent: true, alphaTest: .03, polygonOffset: true, polygonOffsetFactor: -1
+      }));
+      const meshes = mergeSpatialGeometry(geometries, material, 'coastal_sign', 160);
+      for (const m of meshes) { m.castShadow = false; m.receiveShadow = true; }
+      view.scene.add(...meshes);
+      view.staticMeshes.push(...meshes);
+      continue;
+    }
+    const color = new THREE.Color(palette[key]);
+    for (const g of geometries) {
+      view.pendingDetailGeos.push(prepareStaticGeometry(g, color));
+      g.dispose();
+    }
   }
 }

@@ -24,6 +24,7 @@ export function batchStaticParts(group) {
     mesh.name = 'batched_equipment';
     mesh.castShadow = parts.some(p => p.castShadow);
     mesh.receiveShadow = parts.some(p => p.receiveShadow);
+    mesh.userData.primaryShadowCaster = parts.some(p => p.userData?.primaryShadowCaster);
     parts.forEach(p => { p.removeFromParent(); p.geometry.dispose(); });
     group.add(mesh);
   }

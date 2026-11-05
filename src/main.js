@@ -30,6 +30,7 @@ import { Prediction, remoteRenderTime } from './prediction.js';
 import { World } from '../shared/world.js';
 
 const $ = (id) => document.getElementById(id);
+const _camVehicleOffset = new THREE.Vector3();
 
 const WEAPON_LABEL = {
   pistol: 'P92', smg: 'VEX-9', ar: 'K4 CARBINE', dmr: 'SABLE DMR',
@@ -1127,11 +1128,16 @@ class App {
     // Camera and chassis use the same rendered vehicle pose. A separately
     // smoothed car otherwise trails its driver by metres at driving speed.
     if (this.mode === 'offline') {
-      const vehicles = this.offlineGame.vehicles.map(packVehicle);
-      this.syncVehicles(vehicles);
-      if (this.state) this.state.vehicles = vehicles;
+      if (!this._offlineVehicles) this._offlineVehicles = [];
+      const srcVehicles = this.offlineGame.vehicles;
+      this._offlineVehicles.length = srcVehicles.length;
+      for (let i = 0; i < srcVehicles.length; i++) {
+        this._offlineVehicles[i] = packVehicle(srcVehicles[i]);
+      }
+      this.syncVehicles(this._offlineVehicles);
+      if (this.state) this.state.vehicles = this._offlineVehicles;
     }
-    for (const view of this.vehicleViews.values()) view.update(dt);
+    for (const view of this.vehicleViews.values()) view.update(dt, camera.position);
 
     // Third-person fallback / lobby idle camera.
     if (!camLp) {
@@ -1315,7 +1321,7 @@ class App {
       const seat = lp.seat ?? 0;
       const forward = seat < 2 ? (packet?.type === 'truck' ? 1.05 : .15) : -.8;
       const side = seat % 2 === 0 ? .43 : -.43;
-      const offset = new THREE.Vector3(side, .15 + eye, -forward);
+      const offset = _camVehicleOffset.set(side, .15 + eye, -forward);
       vehicleView.group.updateWorldMatrix(true, false);
       camera.position.copy(vehicleView.group.localToWorld(offset));
       if (this.spectateId === null) {
@@ -1334,8 +1340,21 @@ class App {
 
     this.audio.setListener([camera.position.x, camera.position.y, camera.position.z], lp.yaw);
     this.renderer.setUnderwater(this.world.waterDepth(camera.position.x, camera.position.z) > 0 && camera.position.y < this.world.lake.level - .025);
-    const closestVehicle = (this.state?.vehicles || []).filter(v => v.health > 0 && v.occupants?.[0] != null)
-      .sort((a, b) => Math.hypot(a.x - lp.x, a.z - lp.z) - Math.hypot(b.x - lp.x, b.z - lp.z))[0];
+    let closestVehicle = null, minD2 = Infinity;
+    const vehicles = this.state?.vehicles;
+    if (vehicles) {
+      for (let i = 0; i < vehicles.length; i++) {
+        const v = vehicles[i];
+        if (v.health > 0 && v.occupants?.[0] != null) {
+          const dx = v.x - lp.x, dz = v.z - lp.z;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < minD2) {
+            minD2 = d2;
+            closestVehicle = v;
+          }
+        }
+      }
+    }
     this.audio.vehicleLoop?.(closestVehicle);
   }
 
@@ -1349,7 +1368,10 @@ class App {
         rosterPos[id] = [p.x, p.y, p.z];
       }
     } else if (this.mode === 'offline' && this.offlineGame) {
-      for (const p of this.offlineGame.players.values()) rosterPos[p.id] = p.pos.slice();
+      for (const p of this.offlineGame.players.values()) {
+        const pos = rosterPos[p.id] || (rosterPos[p.id] = [0, 0, 0]);
+        pos[0] = p.pos[0]; pos[1] = p.pos[1]; pos[2] = p.pos[2];
+      }
     }
     rosterPos[this.localId] = [lp.x, lp.y, lp.z];
     this.hud._rosterPos = rosterPos;

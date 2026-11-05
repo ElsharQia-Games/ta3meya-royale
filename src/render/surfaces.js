@@ -17,7 +17,8 @@ export async function loadCoastalSurfaces(view) {
     if (view.disposed) { maps.forEach(map => map.dispose()); return; }
     view.ownedTextures.push(...maps);
     const targets = name === 'asphalt' ? [view.roadMaterial] : name === 'plaster'
-      ? [view.mats.plaster, ...view.facadeMaterials] : [view.mats[name]];
+      ? [view.mats.plaster, ...view.facadeMaterials, view.masterStructureMat, view.masterDetailMat].filter(Boolean)
+      : name === 'brick' ? [view.mats.brick, view.masterBrickMat].filter(Boolean) : [view.mats[name]].filter(Boolean);
     for (const material of targets) {
       material.map = maps[0]; material.normalMap = maps[1]; material.roughnessMap = maps[2];
       material.normalScale.set(name === 'brick' ? .65 : .4, name === 'brick' ? .65 : .4);

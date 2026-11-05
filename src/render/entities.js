@@ -1,5 +1,6 @@
 // Dynamic entities: player characters, nameplates and vehicles.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CFG, STANCE, TEAMS } from '../../shared/config.js';
 import { lerpAngle, clamp, damp } from '../../shared/math.js';
 import { stanceHeight, supportHeight } from '../../shared/physics.js';
@@ -12,6 +13,7 @@ import { createVehicleModel } from './vehicle-model.js';
 import { smokeObscures } from '../../shared/visibility.js';
 import { DeathAnimation } from './death-animation.js';
 import { torsoGeometry, carrierPlate, headGeometry } from './character-shapes.js';
+import { prepareStaticGeometry } from './world.js';
 
 const SKIN = [0xc99a72, 0x9c6b4a, 0x6f4a32, 0xe0b48c, 0x8a5a3c];
 const UNIFORM = [0x737961, 0x80765d, 0x60746c, 0x807763];
@@ -33,16 +35,18 @@ function placeBone(mesh, from, to) {
   mesh.quaternion.setFromUnitVectors(_armUp, _armDelta);
 }
 
-function part(geo, mat, x, y, z) {
+function part(geo, mat, x, y, z, castShadow = false) {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
-  m.castShadow = true;
+  m.castShadow = castShadow;
   m.receiveShadow = true;
+  m.userData.primaryShadowCaster = castShadow;
   return m;
 }
 
 function makeCharacter(color, skin) {
   const root = new THREE.Group();
+  root.name = 'character_model';
   root.rotation.order = 'YXZ';
   const cloth = new THREE.MeshStandardMaterial({ color, map: texture('fabric'), bumpMap: texture('webbing'), bumpScale: .004, roughness: .96 });
   const vestMat = new THREE.MeshStandardMaterial({ color: 0x74806b, map: texture('webbing'), roughness: .94 });
@@ -52,7 +56,7 @@ function makeCharacter(color, skin) {
   const lensMat = new THREE.MeshStandardMaterial({ color: 0x4c5b43, roughness: .12, metalness: .8 });
   const strapMat = new THREE.MeshStandardMaterial({ color: 0x747c66, map: texture('webbing'), roughness: .97 });
   const teamMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, emissiveIntensity: 0.08 });
-  const rounded = (w, h, d, mat, x, y, z, radius = .025) => part(new RoundedBoxGeometry(w, h, d, 2, radius), mat, x, y, z);
+  const rounded = (w, h, d, mat, x, y, z, radius = .025, castShadow = false) => part(new RoundedBoxGeometry(w, h, d, 2, radius), mat, x, y, z, castShadow);
 
   const hips = new THREE.Group();
   hips.position.y = 0.92;
@@ -60,30 +64,47 @@ function makeCharacter(color, skin) {
 
   const torso = new THREE.Group();
   hips.add(torso);
-  torso.add(part(torsoGeometry(), cloth, 0, 0, 0));
-  torso.add(part(carrierPlate(), vestMat, 0, .075, -.176));
-  torso.add(part(carrierPlate(), vestMat, 0, .075, .137));
-  for (const side of [-1, 1]) torso.add(rounded(.037, .19, .23, vestMat, side * .187, .23, 0, .01));
-  torso.add(rounded(.33, .19, .26, cloth, 0, -.025, 0, .05));
-  const pack = rounded(.27, .34, .14, vestMat, 0, .28, .222, .055);
-  torso.add(pack);
-  torso.add(rounded(.22, .11, .045, cloth, 0, .18, .31));
+
+  const torsoGeos = [];
+  const addTorso = (geo, hex) => {
+    torsoGeos.push(prepareStaticGeometry(geo, new THREE.Color(hex)));
+    geo.dispose();
+  };
+
+  addTorso(torsoGeometry(), color);
+  const p1 = carrierPlate(); p1.translate(0, .075, -.176); addTorso(p1, 0x74806b);
+  const p2 = carrierPlate(); p2.translate(0, .075, .137); addTorso(p2, 0x74806b);
   for (const side of [-1, 1]) {
-    torso.add(rounded(.035, .43, .021, strapMat, side * .158, .3, -.17, .004));
-    torso.add(rounded(.027, .29, .018, strapMat, side * .095, .32, .3, .004));
-    torso.add(rounded(.095, .16, .095, vestMat, side * .23, .07, .02, .014));
+    const g = new RoundedBoxGeometry(.037, .19, .23, 2, .01); g.translate(side * .187, .23, 0); addTorso(g, 0x74806b);
+  }
+  const tLow = new RoundedBoxGeometry(.33, .19, .26, 2, .05); tLow.translate(0, -.025, 0); addTorso(tLow, color);
+  const pack = new RoundedBoxGeometry(.27, .34, .14, 2, .055); pack.translate(0, .28, .222); addTorso(pack, 0x74806b);
+  const tMid = new RoundedBoxGeometry(.22, .11, .045, 2, .025); tMid.translate(0, .18, .31); addTorso(tMid, color);
+  for (const side of [-1, 1]) {
+    const s1 = new RoundedBoxGeometry(.035, .43, .021, 2, .004); s1.translate(side * .158, .3, -.17); addTorso(s1, 0x747c66);
+    const s2 = new RoundedBoxGeometry(.027, .29, .018, 2, .004); s2.translate(side * .095, .32, .3); addTorso(s2, 0x747c66);
+    const pch = new RoundedBoxGeometry(.095, .16, .095, 2, .014); pch.translate(side * .23, .07, .02); addTorso(pch, 0x74806b);
   }
   for (let i = 0; i < 3; i++) {
-    torso.add(rounded(.105, .15, .065, helmetMat, -.12 + i * .12, .17, -.198, .012));
-    torso.add(rounded(.087, .025, .07, strapMat, -.12 + i * .12, .242, -.2, .005));
+    const mag = new RoundedBoxGeometry(.105, .15, .065, 2, .012); mag.translate(-.12 + i * .12, .17, -.198); addTorso(mag, 0x657056);
+    const mst = new RoundedBoxGeometry(.087, .025, .07, 2, .005); mst.translate(-.12 + i * .12, .242, -.2); addTorso(mst, 0x747c66);
   }
-  torso.add(rounded(.36, .047, .29, bootMat, 0, .006, 0, .006));
-  torso.add(rounded(.075, .035, .023, strapMat, 0, .006, -.16, .005));
+  const belt = new RoundedBoxGeometry(.36, .047, .29, 2, .006); belt.translate(0, .006, 0); addTorso(belt, 0x303a2d);
+  const bBuckle = new RoundedBoxGeometry(.075, .035, .023, 2, .005); bBuckle.translate(0, .006, -.16); addTorso(bBuckle, 0x747c66);
   for (let row = 0; row < 4; row++) for (let col = 0; col < 4; col++) {
-    torso.add(rounded(.053, .015, .011, strapMat, -.119 + col * .079, .295 + row * .035, -.188, .004));
+    const ml = new RoundedBoxGeometry(.053, .015, .011, 2, .004); ml.translate(-.119 + col * .079, .295 + row * .035, -.188); addTorso(ml, 0x747c66);
   }
-  torso.add(rounded(.08, .17, .06, bootMat, -.19, .43, .19, .009));
-  torso.add(part(new THREE.CylinderGeometry(.006, .006, .23, 5), bootMat, -.19, .62, .19));
+  const rad = new RoundedBoxGeometry(.08, .17, .06, 2, .009); rad.translate(-.19, .43, .19); addTorso(rad, 0x303a2d);
+  const ant = new THREE.CylinderGeometry(.006, .006, .23, 5); ant.translate(-.19, .62, .19); addTorso(ant, 0x303a2d);
+
+  const mergedTorso = mergeGeometries(torsoGeos, false);
+  torsoGeos.forEach(g => g.dispose());
+  const torsoMat = new THREE.MeshStandardMaterial({ color: 0xffffff, map: texture('fabric'), bumpMap: texture('webbing'), bumpScale: .004, roughness: .96, vertexColors: true });
+  const torsoMesh = new THREE.Mesh(mergedTorso, torsoMat);
+  torsoMesh.castShadow = true; torsoMesh.receiveShadow = true;
+  torsoMesh.userData.primaryShadowCaster = true;
+  torso.add(torsoMesh);
+
   // team patch on the chest
   torso.add(rounded(.08, .041, .014, teamMat, .1, .393, -.171, .003));
   // shoulder armbands read clearly at range
@@ -93,22 +114,36 @@ function makeCharacter(color, skin) {
   const head = new THREE.Group();
   head.position.y = .69;
   torso.add(head);
-  head.add(part(headGeometry(), skinMat, 0, 0, 0));
-  const helmet = part(new THREE.SphereGeometry(.139, 24, 16, 0, Math.PI * 2, 0, Math.PI * .57), helmetMat, 0, .037, .005);
-  helmet.scale.set(1, .87, 1.08);
-  head.add(helmet);
-  head.add(rounded(.22, .014, .06, helmetMat, 0, .06, -.125, .009));
-  head.add(rounded(.2, .049, .034, bootMat, 0, .008, -.105, .013));
+
+  const headGeos = [];
+  const addHead = (geo, hex) => {
+    headGeos.push(prepareStaticGeometry(geo, new THREE.Color(hex)));
+    geo.dispose();
+  };
+  addHead(headGeometry(), skin);
+  const helmet = new THREE.SphereGeometry(.139, 24, 16, 0, Math.PI * 2, 0, Math.PI * .57);
+  helmet.scale.set(1, .87, 1.08); helmet.translate(0, .037, .005);
+  addHead(helmet, 0x657056);
+  const hVis = new RoundedBoxGeometry(.22, .014, .06, 2, .009); hVis.translate(0, .06, -.125); addHead(hVis, 0x657056);
+  const hGog = new RoundedBoxGeometry(.2, .049, .034, 2, .013); hGog.translate(0, .008, -.105); addHead(hGog, 0x303a2d);
   for (const side of [-1, 1]) {
-    head.add(rounded(.082, .029, .013, lensMat, side * .05, .012, -.126, .01));
-    head.add(rounded(.029, .076, .076, bootMat, side * .126, -.012, .007, .013));
-    head.add(rounded(.027, .062, .058, helmetMat, side * .14, -.007, .006, .012));
-    head.add(rounded(.012, .11, .019, strapMat, side * .094, -.077, -.006, .005));
-    head.add(rounded(.017, .023, .091, bootMat, side * .135, .061, .005, .006));
+    const lens = new RoundedBoxGeometry(.082, .029, .013, 2, .01); lens.translate(side * .05, .012, -.126); addHead(lens, 0x4c5b43);
+    const cup = new RoundedBoxGeometry(.029, .076, .076, 2, .013); cup.translate(side * .126, -.012, .007); addHead(cup, 0x303a2d);
+    const rim = new RoundedBoxGeometry(.027, .062, .058, 2, .012); rim.translate(side * .14, -.007, .006); addHead(rim, 0x657056);
+    const stp = new RoundedBoxGeometry(.012, .11, .019, 2, .005); stp.translate(side * .094, -.077, -.006); addHead(stp, 0x747c66);
+    const mnt = new RoundedBoxGeometry(.017, .023, .091, 2, .006); mnt.translate(side * .135, .061, .005); addHead(mnt, 0x303a2d);
   }
-  head.add(rounded(.163, .103, .092, cloth, 0, -.083, -.048, .034));
-  head.add(part(new THREE.CylinderGeometry(.058, .071, .105, 16), cloth, 0, -.166, .004));
-  head.add(rounded(.026, .036, .014, bootMat, 0, .105, -.124, .004));
+  const bal = new RoundedBoxGeometry(.163, .103, .092, 2, .034); bal.translate(0, -.083, -.048); addHead(bal, color);
+  const col = new THREE.CylinderGeometry(.058, .071, .105, 16); col.translate(0, -.166, .004); addHead(col, color);
+  const chin = new RoundedBoxGeometry(.026, .036, .014, 2, .004); chin.translate(0, .105, -.124); addHead(chin, 0x303a2d);
+
+  const mergedHead = mergeGeometries(headGeos, false);
+  headGeos.forEach(g => g.dispose());
+  const headMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.15, vertexColors: true });
+  const headMesh = new THREE.Mesh(mergedHead, headMat);
+  headMesh.castShadow = true; headMesh.receiveShadow = true;
+  headMesh.userData.primaryShadowCaster = true;
+  head.add(headMesh);
 
   const armL = new THREE.Group(), armR = new THREE.Group();
   torso.add(armL, armR);
@@ -131,15 +166,29 @@ function makeCharacter(color, skin) {
   legL.position.set(-0.14, -0.02, 0); legR.position.set(0.14, -0.02, 0);
   hips.add(legL, legR);
   for (const [leg, knee] of [[legL, kneeL], [legR, kneeR]]) {
-    leg.add(part(new THREE.CapsuleGeometry(.105, .23, 5, 12), cloth, 0, -.2, 0));
+    leg.add(part(new THREE.CapsuleGeometry(.105, .23, 5, 12), cloth, 0, -.2, 0, true));
+    leg.add(rounded(.05, .15, .13, vestMat, leg === legL ? -.1 : .1, -.17, .01, .013));
     knee.position.set(0, -0.42, 0);
     leg.add(knee);
-    knee.add(part(new THREE.CapsuleGeometry(.083, .3, 5, 12), cloth, 0, -.2, 0));
-    knee.add(rounded(.14, .12, .055, bootMat, 0, -.025, -.1, .025));
-    knee.add(rounded(.148, .11, .255, bootMat, 0, -.415, -.058, .041));
-    knee.add(rounded(.153, .027, .265, bootMat, 0, -.463, -.058, .012));
-    knee.add(rounded(.11, .048, .12, strapMat, 0, -.374, -.072, .019));
-    leg.add(rounded(.05, .15, .13, vestMat, leg === legL ? -.1 : .1, -.17, .01, .013));
+
+    const kneeGeos = [];
+    const addKnee = (geo, hex) => {
+      kneeGeos.push(prepareStaticGeometry(geo, new THREE.Color(hex)));
+      geo.dispose();
+    };
+    const kShin = new THREE.CapsuleGeometry(.083, .3, 5, 12); kShin.translate(0, -.2, 0); addKnee(kShin, color);
+    const kPad = new RoundedBoxGeometry(.14, .12, .055, 2, .025); kPad.translate(0, -.025, -.1); addKnee(kPad, 0x303a2d);
+    const kBoot = new RoundedBoxGeometry(.148, .11, .255, 2, .041); kBoot.translate(0, -.415, -.058); addKnee(kBoot, 0x303a2d);
+    const kSole = new RoundedBoxGeometry(.153, .027, .265, 2, .012); kSole.translate(0, -.463, -.058); addKnee(kSole, 0x303a2d);
+    const kStrap = new RoundedBoxGeometry(.11, .048, .12, 2, .019); kStrap.translate(0, -.374, -.072); addKnee(kStrap, 0x747c66);
+
+    const mergedKnee = mergeGeometries(kneeGeos, false);
+    kneeGeos.forEach(g => g.dispose());
+    const kneeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, vertexColors: true });
+    const kneeMesh = new THREE.Mesh(mergedKnee, kneeMat);
+    kneeMesh.castShadow = true; kneeMesh.receiveShadow = true;
+    kneeMesh.userData.primaryShadowCaster = true;
+    knee.add(kneeMesh);
   }
 
   const weapon = createWeaponModel('ar', false);
@@ -240,6 +289,13 @@ export class CharacterView {
       map: texture('contactShadow'), transparent: true, opacity: .35, depthWrite: false,
       polygonOffset: true, polygonOffsetFactor: -1 }));
     this.shadow.rotation.x = -Math.PI / 2; scene.add(this.shadow);
+    this._hands = [new THREE.Vector3(), new THREE.Vector3()];
+    this._seatedOffset = new THREE.Vector3();
+    this.primaryShadowMeshes = [];
+    this.model.root.traverse(o => {
+      if (o.isMesh && o.userData?.primaryShadowCaster) this.primaryShadowMeshes.push(o);
+    });
+    this._charShadowsEnabled = true;
   }
 
   setTeam(team) {
@@ -296,7 +352,7 @@ export class CharacterView {
     r.visible = this.visible;
     if (seated && this.vehicle) {
       const forward = this.seat < 2 ? (this.vehicle.model.group.name === 'vehicle_truck' ? 1.05 : .15) : -.8;
-      const offset = new THREE.Vector3(this.seat % 2 === 0 ? .43 : -.43, .15, -forward);
+      const offset = this._seatedOffset.set(this.seat % 2 === 0 ? .43 : -.43, .15, -forward);
       this.vehicle.group.updateWorldMatrix(true, false);
       r.position.copy(this.vehicle.group.localToWorld(offset));
       r.rotation.y = this.vehicle.yaw;
@@ -382,13 +438,34 @@ export class CharacterView {
     const recoil = Math.sin(Math.PI * clamp(this.shotT / .19, 0, 1)) * .035;
     m.gun.position.z = damp(m.gun.position.z, (prone ? -.18 : -.19) + recoil, 14, dt);
     m.gun.updateMatrix();
-    const hands = m.arms.map(arm => seated && this.seat === 0 ? new THREE.Vector3(arm.side * .155, .5, -.27)
-      : (arm.side < 0 ? support.clone() : trigger.clone()).applyMatrix4(m.gun.matrix));
-    this.poseArms(hands);
+    for (let i = 0; i < m.arms.length; i++) {
+      const arm = m.arms[i];
+      const target = this._hands[i];
+      if (seated && this.seat === 0) {
+        target.set(arm.side * .155, .5, -.27);
+      } else {
+        target.copy(arm.side < 0 ? support : trigger).applyMatrix4(m.gun.matrix);
+      }
+    }
+    this.poseArms(this._hands);
     this.updateShadow();
 
     const d3 = cameraPos
       ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2]) : 99;
+    if (d3 > 140) {
+      r.visible = false;
+      this.plate.sprite.visible = false;
+      this.shadow.visible = false;
+      return;
+    }
+    r.visible = this.visible;
+    const enableShadow = d3 < 65;
+    if (this._charShadowsEnabled !== enableShadow) {
+      this._charShadowsEnabled = enableShadow;
+      for (let i = 0; i < this.primaryShadowMeshes.length; i++) {
+        this.primaryShadowMeshes[i].castShadow = enableShadow;
+      }
+    }
     const plateHeight = clamp(d3 * .032, .15, 1.45);
     this.plate.sprite.scale.set(plateHeight * 4, plateHeight, 1);
     this.plate.sprite.visible = this.alive && this.visible && !seated && d3 > 1.6 &&
@@ -470,6 +547,11 @@ export class VehicleView {
     this.speed = 0;
     this.wheelSpin = 0;
     this.smoke = 0;
+    this.shadowMeshes = [];
+    this.group.traverse(o => {
+      if (o.isMesh && o.userData.primaryShadowCaster) this.shadowMeshes.push(o);
+    });
+    this._shadowsEnabled = true;
   }
 
   applyState(v) {
@@ -482,12 +564,38 @@ export class VehicleView {
     this.wheelComp = v.wheelComp || [0, 0, 0, 0];
     this.braking = !!v.braking;
     this.health = v.health ?? 100;
-    if (!this.initialized || Math.hypot(...this.pos.map((n, i) => n - this.target[i])) > 12) {
-      this.pos = this.target.slice(); this.yaw = this.targetYaw; this.initialized = true;
+    const dx = this.pos[0] - this.target[0], dy = this.pos[1] - this.target[1], dz = this.pos[2] - this.target[2];
+    if (!this.initialized || (dx * dx + dy * dy + dz * dz) > 144) {
+      this.pos[0] = this.target[0]; this.pos[1] = this.target[1]; this.pos[2] = this.target[2];
+      this.yaw = this.targetYaw; this.initialized = true;
     }
   }
 
-  update(dt) {
+  update(dt, cameraPos = null) {
+    if (cameraPos) {
+      const cx = Number.isFinite(cameraPos.x) ? cameraPos.x : (cameraPos[0] || 0);
+      const cy = Number.isFinite(cameraPos.y) ? cameraPos.y : (cameraPos[1] || 0);
+      const cz = Number.isFinite(cameraPos.z) ? cameraPos.z : (cameraPos[2] || 0);
+      const dx = this.pos[0] - cx, dy = this.pos[1] - cy, dz = this.pos[2] - cz;
+      const distSq = dx * dx + dy * dy + dz * dz;
+
+      if (distSq > 150 * 150) {
+        this.group.visible = false;
+        return;
+      }
+      this.group.visible = true;
+
+      const enableShadow = distSq < 75 * 75;
+      if (this._shadowsEnabled !== enableShadow) {
+        this._shadowsEnabled = enableShadow;
+        for (let i = 0; i < this.shadowMeshes.length; i++) {
+          this.shadowMeshes[i].castShadow = enableShadow;
+        }
+      }
+    } else {
+      this.group.visible = true;
+    }
+
     const k = 1 - Math.exp(-14 * dt);
     this.pos[0] += (this.target[0] - this.pos[0]) * k;
     this.pos[1] += (this.target[1] - this.pos[1]) * k;
