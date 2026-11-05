@@ -496,11 +496,19 @@ export class BrowserHost {
 
         let channelOpened = false;
 
-        dc.onopen = () => {
+        const onOpen = () => {
+          if (channelOpened) return;
           channelOpened = true;
           const socket = new DataChannelSocket(dc);
           this._registerSocket(socket);
         };
+        if (dc.readyState === 'open') {
+          onOpen();
+        } else if (typeof dc.addEventListener === 'function') {
+          dc.addEventListener('open', onOpen);
+        } else {
+          dc.onopen = onOpen;
+        }
 
         pc.onicecandidate = (ev) => {
           if (ev.candidate) {

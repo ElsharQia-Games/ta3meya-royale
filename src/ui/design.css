@@ -122,6 +122,9 @@ kbd { display: inline-block; padding: 4px 6px; border: 1px solid #82958d66; bord
 .net-opt { background: #060f1277; border: 1px solid #71876a40; color: #a2b09a; font: 600 8.5px var(--mono); padding: 3px 8px; border-radius: 2px; cursor: pointer; }
 .net-opt:hover { color: var(--text); border-color: #8fa88688; }
 .net-opt.active { background: #9dbd8622; border-color: var(--accent); color: var(--accent); }
+.net-hint { font: 400 9.5px/1.4 var(--mono); color: #8eab89; margin-top: 4px; }
+.net-subhint { display: block; font: 400 9px/1.4 var(--mono); color: #a2b09a; margin-top: 4px; }
+.net-subhint b { color: var(--accent); }
 .server-url-wrap { margin-top: 6px; }
 .server-url-wrap.hidden { display: none; }
 .server-url-wrap input { width: 100%; font-size: 11px; padding: 7px 9px; }

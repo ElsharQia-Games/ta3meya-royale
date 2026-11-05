@@ -329,14 +329,18 @@
         </div>
         <div class="field net-field">
           <div class="net-header">
-            <span>NETWORK</span>
+            <span>MULTIPLAYER MODE</span>
             <div class="net-modes" role="radiogroup" aria-label="Network mode">
-              <button id="net-opt-peer" type="button" class="net-opt active" data-net="peer" role="radio" aria-checked="true">ONLINE RELAY</button>
-              <button id="net-opt-server" type="button" class="net-opt" data-net="server" role="radio" aria-checked="false">SERVER</button>
+              <button id="net-opt-peer" type="button" class="net-opt active" data-net="peer" role="radio" aria-checked="true" title="Serverless peer-to-peer / relay. Play with friends without hosting a server.">ONLINE P2P (FREE)</button>
+              <button id="net-opt-server" type="button" class="net-opt" data-net="server" role="radio" aria-checked="false" title="Connect to a dedicated Node.js server">DEDICATED SERVER</button>
             </div>
           </div>
+          <div id="net-peer-hint" class="net-hint">
+            <span>⚡ Zero-setup: share your Room Code or invite link with friends to play together!</span>
+          </div>
           <div id="server-url-wrap" class="server-url-wrap hidden">
-            <input id="in-server" autocomplete="off" spellcheck="false" value="ws://localhost:3000/ws" placeholder="Server URL e.g. ws://localhost:3000/ws">
+            <input id="in-server" autocomplete="off" spellcheck="false" value="" placeholder="Server URL e.g. wss://your-server.com/ws">
+            <span class="net-subhint">Requires a running dedicated game server. Use <b>ONLINE P2P</b> above to play with friends without hosting.</span>
           </div>
         </div>
         <button id="join" class="btn primary deploy-button"><span>DEPLOY TO BLACKSHORE</span><span class="button-arrow">↗</span></button>

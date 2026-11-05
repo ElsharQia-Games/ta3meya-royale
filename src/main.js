@@ -194,10 +194,12 @@ class App {
       if ($('in-server')) $('in-server').value = serverParam;
     } else if (netParam === 'server') {
       this.netMode = 'server';
+      if ($('in-server')) $('in-server').value = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'ws://localhost:3000/ws' : '';
     } else if (netParam === 'peer') {
       this.netMode = 'peer';
     } else if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
       this.netMode = 'server';
+      if ($('in-server')) $('in-server').value = 'ws://localhost:3000/ws';
     } else {
       this.netMode = 'peer';
     }
@@ -209,6 +211,7 @@ class App {
         btn.setAttribute('aria-checked', String(active));
       });
       $('server-url-wrap')?.classList.toggle('hidden', mode !== 'server');
+      $('net-peer-hint')?.classList.toggle('hidden', mode === 'server');
     };
     selectNetMode(this.netMode);
     document.querySelectorAll('.net-opt').forEach(btn => {

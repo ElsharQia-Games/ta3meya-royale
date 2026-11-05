@@ -80,15 +80,32 @@ export class DataChannelSocket {
     this.dc = dc;
     this.binaryType = 'arraybuffer';
     dc.binaryType = 'arraybuffer';
-    this.onopen = null;
+    this._onopen = null;
     this.onmessage = null;
     this.onclose = null;
     this.onerror = null;
 
-    dc.onopen = () => { if (this.onopen) this.onopen(); };
-    dc.onmessage = (ev) => { if (this.onmessage) this.onmessage(ev); };
-    dc.onclose = (ev) => { if (this.onclose) this.onclose(ev); };
-    dc.onerror = (ev) => { if (this.onerror) this.onerror(ev); };
+    if (typeof dc.addEventListener === 'function') {
+      dc.addEventListener('open', () => { if (this._onopen) this._onopen(); });
+      dc.addEventListener('message', (ev) => { if (this.onmessage) this.onmessage(ev); });
+      dc.addEventListener('close', (ev) => { if (this.onclose) this.onclose(ev); });
+      dc.addEventListener('error', (ev) => { if (this.onerror) this.onerror(ev); });
+    } else {
+      dc.onopen = () => { if (this._onopen) this._onopen(); };
+      dc.onmessage = (ev) => { if (this.onmessage) this.onmessage(ev); };
+      dc.onclose = (ev) => { if (this.onclose) this.onclose(ev); };
+      dc.onerror = (ev) => { if (this.onerror) this.onerror(ev); };
+    }
+  }
+
+  get onopen() { return this._onopen; }
+  set onopen(fn) {
+    this._onopen = fn;
+    if (fn && this.readyState === 1) {
+      queueMicrotask(() => {
+        if (this._onopen === fn && this.readyState === 1) fn();
+      });
+    }
   }
 
   get readyState() {
@@ -277,7 +294,13 @@ export function joinPeerSession({
             pc.ondatachannel = (ev) => {
               const dc = ev.channel;
               const socket = new DataChannelSocket(dc);
-              dc.onopen = () => connectAsGuestWithSocket(socket, msg.mode);
+              if (dc.readyState === 'open') {
+                connectAsGuestWithSocket(socket, msg.mode);
+              } else if (typeof dc.addEventListener === 'function') {
+                dc.addEventListener('open', () => connectAsGuestWithSocket(socket, msg.mode));
+              } else {
+                dc.onopen = () => connectAsGuestWithSocket(socket, msg.mode);
+              }
             };
 
             pc.onicecandidate = (ev) => {
