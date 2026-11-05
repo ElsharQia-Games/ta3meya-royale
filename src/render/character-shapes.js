@@ -26,8 +26,7 @@ function buildTorsoGeometry() {
 }
 
 export function torsoGeometry() {
-  if (!_sharedTorso) _sharedTorso = buildTorsoGeometry();
-  return _sharedTorso;
+  return buildTorsoGeometry();
 }
 
 function buildCarrierPlate() {
@@ -39,8 +38,7 @@ function buildCarrierPlate() {
 }
 
 export function carrierPlate() {
-  if (!_sharedPlate) _sharedPlate = buildCarrierPlate();
-  return _sharedPlate;
+  return buildCarrierPlate();
 }
 
 function buildHeadGeometry() {
@@ -63,6 +61,5 @@ function buildHeadGeometry() {
 }
 
 export function headGeometry() {
-  if (!_sharedHead) _sharedHead = buildHeadGeometry();
-  return _sharedHead;
+  return buildHeadGeometry();
 }

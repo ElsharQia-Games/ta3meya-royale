@@ -1,6 +1,16 @@
 // Peer networking adapters: in-memory local channel, WebRTC DataChannel,
 // and MQTT-relay fallback socket. All expose a WebSocket-compatible interface.
 
+export const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+];
+
 export function createLocalPair() {
   let open = true;
   const clientSocket = {
@@ -242,6 +252,8 @@ export function joinPeerSession({
       let resolved = false;
       let peerConnection = null;
       let probeTimer = null;
+      const pendingCandidates = [];
+      let remoteDescriptionSet = false;
 
       const becomeHost = () => {
         if (resolved) return;
@@ -283,12 +295,7 @@ export function joinPeerSession({
           }
           if (msg.type === 'offer' && msg.sdp && typeof RTCPeerConnection !== 'undefined') {
             if (onStatus) onStatus('connecting-p2p');
-            const pc = new RTCPeerConnection({
-              iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-              ],
-            });
+            const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
             peerConnection = pc;
 
             pc.ondatachannel = (ev) => {
@@ -312,18 +319,25 @@ export function joinPeerSession({
               }
             };
 
-            pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp }).then(() => {
-              return pc.createAnswer().then((answer) => {
-                return pc.setLocalDescription(answer).then(() => {
-                  relay.publish(`ta3meya/${room}/signal/host/${guestId}`, {
-                    type: 'answer',
-                    sdp: answer.sdp,
-                  });
-                });
+            pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp }).then(async () => {
+              remoteDescriptionSet = true;
+              while (pendingCandidates.length) {
+                const c = pendingCandidates.shift();
+                try { await pc.addIceCandidate(c); } catch {}
+              }
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              relay.publish(`ta3meya/${room}/signal/host/${guestId}`, {
+                type: 'answer',
+                sdp: answer.sdp,
               });
             }).catch(() => {});
-          } else if (msg.type === 'candidate' && peerConnection) {
-            peerConnection.addIceCandidate(msg.candidate).catch(() => {});
+          } else if (msg.type === 'candidate' && msg.candidate) {
+            if (peerConnection && remoteDescriptionSet) {
+              peerConnection.addIceCandidate(msg.candidate).catch(() => {});
+            } else {
+              pendingCandidates.push(msg.candidate);
+            }
           }
         } catch {}
       });

@@ -8,13 +8,13 @@ import { packVehicle } from '../../shared/vehicle.js';
 import { packProjectile } from '../../shared/projectiles.js';
 import { clamp } from '../../shared/math.js';
 import {
-  PROTOCOL_VERSION, MSG, encodePong, decodePing, decodePong, encodeAck,
+  PROTOCOL_VERSION, MSG, encodePing, encodePong, decodePing, decodePong, encodeAck,
   decodeInput, wireToSimInput, encodeSnapshot, snapshotState,
   encodeEvents, encodeLoot, filterEvents, sanitizeName, sanitizeRoom, decodeControl,
   isProtocolCompatible, backlogLimit, isStaleInput, heldSimInput,
 } from '../../shared/protocol.js';
 import { spawnBots, stepBots } from '../../server/bots.js';
-import { createLocalPair, DataChannelSocket, RelaySocket } from './peer.js';
+import { createLocalPair, DataChannelSocket, RelaySocket, ICE_SERVERS } from './peer.js';
 
 const INPUT_BACKLOG = backlogLimit(CFG.NET.maxQueuedInputs);
 const MAX_PLAYERS = 32;
@@ -410,7 +410,7 @@ export class BrowserHost {
       const now = performance.now();
       for (const c of this.clients.values()) {
         c.pingSentAt = now;
-        this._sendBinary(c.ws, encodePong(now, game.time));
+        this._sendBinary(c.ws, encodePing(now));
       }
     }
   }
@@ -483,12 +483,7 @@ export class BrowserHost {
     // If WebRTC is supported, attempt direct P2P data channel
     if (typeof RTCPeerConnection !== 'undefined') {
       try {
-        const pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-          ],
-        });
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         this.peerConnections.set(guestId, pc);
 
         const dc = pc.createDataChannel('ta3meya', { ordered: true });
@@ -529,12 +524,12 @@ export class BrowserHost {
           });
         }).catch(() => {});
 
-        // Fallback to MQTT relay if WebRTC doesn't open within 3.5s
+        // Fallback to MQTT relay if WebRTC doesn't open within 5.0s
         setTimeout(() => {
           if (!channelOpened && !this.closed) {
             this._activateRelayFallback(guestId);
           }
-        }, 3500);
+        }, 5000);
         return;
       } catch {}
     }
@@ -568,9 +563,23 @@ export class BrowserHost {
     if (!pc) return;
 
     if (msg.type === 'answer' && msg.sdp) {
-      pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(() => {});
+      pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).then(async () => {
+        const queued = this.pendingCandidates?.get(guestId);
+        if (queued) {
+          this.pendingCandidates.delete(guestId);
+          for (const c of queued) {
+            try { await pc.addIceCandidate(c); } catch {}
+          }
+        }
+      }).catch(() => {});
     } else if (msg.type === 'candidate' && msg.candidate) {
-      pc.addIceCandidate(msg.candidate).catch(() => {});
+      if (pc.remoteDescription && pc.remoteDescription.type) {
+        pc.addIceCandidate(msg.candidate).catch(() => {});
+      } else {
+        if (!this.pendingCandidates) this.pendingCandidates = new Map();
+        if (!this.pendingCandidates.has(guestId)) this.pendingCandidates.set(guestId, []);
+        this.pendingCandidates.get(guestId).push(msg.candidate);
+      }
     }
   }
 
