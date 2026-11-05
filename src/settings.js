@@ -34,6 +34,12 @@ export function saveSettings(s) {
   try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {}
 }
 
+export function resetSettings() {
+  const defaults = { ...DEFAULTS };
+  saveSettings(defaults);
+  return defaults;
+}
+
 export function qualityPreset(name) {
   if (name === 'low') {
     return { pixelRatio: 0.85, shadows: false, bloom: false, cascades: 0, shadowMap: 512, fogDensity: 0.0022, viewDistance: 650 };

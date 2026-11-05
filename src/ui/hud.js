@@ -5,6 +5,13 @@ import { clamp } from '../../shared/math.js';
 import { WEAPON_KEYS } from '../../shared/weapons.js';
 import { CombatFeedback } from './combat.js';
 import { OpticOverlay } from './optic.js';
+import { DEFAULTS } from '../settings.js';
+
+const PRESET_DESCRIPTIONS = {
+  low: '0.85x dynamic scale · 650m view · Shadows off · Max performance',
+  medium: '1.00x native scale · 950m view · 1 shadow cascade · Balanced',
+  high: '1.00x native scale · 1250m view · 2 cascaded shadow maps · Full fidelity',
+};
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, parent, text) => {
@@ -245,65 +252,183 @@ export class HUD {
     this.bloomInput = $('set-bloom');
     this.muteInput = $('set-mute');
     this.showFpsInput = $('set-fps');
+    this.nameInput = $('set-name');
+    this.roomDisplay = $('set-room-display');
+
     this.sensVal = $('sens-val');
     this.adsVal = $('ads-val');
     this.fovVal = $('fov-val');
     this.volVal = $('vol-val');
 
-    this._syncSettingsInputs();
-    this._syncSettingLabels();
+    this.settingsTabs = document.querySelectorAll('.settings-tab');
+    this.settingsSections = document.querySelectorAll('.settings-section');
+    this.segBtns = document.querySelectorAll('.seg-btn[data-quality]');
+    this.saveStamp = $('settings-save-stamp');
+    this.resetBtn = $('settings-reset');
+    this.qualityDesc = $('quality-detail-note');
+    this.closeIcon = $('settings-close-icon');
 
-    // Every control applies live (and persists through onSettings) while the
-    // panel is open; APPLY just closes it.
-    const live = [this.sensInput, this.adsSensInput, this.fovInput, this.volInput];
-    for (const input of live) input.addEventListener('input', () => this._commitSettings(false));
-    for (const input of [this.qualityInput, this.invertInput, this.shadowsInput,
-      this.bloomInput, this.muteInput, this.showFpsInput]) {
+    this._activeTab = 'controls';
+
+    // Tabs navigation
+    for (const tab of this.settingsTabs) {
+      tab.addEventListener('click', () => {
+        this._switchSettingsTab(tab.dataset.tab);
+      });
+      tab.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const tabList = Array.from(this.settingsTabs);
+          const idx = tabList.indexOf(tab);
+          const nextIdx = e.key === 'ArrowRight'
+            ? (idx + 1) % tabList.length
+            : (idx - 1 + tabList.length) % tabList.length;
+          tabList[nextIdx].focus();
+          this._switchSettingsTab(tabList[nextIdx].dataset.tab);
+        }
+      });
+    }
+
+    // Segmented Quality buttons
+    for (const btn of this.segBtns) {
+      btn.addEventListener('click', () => {
+        const q = btn.dataset.quality;
+        if (!q) return;
+        this.settings.quality = q;
+        if (this.qualityInput) this.qualityInput.value = q;
+        if (q === 'low') {
+          this.settings.shadows = false;
+          this.settings.bloom = false;
+        } else if (q === 'medium' || q === 'high') {
+          this.settings.shadows = true;
+        }
+        this._syncSettingsInputs();
+        this._commitSettings(false);
+      });
+    }
+
+    // Live continuous sliders
+    const live = [this.sensInput, this.adsSensInput, this.fovInput, this.volInput].filter(Boolean);
+    for (const input of live) {
+      input.addEventListener('input', () => this._commitSettings(false));
+    }
+
+    // State switches
+    const toggles = [this.invertInput, this.shadowsInput, this.bloomInput, this.muteInput, this.showFpsInput].filter(Boolean);
+    for (const input of toggles) {
       input.addEventListener('change', () => this._commitSettings(false));
     }
 
-    if ($('settings-close')) $('settings-close').onclick = () => this._cancelSettings();
+    // Callsign synchronization
+    if (this.nameInput) {
+      this.nameInput.addEventListener('input', () => {
+        const val = this.nameInput.value.slice(0, 16);
+        this.settings.name = val;
+        const lobbyName = $('in-name');
+        if (lobbyName && lobbyName.value !== val) lobbyName.value = val;
+        this._commitSettings(false);
+      });
+    }
+
+    // Reset defaults button
+    if (this.resetBtn) {
+      this.resetBtn.onclick = () => {
+        Object.assign(this.settings, DEFAULTS);
+        this._syncSettingsInputs();
+        this._syncSettingLabels();
+        this._commitSettings(false);
+        this._showSaveStamp('DEFAULTS RESTORED');
+      };
+    }
+
+    // Dismissal / Actions
+    if (this.closeIcon) this.closeIcon.onclick = () => this.toggleSettings(false);
+    if ($('settings-close')) $('settings-close').onclick = () => this.toggleSettings(false);
     if ($('settings-save')) $('settings-save').onclick = () => this._commitSettings(true);
     if ($('settings-leave')) $('settings-leave').onclick = () => { if (this.onLeave) this.onLeave(); };
     if ($('settings-resume')) $('settings-resume').onclick = () => { this._commitSettings(false); this.toggleSettings(false); };
     if ($('settings-share')) $('settings-share').onclick = () => { if (this.onShare) this.onShare(); };
+
+    this._syncSettingsInputs();
+    this._syncSettingLabels();
+  }
+
+  _switchSettingsTab(tabName) {
+    if (!tabName) return;
+    this._activeTab = tabName;
+    for (const tab of this.settingsTabs) {
+      const active = tab.dataset.tab === tabName;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+    }
+    for (const panel of this.settingsSections) {
+      panel.classList.toggle('hidden', panel.id !== `section-${tabName}`);
+    }
+  }
+
+  _showSaveStamp(text = 'SAVED') {
+    if (!this.saveStamp) return;
+    const span = this.saveStamp.querySelector('span');
+    if (span) span.textContent = text;
+    this.saveStamp.classList.add('visible');
+    clearTimeout(this._saveStampTimer);
+    this._saveStampTimer = setTimeout(() => {
+      this.saveStamp?.classList.remove('visible');
+    }, 1200);
   }
 
   _syncSettingsInputs() {
     const s = this.settings;
-    this.sensInput.value = s.sensitivity;
-    this.adsSensInput.value = s.adsSensitivity;
-    this.fovInput.value = s.fov;
-    this.volInput.value = s.volume;
-    this.qualityInput.value = s.quality;
-    this.invertInput.checked = !!s.invertY;
-    this.shadowsInput.checked = !!s.shadows;
-    this.bloomInput.checked = !!s.bloom;
-    this.muteInput.checked = !!s.muted;
-    this.showFpsInput.checked = !!s.showFps;
+    if (this.sensInput) this.sensInput.value = s.sensitivity;
+    if (this.adsSensInput) this.adsSensInput.value = s.adsSensitivity;
+    if (this.fovInput) this.fovInput.value = s.fov;
+    if (this.volInput) this.volInput.value = s.volume;
+    if (this.qualityInput) this.qualityInput.value = s.quality;
+    if (this.invertInput) this.invertInput.checked = !!s.invertY;
+    if (this.shadowsInput) this.shadowsInput.checked = !!s.shadows;
+    if (this.bloomInput) this.bloomInput.checked = !!s.bloom;
+    if (this.muteInput) this.muteInput.checked = !!s.muted;
+    if (this.showFpsInput) this.showFpsInput.checked = !!s.showFps;
+    if (this.nameInput) this.nameInput.value = s.name || 'Soldier';
+    if (this.roomDisplay) this.roomDisplay.value = s.room || $('in-room')?.value || 'ALPHA01';
+
+    if (this.segBtns) {
+      for (const btn of this.segBtns) {
+        const active = btn.dataset.quality === s.quality;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', String(active));
+      }
+    }
+    if (this.qualityDesc) {
+      this.qualityDesc.textContent = PRESET_DESCRIPTIONS[s.quality] || '';
+    }
   }
 
   _syncSettingLabels() {
     const s = this.settings;
-    this.sensVal.textContent = (+s.sensitivity).toFixed(2);
-    this.adsVal.textContent = (+s.adsSensitivity).toFixed(2);
-    this.fovVal.textContent = `${Math.round(s.fov)}°`;
-    this.volVal.textContent = `${Math.round(s.volume * 100)}%`;
+    if (this.sensVal) this.sensVal.textContent = `${(+s.sensitivity).toFixed(2)}x`;
+    if (this.adsVal) this.adsVal.textContent = `${(+s.adsSensitivity).toFixed(2)}x`;
+    if (this.fovVal) this.fovVal.textContent = `${Math.round(s.fov)}°`;
+    if (this.volVal) this.volVal.textContent = `${Math.round(s.volume * 100)}%`;
   }
 
   _commitSettings(close) {
     const s = this.settings;
-    s.sensitivity = +this.sensInput.value;
-    s.adsSensitivity = +this.adsSensInput.value;
-    s.fov = +this.fovInput.value;
-    s.volume = +this.volInput.value;
-    s.quality = this.qualityInput.value;
-    s.invertY = this.invertInput.checked;
-    s.shadows = this.shadowsInput.checked;
-    s.bloom = this.bloomInput.checked;
-    s.muted = this.muteInput.checked;
-    s.showFps = this.showFpsInput.checked;
+    if (this.sensInput) s.sensitivity = +this.sensInput.value;
+    if (this.adsSensInput) s.adsSensitivity = +this.adsSensInput.value;
+    if (this.fovInput) s.fov = +this.fovInput.value;
+    if (this.volInput) s.volume = +this.volInput.value;
+    if (this.qualityInput) s.quality = this.qualityInput.value;
+    if (this.invertInput) s.invertY = this.invertInput.checked;
+    if (this.shadowsInput) s.shadows = this.shadowsInput.checked;
+    if (this.bloomInput) s.bloom = this.bloomInput.checked;
+    if (this.muteInput) s.muted = this.muteInput.checked;
+    if (this.showFpsInput) s.showFps = this.showFpsInput.checked;
+    if (this.nameInput) s.name = this.nameInput.value.trim().slice(0, 16) || 'Soldier';
+
     this._syncSettingLabels();
+    this._showSaveStamp('SAVED');
     if (this.onSettings) this.onSettings(s);
     if (close) this.toggleSettings(false);
   }
@@ -324,8 +449,12 @@ export class HUD {
       this._settingsSnapshot = JSON.stringify(this.settings);
       this._syncSettingsInputs();
       this._syncSettingLabels();
+      this._switchSettingsTab(this._activeTab || 'controls');
       this._openedAt = performance.now();
-      queueMicrotask(() => this.sensInput.focus());
+      queueMicrotask(() => {
+        const firstFocus = this.settingsPanel?.querySelector('input:not([type=hidden]):not(.sr-only), button:not(:disabled)');
+        if (firstFocus) firstFocus.focus();
+      });
     }
     this.settingsPanel.classList.toggle('hidden', !v);
     if (v) this.releasePointer?.();

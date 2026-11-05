@@ -565,8 +565,9 @@ class App {
   syncInputMode() {
     this.input.textMode = this.uiBlocked();
     if (this.hud.settingsOpen) {
-      $('settings-resume').textContent = this.active ? 'RESUME OPERATION' : 'BACK TO DEPLOYMENT';
-      $('settings-leave').classList.toggle('hidden', !this.active);
+      if ($('settings-resume')) $('settings-resume').textContent = this.active ? 'RESUME OPERATION' : 'BACK TO BRIEFING';
+      $('settings-leave-card')?.classList.toggle('hidden', !this.active);
+      $('settings-leave')?.classList.toggle('hidden', !this.active);
     }
   }
 
