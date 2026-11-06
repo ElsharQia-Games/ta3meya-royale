@@ -22,6 +22,13 @@ export function stanceEye(stance) {
   return stance === 2 ? P.PRONE_EYE : stance === 1 ? P.CROUCH_EYE : P.EYE;
 }
 
+// Single source of truth for the water/swim classification. Both the
+// authoritative controller and prediction reconciliation use this so a
+// restored snapshot cannot mix a stale swim flag with a new position.
+export function swimmingAt(world, x, y, z) {
+  return world.waterDepth(x, z) > 1.25 && y < world.lake.level - 0.1;
+}
+
 // Highest walkable surface under the capsule at (x,z), within [feetY-0.6, feetY+step].
 export function supportHeight(world, x, z, feetY, radius, step = P.STEP_HEIGHT) {
   let support = world.terrainHeight(x, z);
@@ -105,21 +112,26 @@ export function capsuleBlocked(world, x, y, z, height) {
   return false;
 }
 
-// Resolve vertical motion, ceilings, and ground contact.
-function resolveVertical(world, p, height, dt) {
+// Resolve vertical motion, ceilings, and ground contact. `prevY` is the feet
+// height before this substep's displacement; a box is only a ceiling when the
+// capsule crossed its underside. Overlapping the *side* of a wall (including a
+// pre-existing penetration) must never be resolved by moving the feet below it.
+function resolveVertical(world, p, height, dt, prevY) {
   const r = P.RADIUS;
+  const prevTop = prevY + height;
   const boxes = world.queryBoxes(p.pos[0] - r - 0.2, p.pos[2] - r - 0.2, p.pos[0] + r + 0.2, p.pos[2] + r + 0.2, _resVBoxes);
   // Ceiling
   for (const b of boxes) {
     if (b.destroyed || b.tag === 'glass' || b.tag === 'void') continue;
+    if (p.vel[1] <= 0) break;
     if (p.pos[1] + height <= b.min[1] + 0.02 || p.pos[1] >= b.max[1]) continue;
+    // Only the underside crossed during this substep is a ceiling contact.
+    if (prevTop > b.min[1] + 0.02) continue;
     const cx = clamp(p.pos[0], b.min[0], b.max[0]), cz = clamp(p.pos[2], b.min[2], b.max[2]);
     const dx = p.pos[0] - cx, dz = p.pos[2] - cz;
     if (dx * dx + dz * dz < r * r) {
-      if (p.vel[1] > 0) {
-        p.pos[1] = b.min[1] - height - 0.001;
-        p.vel[1] = 0;
-      }
+      p.pos[1] = b.min[1] - height - 0.001;
+      p.vel[1] = 0;
     }
   }
   // Ground
@@ -141,6 +153,27 @@ function resolveVertical(world, p, height, dt) {
   }
 }
 
+// Advance the movement-affecting timers. Both the authoritative simulation and
+// client prediction must run this before movePlayer(): the timers decide
+// whether the reload/heal speed penalty still applies and whether ADS is
+// available on this tick. Returns a bitmask of timers that reached zero so the
+// authoritative caller can run completion side effects (ammo transfer, healing,
+// events) while prediction deliberately skips them.
+export const TIMER_RELOAD = 1;
+export const TIMER_HEAL = 2;
+export function advanceMovementTimers(p, dt) {
+  let finished = 0;
+  if (p.reloadT > 0) {
+    p.reloadT = Math.max(0, p.reloadT - dt);
+    if (p.reloadT === 0) finished |= TIMER_RELOAD;
+  }
+  if (p.healT > 0) {
+    p.healT = Math.max(0, p.healT - dt);
+    if (p.healT === 0) finished |= TIMER_HEAL;
+  }
+  return finished;
+}
+
 export function movePlayer(world, p, input, dt) {
   const radius = P.RADIUS;
 
@@ -159,7 +192,7 @@ export function movePlayer(world, p, input, dt) {
   const groundH = world.terrainHeight(p.pos[0], p.pos[2]);
   const waterDepth = world.waterDepth(p.pos[0], p.pos[2]);
   p.inWater = waterDepth > 0.25;
-  p.swimming = waterDepth > 1.25 && p.pos[1] < world.lake.level - 0.1;
+  p.swimming = swimmingAt(world, p.pos[0], p.pos[1], p.pos[2]);
   if (p.swimming) p.stance = 0;
   const height = p.height();
 
@@ -250,7 +283,14 @@ export function movePlayer(world, p, input, dt) {
     p.pos[0] += sx; p.pos[2] += sz;
     // Terrain wall check: a rise larger than step height blocks.
     const th = world.terrainHeight(p.pos[0], p.pos[2]);
-    let blocked = p.grounded && th - p.pos[1] > P.STEP_HEIGHT + 0.06;
+    const rise = th - p.pos[1];
+    let blocked = p.grounded && rise > P.STEP_HEIGHT + 0.06;
+    // A walkable step still needs headroom: crouched players must not be
+    // raised into a low ceiling (F6).
+    if (!blocked && p.grounded && rise > 0.02 && rise <= P.STEP_HEIGHT + 0.06 &&
+      capsuleBlocked(world, p.pos[0], th + 0.001, p.pos[2], height)) {
+      blocked = true;
+    }
     // Slope limit: cannot walk up terrain steeper than SLOPE_MAX.
     if (!blocked && p.grounded) {
       const n = world.terrainNormal(p.pos[0], p.pos[2]);
@@ -281,17 +321,27 @@ export function movePlayer(world, p, input, dt) {
   if (p.grounded) {
     const support = supportHeight(world, p.pos[0], p.pos[2], p.pos[1] + 0.1, radius);
     if (support >= p.pos[1] - 0.55 && support <= p.pos[1] + P.STEP_HEIGHT + 0.06) {
-      p.pos[1] = support;
+      // Downward snapping preserves ground contact on slopes/stairs. Upward
+      // snapping is a step-up and must fit under any overhead geometry.
+      if (support <= p.pos[1] + 0.02 ||
+        !capsuleBlocked(world, p.pos[0], support, p.pos[2], height)) {
+        p.pos[1] = support;
+      }
     }
   }
 
   // ---- vertical integration with substeps ----
-  const vy = p.vel[1];
-  const vdist = Math.abs(vy * dt);
+  // vsteps is sized from the pre-integration velocity, but each substep applies
+  // the *current* velocity. A floor/ceiling contact zeroes vel[1], so the loop
+  // must not keep pushing the capsule into the surface with stale displacement.
+  const vdist = Math.abs(p.vel[1] * dt);
   const vsteps = Math.max(1, Math.ceil(vdist / MAX_SUBSTEP));
   for (let i = 0; i < vsteps; i++) {
-    p.pos[1] += (vy * dt) / vsteps;
-    resolveVertical(world, p, height, dt / vsteps);
+    const prevY = p.pos[1];
+    const substepVy = p.vel[1];
+    p.pos[1] += (substepVy * dt) / vsteps;
+    resolveVertical(world, p, height, dt / vsteps, prevY);
+    if (substepVy !== 0 && p.vel[1] === 0) break;
   }
 
   // ---- slope sliding ----

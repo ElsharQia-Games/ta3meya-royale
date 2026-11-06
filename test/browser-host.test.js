@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserHost } from '../src/net/host.js';
 import { NetClient } from '../src/net/client.js';
+import { PROTOCOL_VERSION } from '../shared/protocol.js';
 
 function wait(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -95,7 +96,7 @@ test('BrowserHost balances teams and relays second player join', async () => {
     room: 'TEAM01',
     mode: 'tdm',
     kit: 'recon',
-    protocol: 7,
+    protocol: PROTOCOL_VERSION,
   });
 
   const client2 = new NetClient({

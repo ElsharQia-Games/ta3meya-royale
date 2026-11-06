@@ -3,7 +3,9 @@
 // local player and smooths the error when a snapshot arrives.
 import { CFG, STANCE } from '../shared/config.js';
 import { clamp, lerpAngle, wrapAngle } from '../shared/math.js';
-import { movePlayer, stanceHeight, stanceEye } from '../shared/physics.js';
+import {
+  movePlayer, stanceHeight, stanceEye, swimmingAt, advanceMovementTimers,
+} from '../shared/physics.js';
 
 export function makePredictedPlayer() {
   return {
@@ -33,13 +35,22 @@ export class Prediction {
     const p = this.player;
     this.acked = 0;
     p.pos = [snapshot.x, snapshot.y, snapshot.z];
-    p.vel = [snapshot.vx || 0, 0, snapshot.vz || 0];
+    p.vel = [snapshot.vx || 0, snapshot.vy || 0, snapshot.vz || 0];
     if (snapshot.stance !== undefined) p.stance = snapshot.stance;
+    p.stanceT = 1;
     p.grounded = !!snapshot.grounded;
     p.inWater = !!snapshot.inWater;
+    p.swimming = swimmingAt(this.world, p.pos[0], p.pos[1], p.pos[2]);
+    p.coyote = snapshot.coyote || 0;
+    p.jumpBuffer = snapshot.jumpBuffer || 0;
+    p.sprinting = !!snapshot.sprinting;
+    p.adsing = !!snapshot.adsing;
+    p.groundNormal = this.world.terrainNormal(p.pos[0], p.pos[2]);
     p.inVehicle = snapshot.vehicle || 0;
     p.reloadT = snapshot.reload || 0;
     p.healT = snapshot.heal || 0;
+    p.fallImpact = 0;
+    p.pendingFallDamage = 0;
     p.yaw = snapshot.yaw ?? p.yaw;
     p.pitch = snapshot.pitch ?? p.pitch;
     this.history.length = 0;
@@ -60,6 +71,10 @@ export class Prediction {
 
   _apply(input, dt) {
     const p = this.player;
+    // Match the authoritative tick order: movement-affecting timers advance
+    // before integration. Completion side effects (ammo transfer, healing,
+    // events) are authoritative-only; the snapshot carries their results.
+    advanceMovementTimers(p, dt);
     p.yaw = input.yaw;
     p.pitch = clamp(input.pitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH);
     movePlayer(this.world, p, input, dt);
@@ -81,7 +96,10 @@ export class Prediction {
     if (inVehicle) {
       // Vehicle motion is server-driven; interpolate rather than predict.
       p.pos = [snapshot.x, snapshot.y, snapshot.z];
-      p.vel = [snapshot.vx || 0, 0, snapshot.vz || 0];
+      p.vel = [snapshot.vx || 0, snapshot.vy || 0, snapshot.vz || 0];
+      p.coyote = 0;
+      p.jumpBuffer = 0;
+      p.swimming = false;
       this.history.length = 0;
       this.correction = [0, 0, 0];
       return;
@@ -91,10 +109,16 @@ export class Prediction {
     this.history = this.history.filter(h => h.seq > this.acked);
 
     p.pos = [snapshot.x, snapshot.y, snapshot.z];
-    p.vel = [snapshot.vx || 0, 0, snapshot.vz || 0];
+    p.vel = [snapshot.vx || 0, snapshot.vy || 0, snapshot.vz || 0];
     p.stance = snapshot.stance ?? p.stance;
     p.grounded = !!snapshot.grounded;
     p.inWater = !!snapshot.inWater;
+    p.swimming = swimmingAt(this.world, p.pos[0], p.pos[1], p.pos[2]);
+    p.coyote = snapshot.coyote || 0;
+    p.jumpBuffer = snapshot.jumpBuffer || 0;
+    p.sprinting = !!snapshot.sprinting;
+    p.adsing = !!snapshot.adsing;
+    p.groundNormal = this.world.terrainNormal(p.pos[0], p.pos[2]);
     p.fallImpact = 0;
     p.pendingFallDamage = 0;
 
@@ -185,6 +209,7 @@ export class SnapshotBuffer {
         y: pa.y + (pb.y - pa.y) * f,
         z: pa.z + (pb.z - pa.z) * f,
         vx: pa.vx + ((pb.vx ?? 0) - (pa.vx ?? 0)) * f,
+        vy: pa.vy + ((pb.vy ?? 0) - (pa.vy ?? 0)) * f,
         vz: pa.vz + ((pb.vz ?? 0) - (pa.vz ?? 0)) * f,
         yaw: lerpAngle(pa.yaw ?? 0, pb.yaw ?? 0, f),
         pitch: (pa.pitch ?? 0) + ((pb.pitch ?? 0) - (pa.pitch ?? 0)) * f,

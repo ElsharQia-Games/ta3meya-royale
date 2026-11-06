@@ -15,7 +15,7 @@ import { CFG } from './config.js';
 import { WEAPON_KEYS } from './weapons.js';
 import { clamp, wrapAngle, TAU } from './math.js';
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 // A join is only accepted for the exact wire format this server speaks. The
 // snapshot/input layouts are not forward/backward compatible, so silently
@@ -58,13 +58,16 @@ export const F = {
   TIMERS: 1 << 9,
   META: 1 << 10,
   PING: 1 << 11,
+  MOVE: 1 << 12,
 };
-export const F_ALL = (1 << 12) - 1;
+export const F_ALL = (1 << 13) - 1;
 
 const POS_SCALE = 50;      // 2 cm
 const VEL_SCALE = 100;     // 1 cm/s
 const PITCH_SCALE = 10000;
-const YAW_SCALE = 65535 / TAU;
+// 16-bit code space: 65536 codes spanning one full turn. Using 65535 here
+// biases every negative angle by one step when the unsigned code is decoded.
+const YAW_SCALE = 65536 / TAU;
 const PAD = 256;
 
 const textEnc = new TextEncoder();
@@ -296,7 +299,11 @@ export function snapshotState(game) {
       id: p.id,
       x: p.pos[0], y: p.pos[1], z: p.pos[2],
       yaw: p.yaw, pitch: p.pitch,
-      vx: p.vel[0], vz: p.vel[2],
+      vx: p.vel[0], vy: p.vel[1], vz: p.vel[2],
+      // Movement timers that affect the next movePlayer() integration. Stored
+      // in seconds; encoded as centiseconds by the wire format.
+      coyote: p.coyote || 0,
+      jumpBuffer: p.jumpBuffer || 0,
       hp: Math.max(0, Math.min(255, Math.round(p.health))),
       armor: Math.max(0, Math.min(255, Math.round(p.armor))),
       alive: p.alive ? 1 : 0,
@@ -330,12 +337,84 @@ function sameField(a, b, key) {
   return va === vb;
 }
 
+// Project a raw simulation state onto the exact values the wire format can
+// represent. The delta baseline must be built from these values, not from the
+// raw simulation state: otherwise fields that were never transmitted are
+// treated as received, and slow movement drifts until the next keyframe (F3).
+const finite = value => (Number.isFinite(value) ? value : 0);
+function qInt(value, scale, min = -32768, max = 32767) {
+  return clamp(Math.round(finite(value) * scale), min, max) / scale;
+}
+function qByte(value, min = 0, max = 255) {
+  return clamp(Math.round(finite(value)), min, max);
+}
+// Quantize yaw to the exact double represented by its uint16 wire code. The
+// code is unsigned (0..TAU), so qYaw(-1) returns ~5.283 rather than -1.
+function yawCode(value) {
+  return Math.round(wrapAngle(finite(value)) * YAW_SCALE) & 0xffff;
+}
+function qYaw(value) {
+  return yawCode(value) / YAW_SCALE;
+}
+function qMove(value) {
+  return clamp(Math.round(finite(value) * 100), 0, 255);
+}
+
+function wireState(cur) {
+  return {
+    id: cur.id,
+    x: qInt(cur.x, POS_SCALE), y: qInt(cur.y, POS_SCALE), z: qInt(cur.z, POS_SCALE),
+    yaw: qYaw(cur.yaw),
+    pitch: qInt(clamp(finite(cur.pitch), -1.5, 1.5), PITCH_SCALE),
+    vx: qInt(cur.vx, VEL_SCALE), vy: qInt(cur.vy, VEL_SCALE), vz: qInt(cur.vz, VEL_SCALE),
+    hp: qByte(cur.hp), armor: qByte(cur.armor),
+    alive: cur.alive ? 1 : 0, grounded: cur.grounded ? 1 : 0, inWater: cur.inWater ? 1 : 0,
+    connected: cur.connected ? 1 : 0, stance: qByte(cur.stance) & 3,
+    sprinting: cur.sprinting ? 1 : 0, adsing: cur.adsing ? 1 : 0,
+    w: qByte(cur.w), slot: qByte(cur.slot),
+    mag: qByte(cur.mag, 0, 65535), res: qByte(cur.res, 0, 65535),
+    k: qByte(cur.k, 0, 65535), d: qByte(cur.d, 0, 65535), dmg: qByte(cur.dmg, 0, 65535),
+    vehicle: qByte(cur.vehicle, 0, 65535), seat: qByte(cur.seat, -128, 127),
+    reload: qByte(cur.reload, 0, 65535), heal: qByte(cur.heal, 0, 65535),
+    switchT: qByte(cur.switchT),
+    team: qByte(cur.team), gren: qByte(cur.gren), smoke: qByte(cur.smoke),
+    band: qByte(cur.band), med: qByte(cur.med),
+    ping: qByte(cur.ping, 0, 65535),
+    coyote: qMove(cur.coyote) / 100, jumpBuffer: qMove(cur.jumpBuffer) / 100,
+  };
+}
+
+const WIRE_FIELDS = [
+  [F.POS, ['x', 'y', 'z']],
+  [F.ANG, ['yaw', 'pitch']],
+  [F.VEL, ['vx', 'vy', 'vz']],
+  [F.VIT, ['hp', 'armor']],
+  [F.FLAGS, ['alive', 'grounded', 'inWater', 'connected', 'stance', 'sprinting', 'adsing']],
+  [F.WEAPON, ['w', 'slot']],
+  [F.AMMO, ['mag', 'res']],
+  [F.SCORE, ['k', 'd', 'dmg']],
+  [F.VEH, ['vehicle', 'seat']],
+  [F.TIMERS, ['reload', 'heal', 'switchT']],
+  [F.META, ['team', 'gren', 'smoke', 'band', 'med']],
+  [F.PING, ['ping']],
+  [F.MOVE, ['coyote', 'jumpBuffer']],
+];
+
+function mergeWireState(prev, cur, mask) {
+  const base = { ...prev, id: cur.id };
+  for (const [bit, keys] of WIRE_FIELDS) {
+    if (!(mask & bit)) continue;
+    for (const key of keys) base[key] = cur[key];
+  }
+  return base;
+}
+
 function diffMask(cur, prev) {
   if (!prev) return F_ALL;
   let mask = 0;
   if (Math.abs(cur.x - prev.x) > 0.009 || Math.abs(cur.y - prev.y) > 0.009 || Math.abs(cur.z - prev.z) > 0.009) mask |= F.POS;
   if (Math.abs(wrapAngle(cur.yaw - prev.yaw)) > 0.002 || Math.abs(cur.pitch - prev.pitch) > 0.002) mask |= F.ANG;
-  if (Math.abs(cur.vx - prev.vx) > 0.02 || Math.abs(cur.vz - prev.vz) > 0.02) mask |= F.VEL;
+  if (Math.abs(cur.vx - prev.vx) >= 0.02 || Math.abs(cur.vy - prev.vy) >= 0.02 || Math.abs(cur.vz - prev.vz) >= 0.02) mask |= F.VEL;
   if (cur.hp !== prev.hp || cur.armor !== prev.armor) mask |= F.VIT;
   if (cur.alive !== prev.alive || cur.grounded !== prev.grounded || cur.inWater !== prev.inWater ||
     cur.connected !== prev.connected || cur.stance !== prev.stance ||
@@ -348,6 +427,7 @@ function diffMask(cur, prev) {
   if (cur.team !== prev.team || cur.gren !== prev.gren || cur.smoke !== prev.smoke ||
     cur.band !== prev.band || cur.med !== prev.med) mask |= F.META;
   if (cur.ping !== prev.ping) mask |= F.PING;
+  if (cur.coyote !== prev.coyote || cur.jumpBuffer !== prev.jumpBuffer) mask |= F.MOVE;
   return mask;
 }
 
@@ -355,7 +435,7 @@ function playerBlockSize(mask) {
   let n = 4; // id + mask
   if (mask & F.POS) n += 6;
   if (mask & F.ANG) n += 4;
-  if (mask & F.VEL) n += 4;
+  if (mask & F.VEL) n += 6;
   if (mask & F.VIT) n += 2;
   if (mask & F.FLAGS) n += 1;
   if (mask & F.WEAPON) n += 2;
@@ -365,6 +445,7 @@ function playerBlockSize(mask) {
   if (mask & F.TIMERS) n += 5;
   if (mask & F.META) n += 5;
   if (mask & F.PING) n += 2;
+  if (mask & F.MOVE) n += 2;
   return n;
 }
 
@@ -377,11 +458,15 @@ function writePlayer(v, off, cur, mask) {
     v.setInt16(off, clamp(Math.round(cur.z * POS_SCALE), -32768, 32767), true); off += 2;
   }
   if (mask & F.ANG) {
-    v.setUint16(off, Math.round(wrapAngle(cur.yaw) * YAW_SCALE) & 0xffff, true); off += 2;
+    // cur.yaw is already a qYaw() baseline value. Re-wrapping it here would
+    // move negative angles across a rounding boundary and encode the adjacent
+    // code, making the transmitted yaw differ from the baseline by one LSB.
+    v.setUint16(off, Math.round(finite(cur.yaw) * YAW_SCALE) & 0xffff, true); off += 2;
     v.setInt16(off, clamp(Math.round(clamp(cur.pitch, -1.5, 1.5) * PITCH_SCALE), -32768, 32767), true); off += 2;
   }
   if (mask & F.VEL) {
     v.setInt16(off, clamp(Math.round(cur.vx * VEL_SCALE), -32768, 32767), true); off += 2;
+    v.setInt16(off, clamp(Math.round(cur.vy * VEL_SCALE), -32768, 32767), true); off += 2;
     v.setInt16(off, clamp(Math.round(cur.vz * VEL_SCALE), -32768, 32767), true); off += 2;
   }
   if (mask & F.VIT) { v.setUint8(off++, cur.hp); v.setUint8(off++, cur.armor); }
@@ -407,6 +492,10 @@ function writePlayer(v, off, cur, mask) {
     v.setUint8(off++, cur.smoke); v.setUint8(off++, cur.band); v.setUint8(off++, cur.med);
   }
   if (mask & F.PING) { v.setUint16(off, cur.ping, true); off += 2; }
+  if (mask & F.MOVE) {
+    v.setUint8(off++, clamp(Math.round((cur.coyote || 0) * 100), 0, 255));
+    v.setUint8(off++, clamp(Math.round((cur.jumpBuffer || 0) * 100), 0, 255));
+  }
   return off;
 }
 
@@ -422,9 +511,14 @@ export function encodeSnapshot(states, prev, seq, serverTime, forceKeyframe = fa
   }
   let size = 16 + removed.length * 2 + 64;
   const blocks = [];
+  const wire = new Map();
+  const baseline = new Map();
+  for (const id of ids) wire.set(id, wireState(states.get(id)));
   for (const id of ids) {
-    const cur = states.get(id);
-    const m = keyframe ? F_ALL : diffMask(cur, prev.get(id));
+    const cur = wire.get(id);
+    const prevState = keyframe ? null : (prev ? prev.get(id) : null);
+    const m = keyframe || !prevState ? F_ALL : diffMask(cur, prevState);
+    baseline.set(id, m === F_ALL ? { ...cur } : mergeWireState(prevState, cur, m));
     if (!m) continue;
     blocks.push({ id, mask: m });
     size += playerBlockSize(m);
@@ -440,8 +534,8 @@ export function encodeSnapshot(states, prev, seq, serverTime, forceKeyframe = fa
   v.setUint8(off++, blocks.length);
   v.setUint8(off++, removed.length);
   for (const id of removed) { v.setUint16(off, id, true); off += 2; }
-  for (const b of blocks) off = writePlayer(v, off, states.get(b.id), b.mask);
-  return { buffer: buf.slice(0, off), states };
+  for (const b of blocks) off = writePlayer(v, off, wire.get(b.id), b.mask);
+  return { buffer: buf.slice(0, off), states: baseline };
 }
 
 function readPlayer(v, off) {
@@ -459,6 +553,7 @@ function readPlayer(v, off) {
   }
   if (mask & F.VEL) {
     p.vx = v.getInt16(off, true) / VEL_SCALE; off += 2;
+    p.vy = v.getInt16(off, true) / VEL_SCALE; off += 2;
     p.vz = v.getInt16(off, true) / VEL_SCALE; off += 2;
   }
   if (mask & F.VIT) { p.hp = v.getUint8(off++); p.armor = v.getUint8(off++); }
@@ -486,6 +581,10 @@ function readPlayer(v, off) {
     p.smoke = v.getUint8(off++); p.band = v.getUint8(off++); p.med = v.getUint8(off++);
   }
   if (mask & F.PING) { p.ping = v.getUint16(off, true); off += 2; }
+  if (mask & F.MOVE) {
+    p.coyote = v.getUint8(off++) / 100;
+    p.jumpBuffer = v.getUint8(off++) / 100;
+  }
   return { player: p, off };
 }
 

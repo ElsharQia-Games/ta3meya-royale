@@ -270,3 +270,60 @@ test('TDM deployment gives simultaneous teammates separate clear spawn positions
       `overlapping deployment ${players[i].id}/${players[j].id}`);
   }
 });
+
+test('respawn starts from a clean, explicit movement state', () => {
+  const g = new Game({ mode: 'tdm', seed: 4242 });
+  const p = g.addPlayer('Alpha', 0);
+  p.coyote = 0.11;
+  p.jumpBuffer = 0.12;
+  p.stanceT = 0.2;
+  p.inWater = true;
+  p.swimming = true;
+  p.sprinting = true;
+  p.adsing = true;
+  p.grounded = false;
+  p.vel = [3, -9, 2];
+  p.stance = STANCE.CROUCH;
+  p.fallImpact = 20;
+  p.pendingFallDamage = 5;
+
+  g.spawnPlayer(p, { x: 0, z: 0 });
+
+  assert.equal(p.coyote, 0);
+  assert.equal(p.jumpBuffer, 0);
+  assert.equal(p.stanceT, 1);
+  assert.equal(p.inWater, false);
+  assert.equal(p.swimming, false);
+  assert.equal(p.sprinting, false);
+  assert.equal(p.adsing, false);
+  assert.equal(p.grounded, false);
+  assert.deepEqual(p.vel, [0, 0, 0]);
+  assert.equal(p.stance, STANCE.STAND);
+  assert.equal(p.fallImpact, 0);
+  assert.equal(p.pendingFallDamage, 0);
+});
+
+test('an invalid underground position is recovered without affecting elevated floors', () => {
+  const g = new Game({ mode: 'tdm', seed: 4242 });
+  const p = g.addPlayer('Alpha', 0);
+  g.begin();
+  g.matchState = MATCH_STATE.LIVE;
+
+  const th = g.world.terrainHeight(p.pos[0], p.pos[2]);
+  p.pos[1] = th - 2;
+  p.vel = [0, 0, 0];
+  p.grounded = false;
+  g.step(new Map([[p.id, emptyInput()]]), CFG.SIM_DT);
+  assert.ok(p.pos[1] >= th - 0.05,
+    `underground recovery left the player below terrain: y=${p.pos[1]}, terrain=${th}`);
+
+  // A support surface above the terrain (interior floor / platform) must not be
+  // pulled down by the terrain recovery rule.
+  const support = th + 3;
+  p.pos[1] = support;
+  p.vel = [0, 0, 0];
+  p.grounded = true;
+  g.step(new Map([[p.id, emptyInput()]]), CFG.SIM_DT);
+  assert.ok(p.pos[1] >= th + 2.5,
+    `terrain recovery pulled an elevated player down: y=${p.pos[1]}`);
+});

@@ -5,7 +5,10 @@
 import { CFG, STANCE, MATCH_STATE, TEAMS, combatKit } from './config.js';
 import { RNG, clamp, yawTo, TAU, lerp } from './math.js';
 import { World } from './world.js';
-import { movePlayer, stanceHeight, stanceEye, supportHeight, capsuleBlocked } from './physics.js';
+import {
+  movePlayer, stanceHeight, stanceEye, supportHeight, capsuleBlocked,
+  advanceMovementTimers, TIMER_RELOAD, TIMER_HEAL,
+} from './physics.js';
 import { vehicleShape, vehicleRideHeight, vehicleAxes, vehicleFootprint, vehicleBoxContact, vehiclePairContact, vehiclePlayerContact, packVehicle, vehicleInReach } from './vehicle.js';
 import {
   tryFire, tryReload, finishReload, switchWeapon, throwGrenade, stepProjectiles,
@@ -201,7 +204,18 @@ export class Game {
     p.health = CFG.PLAYER.MAX_HEALTH;
     p.alive = true;
     p.stance = STANCE.STAND;
+    p.stanceT = 1;
     p.grounded = false;
+    // A new life starts from an explicit movement state; never inherit
+    // coyote time, a buffered jump, or water/swim state from the previous one.
+    p.coyote = 0;
+    p.jumpBuffer = 0;
+    p.sprinting = false;
+    p.adsing = false;
+    p.inWater = false;
+    p.swimming = false;
+    p.groundNormal = this.world.terrainNormal(s.x, s.z);
+    p.jumped = false;
     p.inVehicle = null; p.seat = -1;
     p.yaw = this.rng.next() * TAU;
     p.pitch = 0;
@@ -314,18 +328,13 @@ export class Game {
     p.cooldown = Math.max(0, p.cooldown - dt);
     p.switchT = Math.max(0, p.switchT - dt);
     p.heat = Math.max(0, p.heat - dt * 1.35);
-    if (p.reloadT > 0) {
-      p.reloadT -= dt;
-      if (p.reloadT <= 0) finishReload(p);
-    }
-    if (p.healT > 0) {
-      p.healT -= dt;
-      if (p.healT <= 0) {
-        const def = CFG.HEAL[p.healItem] || CFG.HEAL.bandage;
-        p.health = Math.min(def.cap, p.health + def.amount);
-        this.events.push({ k: 'healed', id: p.id, hp: Math.round(p.health) });
-        p.healItem = null;
-      }
+    const finishedTimers = advanceMovementTimers(p, dt);
+    if (finishedTimers & TIMER_RELOAD) finishReload(p);
+    if (finishedTimers & TIMER_HEAL) {
+      const def = CFG.HEAL[p.healItem] || CFG.HEAL.bandage;
+      p.health = Math.min(def.cap, p.health + def.amount);
+      this.events.push({ k: 'healed', id: p.id, hp: Math.round(p.health) });
+      p.healItem = null;
     }
 
     if (p.inVehicle) {
@@ -341,6 +350,9 @@ export class Game {
     p.pitch = clamp(input.pitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH);
     // Stance changes are validated inside the controller (headroom checks).
     movePlayer(this.world, p, input, dt);
+    // Recovery net for numerical/support edge cases. This is intentionally a
+    // tolerance, not a floor snap: interior floors and elevated surfaces sit
+    // above terrainHeight(), so this only catches genuinely invalid positions.
     p.pos[1] = Math.max(p.pos[1], this.world.terrainHeight(p.pos[0], p.pos[2]) - 0.4);
 
     // fall damage accumulated by the controller

@@ -363,3 +363,107 @@ test('high-speed projectile still hits a thin wall between integration steps', (
   assert.ok(Math.abs(impact.dist - 9.5) < 0.05, `impact distance ${impact.dist}`);
   assert.equal(res.hit, null, 'thick wall should stop the bullet');
 });
+
+test('high-speed falls stop on the support surface and queue impact once', () => {
+  const w = flatWorld();
+  const p = makePlayer(0, 0, 8, w);
+  p.vel[1] = -55;
+  for (let i = 0; i < 20; i++) movePlayer(w, p, emptyInput(), CFG.SIM_DT);
+  assert.ok(p.grounded, 'expected to land');
+  assert.ok(Math.abs(p.pos[1]) < 1e-6, `landed at y=${p.pos[1]}`);
+  assert.equal(p.vel[1], 0);
+  const queued = p.pendingFallDamage;
+  assert.ok(queued > 0, 'high-speed fall should queue fall damage');
+  for (let i = 0; i < 5; i++) movePlayer(w, p, emptyInput(), CFG.SIM_DT);
+  assert.equal(p.pendingFallDamage, queued, 'one landing must not queue damage repeatedly');
+  assert.equal(p.fallImpact, 0);
+});
+
+test('high-speed falls land on an elevated platform without tunnelling', () => {
+  const w = flatWorld([box([-2, 0, -2], [2, 1, 2], 'platform')]);
+  const p = makePlayer(0, 0, 6, w);
+  p.vel[1] = -55;
+  for (let i = 0; i < 20; i++) movePlayer(w, p, emptyInput(), CFG.SIM_DT);
+  assert.ok(p.grounded, 'expected to land on the platform');
+  assert.ok(Math.abs(p.pos[1] - 1) < 1e-6, `landed at y=${p.pos[1]}, expected 1`);
+  assert.equal(p.vel[1], 0);
+});
+
+test('jumping into a ceiling stops upward motion at the underside', () => {
+  const w = flatWorld([box([-2, 2, -2], [2, 2.2, 2], 'ceiling')]);
+  const p = makePlayer(0, 0, 0.05, w);
+  p.grounded = true;
+  p.vel[1] = 12;
+  for (let i = 0; i < 8; i++) movePlayer(w, p, emptyInput(), CFG.SIM_DT);
+  assert.ok(p.pos[1] + p.height() <= 2 + 0.01,
+    `capsule penetrated the ceiling: top=${p.pos[1] + p.height()}`);
+  assert.ok(p.pos[1] >= 0, `ceiling resolution moved feet underground: y=${p.pos[1]}`);
+});
+
+test('jumping while overlapping wall geometry never teleports underground', () => {
+  // The corridor is narrower than the capsule, forcing a pre-existing
+  // horizontal penetration that horizontal resolution cannot fully separate.
+  const w = flatWorld([box([0.3, 0, -2], [1, 3, 2]), box([-1, 0, -2], [-0.3, 3, 2])]);
+  const p = makePlayer(0, 0, 0.05, w);
+  p.grounded = true;
+  p.vel[1] = 7;
+  const input = emptyInput();
+  let maxY = -Infinity;
+  for (let i = 0; i < 40; i++) {
+    movePlayer(w, p, input, CFG.SIM_DT);
+    maxY = Math.max(maxY, p.pos[1]);
+    assert.ok(Number.isFinite(p.pos[1]), 'vertical position became non-finite');
+    assert.ok(p.pos[1] >= -0.01, `wall overlap teleported feet underground: y=${p.pos[1]}`);
+  }
+  // A wall touch must not be classified as a ceiling and cancel the jump.
+  assert.ok(maxY > 0.2, `wall overlap cancelled the jump, maxY=${maxY}`);
+});
+
+test('jumping into an inside corner stays stable and above ground', () => {
+  const w = flatWorld([
+    box([0.6, 0, -3], [2, 3, -0.6]),
+    box([-2, 0, 0.6], [2, 3, 3]),
+  ]);
+  const p = makePlayer(0.4, 0.4, 0.05, w);
+  p.grounded = true;
+  p.vel[1] = 7;
+  const input = emptyInput();
+  for (let i = 0; i < 40; i++) {
+    movePlayer(w, p, input, CFG.SIM_DT);
+    assert.ok(Number.isFinite(p.pos[1]));
+    assert.ok(p.pos[1] >= -0.01, `corner contact moved feet underground: y=${p.pos[1]}`);
+  }
+});
+
+test('a crouched player cannot step under a ceiling with insufficient headroom', () => {
+  const terrainHeight = (x, z) => (z < -0.5 ? 0.35 : 0);
+  const w = flatWorld([box([-3, 1.5, -4], [3, 1.7, 1], 'ceiling')], { terrainHeight });
+  const p = makePlayer(0, 1, 0.05, w);
+  p.stance = STANCE.CROUCH;
+  p.grounded = true;
+  const input = emptyInput();
+  input.f = true;
+  let maxTop = 0;
+  for (let i = 0; i < 60; i++) {
+    movePlayer(w, p, input, CFG.SIM_DT);
+    maxTop = Math.max(maxTop, p.pos[1] + p.height());
+  }
+  assert.ok(p.pos[1] < 0.02, `step-up raised the player into the ceiling: y=${p.pos[1]}`);
+  assert.ok(maxTop <= 1.5 + 0.02,
+    `a step-up pushed the capsule through the 1.5 m ceiling: top=${maxTop}`);
+  assert.ok(p.pos[2] < 0, `player was shoved away from the ledge instead of stopping at it: z=${p.pos[2]}`);
+});
+
+test('walking down terrain steps keeps the capsule on the surface', () => {
+  const terrainHeight = (x, z) => (z < -3 ? 1.2 : z < -2 ? 0.9 : z < -1 ? 0.6 : z < 0 ? 0.3 : 0);
+  const w = flatWorld([], { terrainHeight });
+  const p = makePlayer(0, 1, null, w);
+  p.grounded = true;
+  const input = emptyInput();
+  input.f = true;
+  for (let i = 0; i < 180; i++) movePlayer(w, p, input, CFG.SIM_DT);
+  assert.ok(p.grounded, 'expected to stay grounded while descending');
+  assert.ok(p.pos[2] < -3, `did not reach the bottom step: z=${p.pos[2]}`);
+  assert.ok(Math.abs(p.pos[1] - terrainHeight(p.pos[0], p.pos[2])) < 0.07,
+    `capsule floated above the stairs: y=${p.pos[1]}`);
+});
