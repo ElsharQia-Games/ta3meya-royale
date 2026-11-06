@@ -82,6 +82,8 @@ class App {
 
     this.host = null;
     this.relay = null;
+    this.peerSession = null;
+    this.pendingJoin = null;
     this.netMode = 'peer';
     this.offlineGame = null;
     this.offlinePlayer = null;
@@ -339,7 +341,7 @@ class App {
   // Online session
   // -------------------------------------------------------------------------
   async joinOnline() {
-    if (this.net) return;
+    if (this.net || this.pendingJoin) return;
     const { name, room, mode, kit, server } = this.readLobby();
     this.audio.init();
     this.audio.setVolume(this.settings.volume);
@@ -347,30 +349,42 @@ class App {
     $('join').disabled = true;
 
     if (this.netMode === 'peer') {
+      const controller = new AbortController();
+      this.pendingJoin = controller;
       this.setLobbyStatus(`Connecting to room ${room}…`);
       try {
         const session = await joinPeerSession({
           name, room, mode, kit,
+          signal: controller.signal,
           WebSocket: globalThis.WebSocket,
           onStatus: (st) => {
+            if (controller.signal.aborted) return;
             if (st === 'probing-room') this.setLobbyStatus(`Searching for room ${room}…`);
             else if (st === 'hosting') this.setLobbyStatus(`Hosting room ${room} (${mode.toUpperCase()}) · Share invite link with friends!`);
             else if (st === 'connecting-guest') this.setLobbyStatus(`Connecting to host in room ${room}…`);
             else if (st === 'connecting-p2p') this.setLobbyStatus(`Establishing P2P link with host…`);
           },
           onError: (err) => {
+            if (controller.signal.aborted) return;
             this.setLobbyStatus(`Connection error: ${err}`, true);
             $('join').disabled = false;
           },
         });
-
+        if (controller.signal.aborted) { session.close(); return; }
+        // The session owns the host, relay, peer socket and every timer it
+        // created. Keep the handle so leave/teardown can close it exactly once.
+        this.peerSession = session;
         this.host = session.host;
         this.relay = session.relay;
         this._wireNetClient(session.net);
         session.net.connect();
       } catch (err) {
-        this.setLobbyStatus(`Connection failed: ${err.message || err}`, true);
-        $('join').disabled = false;
+        if (!controller.signal.aborted) {
+          this.setLobbyStatus(`Connection failed: ${err.message || err}`, true);
+        }
+      } finally {
+        if (this.pendingJoin === controller) this.pendingJoin = null;
+        if (!this.net) $('join').disabled = false;
       }
       return;
     }
@@ -382,6 +396,43 @@ class App {
     net.connect();
   }
 
+  // Every online peer attempt is owned by one joinPeerSession() handle. Closing
+  // that handle releases the relay, host, accepted transport and pending
+  // negotiation together, so callers never have to reproduce the teardown
+  // order by hand.
+  _endPeerSession() {
+    const session = this.peerSession;
+    this.peerSession = null;
+    if (!session) return false;
+    this.host = null;
+    this.relay = null;
+    this.net = null;
+    try { session.close(); } catch {}
+    return true;
+  }
+
+  // A peer transport cannot be rebuilt. Leave gameplay and show the lobby so
+  // the player can deploy again, rather than running an active HUD against a
+  // session whose net/host/relay have already been released.
+  _returnToLobbyAfterPeerFailure(message) {
+    if (this.active) {
+      this.active = false;
+      this.endShown = false;
+      this.manualOpen = false;
+      this.input.enabled = false;
+      this.input.clearHeld();
+      this.input.releaseLock();
+      this.hud.hideReconnect();
+      this.hud.hideEnd();
+      this.hud.setLobbyVisible(true);
+      this.hud.setLobbyRoster([], this.settings.mode || 'br', MATCH_STATE.LOBBY);
+      this.roster = [];
+    }
+    this._endPeerSession();
+    this.setLobbyStatus(message, true);
+    $('join').disabled = false;
+  }
+
   _wireNetClient(net) {
     this.net = net;
     net.onStatus = (state, extra) => {
@@ -391,11 +442,18 @@ class App {
         if (this.active) this.hud.showReconnect('CONNECTION LOST — RECONNECTING · P TO RETRY');
       } else if (state === 'joined-pending') this.setLobbyStatus('Joining room…');
       else if (state === 'disconnected') this.setLobbyStatus('Disconnected.', true);
-      else if (state === 'error' && !this.active) {
-        net.disconnect();
-        if (this.net === net) this.net = null;
-        if (this.host) { this.host.close(); this.host = null; }
-        $('join').disabled = false;
+      else if (state === 'error') {
+        if (this.peerSession) {
+          // A peer transport is terminal: release the session it belongs to
+          // and return an active match to a recoverable lobby.
+          this._returnToLobbyAfterPeerFailure('Peer connection ended. Deploy again to rejoin the room.');
+        } else if (!this.active) {
+          net.disconnect();
+          if (this.net === net) this.net = null;
+          if (this.host) { this.host.close(); this.host = null; }
+          this.setLobbyStatus('Peer connection failed. Deploy again to retry.', true);
+          $('join').disabled = false;
+        }
       }
       else if (state === 'closed') { /* intentional */ }
     };
@@ -491,6 +549,8 @@ class App {
   // -------------------------------------------------------------------------
   joinOffline() {
     if (this.active || this.preparing) return;
+    if (this.pendingJoin) { this.pendingJoin.abort(); this.pendingJoin = null; }
+    this._endPeerSession();
     this.net?.disconnect(); this.net = null;
     this.preparing = true;
     const { name, mode, kit } = this.readLobby();
@@ -575,6 +635,12 @@ class App {
     const net = this.net;
     if (!net) return;
     if (net.connected && net.joined) return;
+    // Peer transports are bound to one DataChannel/relay socket and cannot be
+    // rebuilt by calling connect() again; the lobby must start a fresh join.
+    if (net.allowReconnect === false) {
+      this.setLobbyStatus('Peer connection ended. Leave and rejoin the room.', true);
+      return;
+    }
     if (net.reconnectTimer) { clearTimeout(net.reconnectTimer); net.reconnectTimer = null; }
     net.disconnect();
     net.reconnectAttempts = 0;
@@ -586,9 +652,12 @@ class App {
     this.active = false;
     this.input.enabled = false;
     this.input.releaseLock();
-    if (this.host) { this.host.close(); this.host = null; }
-    if (this.relay) { this.relay.close(); this.relay = null; }
-    if (this.net) { this.net.leave(); this.net = null; }
+    if (this.pendingJoin) { this.pendingJoin.abort(); this.pendingJoin = null; }
+    if (!this._endPeerSession()) {
+      if (this.net) { this.net.leave(); this.net = null; }
+      if (this.host) { this.host.close(); this.host = null; }
+      if (this.relay) { this.relay.close(); this.relay = null; }
+    }
     location.reload();
   }
 

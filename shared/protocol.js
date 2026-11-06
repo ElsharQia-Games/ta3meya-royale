@@ -172,6 +172,12 @@ export function wireToSimInput(w, previous = null) {
 export const MAX_INPUT_BACKLOG = 16;
 // Stop repeating held movement/shoot after this long without a fresh frame.
 export const INPUT_STALE_MS = 250;
+// Admission rate for binary input frames. Shared by the dedicated server and
+// the in-browser host so a client cannot buy extra queue service by flooding.
+export const INPUT_RATE_PER_SECOND = 150;
+// Control frames are rare; this only exists to stop a malformed peer spinning
+// on chat/resync/spectate messages.
+export const CONTROL_RATE_PER_SECOND = 20;
 
 export function backlogLimit(configMax) {
   const n = Number(configMax);
@@ -180,6 +186,14 @@ export function backlogLimit(configMax) {
 
 // Append one input, dropping the oldest while the queue is at the bound.
 // Returns how many inputs were dropped so the caller can expose it in /stats.
+//
+// Policy shared by both authoritative hosts:
+//   - the newest frame always wins, so a burst cannot add unbounded latency;
+//   - the oldest queued frame is discarded first, which may drop a one-shot
+//     action but can never replay one (one-shots are edge-triggered and are
+//     explicitly cleared by heldSimInput, so they cannot execute twice);
+//   - sequence acknowledgement is based on the last consumed frame, not the
+//     last admitted one (see lastConsumedSeq in the host/server loops).
 export function pushBoundedInput(queue, input, limit = MAX_INPUT_BACKLOG) {
   limit = backlogLimit(limit);
   let dropped = 0;

@@ -38,6 +38,12 @@ function mqttPacket(type, body) {
   return header.buffer;
 }
 
+// Relay application payloads are small signaling/socket frames. Keeping a hard
+// ceiling prevents a malformed remaining-length from allocating or buffering
+// an unbounded frame.
+const MAX_PACKET_BYTES = 256 * 1024;
+const MAX_BUFFER_BYTES = 512 * 1024;
+
 export class MQTTRelay {
   constructor(opts = {}) {
     this.relays = opts.relays || MQTT_RELAYS;
@@ -53,15 +59,22 @@ export class MQTTRelay {
     this.reconnectTimer = null;
     this.onStatus = opts.onStatus || null;
     this.onError = opts.onError || null;
+    // MQTT packet identifiers are 1..65535 and must not collide while an
+    // acknowledgement-requiring operation is in flight.
+    this.nextPacketId = 1;
+    this.inflightSubs = new Map(); // packetId -> topic
+    this.inboundQos2 = new Map();  // packetId -> { topic, payload }
   }
 
   connect() {
     if (this.closed) return;
     this._cleanup();
+    this.connected = false;
     const url = this.relays[this.relayIndex % this.relays.length];
     try {
       this.ws = new this.WebSocket(url, ['mqtt']);
     } catch (e) {
+      this._error(e);
       this._scheduleReconnect();
       return;
     }
@@ -89,7 +102,7 @@ export class MQTTRelay {
 
     ws.onerror = (e) => {
       if (this.ws !== ws) return;
-      if (this.onError) this.onError(e);
+      this._error(e);
     };
 
     ws.onclose = () => {
@@ -101,6 +114,21 @@ export class MQTTRelay {
         this._scheduleReconnect();
       }
     };
+  }
+
+  _error(reason) {
+    if (!this.onError) return;
+    const err = reason instanceof Error ? reason : new Error(String(reason || 'MQTT relay error'));
+    try { this.onError(err); } catch {}
+  }
+
+  // A malformed frame desynchronises the stream, so report it and drop the
+  // connection. The normal onclose path performs a clean resubscribe.
+  _fail(reason) {
+    this.buffer = new Uint8Array(0);
+    this._error(reason);
+    const ws = this.ws;
+    if (ws) { try { ws.close(); } catch {} }
   }
 
   _scheduleReconnect() {
@@ -117,6 +145,10 @@ export class MQTTRelay {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Packet ids and partial QoS2 state are scoped to one transport epoch.
+    this.inflightSubs.clear();
+    this.inboundQos2.clear();
+    this.buffer = new Uint8Array(0);
     const ws = this.ws;
     this.ws = null;
     if (ws) {
@@ -151,6 +183,7 @@ export class MQTTRelay {
   }
 
   _handleBytes(incoming) {
+    if (this.closed) return;
     let buf = incoming;
     if (this.buffer.length) {
       const merged = new Uint8Array(this.buffer.length + incoming.length);
@@ -166,27 +199,28 @@ export class MQTTRelay {
       const type = first >> 4;
       let len = 0, mul = 1, b, digits = 0;
       do {
-        if (i >= buf.length) { this.buffer = buf.slice(start); return; }
-        if (++digits > 4) { this.buffer = new Uint8Array(0); return; }
+        if (i >= buf.length) { this._storePartial(buf, start); return; }
+        if (++digits > 4) { this._fail('Malformed MQTT remaining length'); return; }
         b = buf[i++];
         len += (b & 0x7f) * mul;
         mul *= 128;
       } while (b & 0x80);
 
-      if (i + len > buf.length) {
-        this.buffer = buf.slice(start);
-        return;
-      }
+      if (len > MAX_PACKET_BYTES) { this._fail(`MQTT packet too large (${len} bytes)`); return; }
+      if (i + len > buf.length) { this._storePartial(buf, start); return; }
 
       const body = buf.subarray(i, i + len);
       i += len;
 
       if (type === 2) {
         // CONNACK: return code in body[1]
-        if (body.length >= 2 && body[1] === 0) {
+        if (body.length >= 2) {
+          if (body[1] !== 0) { this._fail(`MQTT CONNACK rejected (${body[1]})`); return; }
           this.connected = true;
           this._startPing();
-          // Resubscribe active subscriptions
+          // Resubscribe active subscriptions. IDs are allocated fresh for this
+          // transport epoch; a previous SUBACK can no longer belong to them.
+          this.inflightSubs.clear();
           for (const topic of this.subscriptions.keys()) {
             this._sendSubscribe(topic);
           }
@@ -195,6 +229,12 @@ export class MQTTRelay {
       } else if (type === 3) {
         // PUBLISH
         this._handlePublish(first, body);
+      } else if (type === 6) {
+        // PUBREL (QoS 2 flow)
+        this._handlePubrel(body);
+      } else if (type === 9) {
+        // SUBACK
+        this._handleSuback(body);
       } else if (type === 13) {
         // PINGRESP
       }
@@ -202,23 +242,91 @@ export class MQTTRelay {
     this.buffer = new Uint8Array(0);
   }
 
+  _storePartial(buf, start) {
+    if (buf.length - start > MAX_BUFFER_BYTES) {
+      this._fail('MQTT partial packet buffer exceeded limit');
+      return;
+    }
+    this.buffer = buf.slice(start);
+  }
+
+  _handleSuback(body) {
+    if (body.length < 2) return;
+    const packetId = (body[0] << 8) | body[1];
+    const topic = this.inflightSubs.get(packetId);
+    this.inflightSubs.delete(packetId);
+    // A return code of 0x80 means the broker rejected the subscription.
+    if (topic && body.length >= 3 && body[2] === 0x80) {
+      this._error(new Error(`MQTT subscription rejected: ${topic}`));
+    }
+  }
+
+  _allocPacketId() {
+    for (let i = 0; i < 65535; i++) {
+      const id = this.nextPacketId;
+      this.nextPacketId = this.nextPacketId >= 65535 ? 1 : this.nextPacketId + 1;
+      if (id !== 0 && !this.inflightSubs.has(id)) return id;
+    }
+    return 0;
+  }
+
   _sendSubscribe(topic) {
-    const packetId = 1;
+    const packetId = this._allocPacketId();
+    if (!packetId) {
+      this._error(new Error('MQTT packet identifier space exhausted'));
+      return;
+    }
+    this.inflightSubs.set(packetId, topic);
     const subBody = [packetId >> 8, packetId & 255, ...mqttStr(topic), 0];
     this._send(mqttPacket(0x82, subBody));
   }
 
   _handlePublish(first, body) {
+    const qos = (first >> 1) & 3;
+    if (qos === 3) { this._fail('Invalid MQTT PUBLISH QoS 3'); return; }
     if (body.length < 2) return;
     const topicLen = (body[0] << 8) | body[1];
-    if (body.length < 2 + topicLen) return;
-    const topic = decodeUtf8(body.subarray(2, 2 + topicLen));
-    const payloadBytes = body.subarray(2 + topicLen);
+    let off = 2 + topicLen;
+    if (body.length < off) return;
+    const topic = decodeUtf8(body.subarray(2, off));
 
+    let packetId = 0;
+    if (qos > 0) {
+      if (body.length < off + 2) return;
+      packetId = (body[off] << 8) | body[off + 1];
+      off += 2;
+    }
+    const payloadBytes = body.subarray(off);
+
+    if (qos === 1) {
+      // PUBACK acknowledges receipt without changing the application payload.
+      this._send(mqttPacket(0x40, [packetId >> 8, packetId & 255]));
+      this._deliver(topic, payloadBytes);
+    } else if (qos === 2) {
+      // Exactly-once: acknowledge PUBLISH, deliver only when PUBREL arrives.
+      this.inboundQos2.set(packetId, { topic, payload: payloadBytes.slice() });
+      this._send(mqttPacket(0x50, [packetId >> 8, packetId & 255]));
+    } else {
+      this._deliver(topic, payloadBytes);
+    }
+  }
+
+  _handlePubrel(body) {
+    if (body.length < 2) return;
+    const packetId = (body[0] << 8) | body[1];
+    this._send(mqttPacket(0x70, [packetId >> 8, packetId & 255]));
+    const msg = this.inboundQos2.get(packetId);
+    if (msg) {
+      this.inboundQos2.delete(packetId);
+      this._deliver(msg.topic, msg.payload);
+    }
+  }
+
+  _deliver(topic, payloadBytes) {
     for (const [filter, handlers] of this.subscriptions) {
       if (this._matchesTopic(filter, topic)) {
         for (const handler of handlers) {
-          handler(topic, payloadBytes);
+          try { handler(topic, payloadBytes); } catch {}
         }
       }
     }
@@ -277,9 +385,15 @@ export class MQTTRelay {
   }
 
   close() {
+    if (this.closed) return;
     this.closed = true;
     this.connected = false;
+    if (this.ws && this.ws.readyState === 1) {
+      try { this._send(mqttPacket(0xe0, [])); } catch {}
+    }
     this._cleanup();
     this.subscriptions.clear();
   }
 }
+
+export { mqttPacket };

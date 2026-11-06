@@ -32,25 +32,51 @@ for (const d of fs.readdirSync(base)) {
 }
 
 const ROOM = 'QA' + Math.floor(Math.random() * 9000 + 1000);
-const browser = await chromium.launch({
+// Each client gets its own browser process. Two pages in one browser compete
+// for the single software-GL renderer in this environment, which made the
+// second page take minutes to become actionable.
+const browsers = [];
+const launch = () => chromium.launch({
   executablePath: exe,
-  args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+  args: [
+    '--no-sandbox',
+    '--disable-dev-shm-usage',
+    '--use-gl=angle',
+    '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
+  ],
 });
 const errors = [];
-const mk = async (name) => {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+// Screenshots are diagnostic artifacts, not assertions. A browser can be
+// reclaimed by the OS under memory pressure at the very end of a SwiftShader
+// run; that must not turn a completed set of checks into a crash.
+const shoot = async (page, file) => {
+  try {
+    await page.screenshot({ path: path.join(SHOTS, file) });
+  } catch (err) {
+    console.warn(`screenshot ${file} skipped: ${err.message.split('\n')[0]}`);
+  }
+};
+const mk = async (name, viewport = { width: 1280, height: 720 }) => {
+  const browser = await launch();
+  browsers.push(browser);
+  const ctx = await browser.newContext({ viewport });
   await ctx.addInitScript(() => localStorage.setItem('frontline.settings.v1', JSON.stringify({
     quality: 'low', shadows: false, bloom: false, showFps: true, muted: true, mode: 'br',
   })));
   const p = await ctx.newPage();
   p.setDefaultNavigationTimeout(120000);
+  p.setDefaultTimeout(120000);
   p.on('pageerror', (e) => errors.push(name + ': ' + (e.stack || e)));
   p.on('console', (m) => { if (m.type() === 'error') errors.push(name + ': ' + m.text()); });
   await p.goto(BASE, { waitUntil: 'domcontentloaded' });
   await p.fill('#in-name', name);
   await p.fill('#in-room', ROOM);
   await p.click('#join');
-  await p.waitForFunction(() => window.__frontline?.active === true, null, { timeout: 45000 });
+  await p.waitForFunction(() => window.__frontline?.active === true, null, { timeout: 120000 });
   return p;
 };
 
@@ -72,10 +98,13 @@ const dump = (p) => p.evaluate(() => {
 });
 
 try {
+  // Alpha keeps a full-size viewport for screenshots. Bravo uses a smaller one:
+  // under SwiftShader the 3D scene is CPU-bound, and a 640x360 surface lets the
+  // move/chat/reconnect scenarios finish at a usable frame rate.
   const A = await mk('Alpha');
   await A.waitForTimeout(800);
-  const B = await mk('Bravo');
-  await Promise.all([A, B].map(p => p.waitForFunction(() => window.__frontline?.state?.matchState === 2, null, { timeout: 45000 })));
+  const B = await mk('Bravo', { width: 640, height: 360 });
+  await Promise.all([A, B].map(p => p.waitForFunction(() => window.__frontline?.state?.matchState === 2, null, { timeout: 120000 })));
   await A.waitForTimeout(2500);
   await B.waitForTimeout(1200);
 
@@ -88,6 +117,82 @@ try {
   check('roster contains both players', a0.roster.some(p => p.id === b0.id) && b0.roster.some(p => p.id === a0.id), { a: a0.roster.length, b: b0.roster.length });
   check('remote character view replicated', a0.remoteViews.includes(b0.id) && b0.remoteViews.includes(a0.id), { a: a0.remoteViews, b: b0.remoteViews });
   check('match state is live', a0.matchState === 2 && b0.matchState === 2, { a: a0.matchState, b: b0.matchState });
+
+  // -------------------------------------------------------- remote movement
+  // Walk B in whichever direction is not blocked by nearby geometry; spawn
+  // points can face a wall, so try a few headings until one produces motion.
+  // Poll the simulated position instead of assuming a wall-clock duration: the
+  // software renderer can deliver only a couple of frames per second, and the
+  // sim advances a bounded amount per frame.
+  const readLocal = () => B.evaluate(() => {
+    const l = window.__frontline.getLocalPlayer();
+    return { x: l.x, z: l.z, alive: l.alive };
+  });
+  const ensureAlive = async () => {
+    if ((await readLocal()).alive) return true;
+    try {
+      await B.waitForFunction(
+        () => window.__frontline.getLocalPlayer()?.alive === true, null, { timeout: 5000 },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  await B.bringToFront();
+  await B.waitForTimeout(300);
+  // BR has no respawn, so run this probe early and never count a death/respawn
+  // teleport as movement. Use BOTS=0 on the QA server when a deterministic
+  // movement measurement matters more than exercising bot combat.
+  let moved = 0;
+  let bStart = null;
+  let bEnd = null;
+  let bAlive = await ensureAlive();
+  const headings = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+  if (bAlive) {
+    search: for (let pass = 0; pass < 2; pass++) {
+      for (const yaw of headings) {
+        await B.evaluate((y) => { window.__frontline.aimYaw = y; }, yaw);
+        const start = await readLocal();
+        if (!start.alive) {
+          if (!(await ensureAlive())) { bAlive = false; break search; }
+          continue;
+        }
+        bStart = [start.x, start.z];
+        let died = false;
+        await B.keyboard.down('w');
+        for (let i = 0; i < 12; i++) {
+          await B.waitForTimeout(1000);
+          const now = await readLocal();
+          if (!now.alive) { died = true; break; }
+          bEnd = [now.x, now.z];
+          moved = Math.hypot(bEnd[0] - bStart[0], bEnd[1] - bStart[1]);
+          if (moved > 1) break;
+        }
+        await B.keyboard.up('w');
+        await B.waitForTimeout(300);
+        const end = await readLocal();
+        if (!end.alive) died = true;
+        if (!died) {
+          bEnd = [end.x, end.z];
+          moved = Math.hypot(bEnd[0] - bStart[0], bEnd[1] - bStart[1]);
+          if (moved > 0.5) break search;
+        } else if (!(await ensureAlive())) {
+          bAlive = false;
+          break search;
+        }
+      }
+    }
+  }
+  const aSeesB = await A.evaluate((id) => {
+    const p = window.__frontline.net.cache.get(id);
+    return p ? { x: +p.x.toFixed(2), z: +p.z.toFixed(2) } : null;
+  }, b0.id);
+  const startDetail = bStart ? bStart.map(v => +v.toFixed(2)) : null;
+  const endDetail = bEnd ? bEnd.map(v => +v.toFixed(2)) : null;
+  check('B movement simulated locally', bAlive && moved > 0.5, { from: startDetail, to: endDetail, moved: +moved.toFixed(2), alive: bAlive });
+  check('A receives B position over the wire', !!aSeesB && !!bEnd && Math.hypot(aSeesB.x - bEnd[0], aSeesB.z - bEnd[1]) < 4, { aSeesB, bEnd: endDetail });
+
 
   // ---------------------------------------------------------------- HUD online
   await A.bringToFront();
@@ -141,7 +246,7 @@ try {
       sub: h.scoreSub.textContent,
     };
   });
-  await A.screenshot({ path: path.join(SHOTS, 'mp-scoreboard.png') });
+  await shoot(A, 'mp-scoreboard.png');
   await A.keyboard.up('Tab');
   await A.waitForTimeout(200);
   check('Tab opens scoreboard', board.open === true, board.open);
@@ -166,33 +271,6 @@ try {
   });
   check('online kill feed resolves names', feed.some(r => r.text.includes('KillerOne') && r.text.includes('VictimTwo')), feed.map(r => r.text));
   check('online kill feed team colours + headshot + zone kill', feed.some(r => r.killer === 'KillerOne' && r.killerColor === 'rgb(90, 169, 255)' && r.headshot) && feed.some(r => r.killer === 'ZONE'), feed);
-
-  // -------------------------------------------------------- remote movement
-  // Walk B in whichever direction is not blocked by nearby geometry; spawn
-  // points can face a wall, so try a few headings until one produces motion.
-  // Bring B to the front so Chromium does not throttle its render/sim loop.
-  await B.bringToFront();
-  await B.waitForTimeout(500);
-  let moved = 0;
-  let bStart = null;
-  let bEnd = null;
-  for (const yaw of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
-    await B.evaluate((y) => { window.__frontline.aimYaw = y; }, yaw);
-    bStart = await B.evaluate(() => { const l = window.__frontline.getLocalPlayer(); return [l.x, l.z]; });
-    await B.keyboard.down('w');
-    await B.waitForTimeout(1500);
-    await B.keyboard.up('w');
-    await B.waitForTimeout(500);
-    bEnd = await B.evaluate(() => { const l = window.__frontline.getLocalPlayer(); return [l.x, l.z]; });
-    moved = Math.hypot(bEnd[0] - bStart[0], bEnd[1] - bStart[1]);
-    if (moved > 0.5) break;
-  }
-  const aSeesB = await A.evaluate((id) => {
-    const p = window.__frontline.net.cache.get(id);
-    return p ? { x: +p.x.toFixed(2), z: +p.z.toFixed(2) } : null;
-  }, b0.id);
-  check('B movement simulated locally', moved > 0.5, { from: bStart.map(v => +v.toFixed(2)), to: bEnd.map(v => +v.toFixed(2)), moved: +moved.toFixed(2) });
-  check('A receives B position over the wire', !!aSeesB && Math.hypot(aSeesB.x - bEnd[0], aSeesB.z - bEnd[1]) < 4, { aSeesB, bEnd: bEnd.map(v => +v.toFixed(2)) });
 
   // ----------------------------------------- chat typing must not play the game
   // Let residual velocity settle, then drop it so the only possible source of
@@ -275,10 +353,10 @@ try {
 
   await A.bringToFront();
   await A.waitForTimeout(300);
-  await A.screenshot({ path: path.join(SHOTS, 'mp-alpha.png') });
+  await shoot(A, 'mp-alpha.png');
   await B.bringToFront();
   await B.waitForTimeout(300);
-  await B.screenshot({ path: path.join(SHOTS, 'mp-bravo.png') });
+  await shoot(B, 'mp-bravo.png');
 
   const failed = checks.filter(c => !c.ok);
   console.log('errors:', errors.length ? errors.slice(0, 8) : 'none');
@@ -289,5 +367,5 @@ try {
   console.error('multiplayer QA crashed:', err);
   process.exitCode = 1;
 } finally {
-  await browser.close();
+  for (const browser of browsers) await browser.close();
 }

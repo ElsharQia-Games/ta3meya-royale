@@ -25,6 +25,7 @@ import {
   decodeInput, sanitizeWireInput, wireToSimInput, encodeSnapshot, snapshotState,
   encodeEvents, encodeLoot, filterEvents, sanitizeName, sanitizeRoom, decodeControl,
   isProtocolCompatible, backlogLimit, pushBoundedInput, isStaleInput, heldSimInput,
+  INPUT_RATE_PER_SECOND,
 } from '../shared/protocol.js';
 import { spawnBots, stepBots } from './bots.js';
 
@@ -686,13 +687,13 @@ function handleInput(client, ab) {
   const w = decodeInput(ab);
   if (!w) return;
   const now = performance.now();
-  // Token bucket: 150 inputs/s sustained, burst 90.
+  // Fixed one-second admission window shared with the browser host.
   if (now - client.inputWindowStart > 1000) {
     client.inputWindowStart = now;
     client.inputCount = 0;
   }
   client.inputCount++;
-  if (client.inputCount > 150) return;
+  if (client.inputCount > INPUT_RATE_PER_SECOND) return;
 
   // Reject duplicates/replays/out-of-order frames and normalise every
   // client-controlled field before it can enter the simulation.

@@ -19,6 +19,7 @@
     "stress": "node tools/stress.js",
     "qa:online": "node qa/screens.js",
     "qa:multiplayer": "node qa/multiplayer.mjs",
+    "qa:peer": "node qa/peer-multiplayer.mjs",
     "qa:offline": "node qa/screens.js --offline",
     "qa:visual": "node qa/visual.mjs",
     "qa:design": "node qa/design.mjs",

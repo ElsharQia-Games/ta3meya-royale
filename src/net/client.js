@@ -22,6 +22,11 @@ export class NetClient {
     this.mode = opts.mode || 'br';
     this.kit = opts.kit || 'assault';
     this.token = opts.token || null;
+    // Peer transports (local DataChannel / relay socket) cannot be recreated
+    // by calling `connect()` again: the injected WebSocket constructor returns
+    // the same already-closed socket. Those callers opt out and surface a
+    // terminal, recoverable error instead of reconnecting in a loop.
+    this.allowReconnect = opts.allowReconnect !== false;
     this.ws = null;
     this.connected = false;
     this.joined = false;
@@ -87,6 +92,12 @@ export class NetClient {
     this._status(this.reconnectAttempts ? 'reconnecting' : 'connecting');
     let ws;
     try { ws = new this.WebSocket(this.url); } catch (e) { this._error(String(e.message || e)); this._scheduleReconnect(); return; }
+    if (!ws || ws.readyState === 3 || ws.readyState === 2) {
+      this._error('Transport is already closed');
+      this._status('error');
+      this.closed = true;
+      return;
+    }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     ws.onopen = () => {
@@ -110,6 +121,15 @@ export class NetClient {
       if (this.closed) { this._status('closed'); return; }
       this._status('disconnected');
       if (ev.code === 4003) { this._error(ev.reason || 'Rejected by server'); this._status('error'); return; }
+      if (!this.allowReconnect) {
+        // Terminal for this logical peer session. The UI can offer a fresh
+        // join, but silently rebuilding against a dead DataChannel/relay
+        // socket would only spin.
+        this.closed = true;
+        this._error(ev.reason || 'Peer transport closed');
+        this._status('error');
+        return;
+      }
       this._scheduleReconnect();
     };
     ws.onerror = () => {
@@ -158,7 +178,7 @@ export class NetClient {
   }
 
   _scheduleReconnect() {
-    if (this.reconnectTimer || this.closed) return;
+    if (!this.allowReconnect || this.reconnectTimer || this.closed) return;
     const delay = Math.min(RECONNECT_MAX_MS, 400 * Math.pow(1.7, this.reconnectAttempts++));
     this._status('reconnecting', delay);
     this.reconnectTimer = setTimeout(() => {
