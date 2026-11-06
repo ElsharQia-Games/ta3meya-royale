@@ -5,7 +5,7 @@
 // ============================================================================
 import { CFG, MATERIALS } from './config.js';
 import { RNG, clamp, lerp, smoothstep, fbm2, hash2, TAU } from './math.js';
-import { rayVehicle } from './vehicle.js';
+import { rayVehicle, rayVehicleBallistic } from './vehicle.js';
 
 const CELL = 8;
 const _queryScratch = [];
@@ -267,11 +267,16 @@ export class World {
       const top = o.top === undefined ? height : o.top;
       if (bottom > 0) addSpan(oa, ob, y0, y0 + bottom);
       if (top < height) addSpan(oa, ob, y0 + top, y0 + height);
-      // Glass panes are visual only.
+      // Glass panes are authoritative destructible cover: they attenuate and
+      // can be penetrated by bullets, then stop blocking once broken.
       if (o.glass) {
         const gy0 = y0 + bottom + 0.02, gy1 = y0 + top - 0.02;
-        if (axis === 'x') this.addBox([oa + 0.02, gy0, fixed - 0.02], [ob - 0.02, gy1, fixed + 0.02], { tag: 'glass', mat: 'glass', render: true });
-        else this.addBox([fixed - 0.02, gy0, oa + 0.02], [fixed + 0.02, gy1, ob - 0.02], { tag: 'glass', mat: 'glass', render: true });
+        const glassOpts = {
+          tag: 'glass', mat: 'glass', render: true, dynamic: true,
+          hp: MATERIALS.glass.hp || 34, kind: 'glass',
+        };
+        if (axis === 'x') this.addBox([oa + 0.02, gy0, fixed - 0.02], [ob - 0.02, gy1, fixed + 0.02], glassOpts);
+        else this.addBox([fixed - 0.02, gy0, oa + 0.02], [fixed + 0.02, gy1, ob - 0.02], glassOpts);
       }
       cursor = ob;
     }
@@ -739,7 +744,9 @@ export class World {
       if (opts.ignoreVehicle === vehicle.id) continue;
       const vdx = vehicle.pos[0] - origin[0], vdz = vehicle.pos[2] - origin[2];
       if (Math.abs(vdx) > bestT + 4 || Math.abs(vdz) > bestT + 4) continue;
-      const hit = rayVehicle(vehicle, origin, dir, bestT);
+      const hit = opts.ballistic
+        ? rayVehicleBallistic(vehicle, origin, dir, bestT)
+        : rayVehicle(vehicle, origin, dir, bestT);
       if (hit && hit.t < bestT) { bestT = hit.t; best = hit; }
     }
     const stamp = ++this._stamp;

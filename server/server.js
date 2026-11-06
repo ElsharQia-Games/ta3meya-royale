@@ -505,17 +505,6 @@ function sendEvents(room, events) {
 // ---------------------------------------------------------------------------
 // Simulation step
 // ---------------------------------------------------------------------------
-function findHistory(room, t) {
-  const h = room.history;
-  if (!h.length) return null;
-  let best = h[0], bd = Math.abs(h[0].t - t);
-  for (let i = 1; i < h.length; i++) {
-    const d = Math.abs(h[i].t - t);
-    if (d < bd) { bd = d; best = h[i]; }
-  }
-  return bd <= 0.25 ? best.map : null;
-}
-
 function stepRoom(room, dt) {
   const game = room.game;
   const inputs = new Map();
@@ -552,14 +541,17 @@ function stepRoom(room, dt) {
   stepBots(game, dt, inputs);
 
   // ---- lag compensation targets ----
+  // The client's viewTime is authoritative for *when it fired* (within the
+  // bounded rewind), not the arrival tick. Bullets replay the gap once and
+  // then continue against live targets.
   const fireTargets = new Map();
   for (const [pid, sim] of inputs) {
     if (!sim.shoot) continue;
     const c = room.byPlayer.get(pid);
     if (!c) continue;
-    const rewind = clamp(c.rttEma / 2000 + CFG.INTERP_DELAY, 0, CFG.MAX_REWIND);
-    const hist = findHistory(room, game.time - rewind);
-    if (hist) fireTargets.set(pid, Game.targetsFromHistory(hist));
+    const fallback = clamp(c.rttEma / 2000 + CFG.INTERP_DELAY, 0, CFG.MAX_REWIND);
+    const ctx = Game.fireContext(room.history, sim.viewTime, game.time, fallback);
+    if (ctx) fireTargets.set(pid, ctx);
   }
 
   game.step(inputs, dt, { fireTargets });

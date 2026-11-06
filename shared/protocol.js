@@ -15,7 +15,7 @@ import { CFG } from './config.js';
 import { WEAPON_KEYS } from './weapons.js';
 import { clamp, wrapAngle, TAU } from './math.js';
 
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 // A join is only accepted for the exact wire format this server speaks. The
 // snapshot/input layouts are not forward/backward compatible, so silently

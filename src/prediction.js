@@ -220,7 +220,11 @@ export class SnapshotBuffer {
 }
 
 export function remoteRenderTime(buffer, rttMs, jitterMs) {
+  if (!buffer || !buffer.newestTime) return 0;
   const extra = clamp((rttMs * 0.5 + jitterMs * 2) / 1000, 0, 0.18);
   const delay = CFG.INTERP_DELAY + extra;
-  return buffer.newestTime - delay;
+  // `sample()` clamps to the buffered range. Return the time actually played
+  // back so a joining client cannot report a pose older than the data it has
+  // (which would request an unnecessary rewind on the server).
+  return clamp(buffer.newestTime - delay, buffer.oldestTime, buffer.newestTime);
 }

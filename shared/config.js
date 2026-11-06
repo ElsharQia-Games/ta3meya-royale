@@ -144,6 +144,16 @@ export const CFG = {
   },
 
   ARMOR: { absorb: 0.45, headAbsorb: 0.25, max: 100 },
+
+  // Ordinary bullets are persistent server-side projectiles. They are not part
+  // of the snapshot stream (the shot event still carries the visual tracer), so
+  // these bounds protect the authoritative simulation rather than bandwidth.
+  BULLET: {
+    maxLife: 2.2,             // seconds of simulated flight before removal
+    maxActive: 2048,          // hard cap; oldest bullets are dropped first
+    maxPenetrations: 8,       // per bullet per tick
+    catchupMax: 0.4,          // bounded historical catch-up from viewTime
+  },
   GRENADE: { dmg: 110, radius: 7.5, fuse: 3.2, throwSpeed: 19, bounces: 4, drag: 0.15, gravity: 0.9 },
   SMOKE: { fuse: 2.0, radius: 5.5, duration: 16 },
   HEAL: {
@@ -224,7 +234,7 @@ export const MATERIALS = {
   wood:     { color: 0x8a643c, roughness: 0.85, metalness: 0.0, surface: 'wood', pen: 2.2 },
   metal:    { color: 0x6f747b, roughness: 0.45, metalness: 0.75, surface: 'metal', pen: 1.6 },
   sandbag:  { color: 0x9b8a63, roughness: 1.0, metalness: 0.0, surface: 'sand', pen: 0.35 },
-  glass:    { color: 0x9fc7d8, roughness: 0.1, metalness: 0.1, surface: 'glass', pen: 8.0 },
+  glass:    { color: 0x9fc7d8, roughness: 0.1, metalness: 0.1, surface: 'glass', pen: 8.0, hp: 34 },
   rock:     { color: 0x777a7d, roughness: 0.95, metalness: 0.02, surface: 'rock', pen: 0.5 },
   dirt:     { color: 0x6a5940, roughness: 1.0, metalness: 0.0, surface: 'dirt', pen: 0.5 },
   road:     { color: 0x3d4045, roughness: 0.95, metalness: 0.0, surface: 'concrete', pen: 1.0 },

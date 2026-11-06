@@ -541,9 +541,9 @@ export class BrowserHost {
       if (!sim.shoot) continue;
       const c = this.byPlayer.get(pid);
       if (!c) continue;
-      const rewind = clamp(c.rttEma / 2000 + CFG.INTERP_DELAY, 0, CFG.MAX_REWIND);
-      const hist = this._findHistory(game.time - rewind);
-      if (hist) fireTargets.set(pid, Game.targetsFromHistory(hist));
+      const fallback = clamp(c.rttEma / 2000 + CFG.INTERP_DELAY, 0, CFG.MAX_REWIND);
+      const ctx = Game.fireContext(this.history, sim.viewTime, game.time, fallback);
+      if (ctx) fireTargets.set(pid, ctx);
     }
 
     game.step(inputs, dt, { fireTargets });
@@ -589,17 +589,6 @@ export class BrowserHost {
         this._sendBinary(c.ws, encodePing(now));
       }
     }
-  }
-
-  _findHistory(t) {
-    const h = this.history;
-    if (!h.length) return null;
-    let best = h[0], bd = Math.abs(h[0].t - t);
-    for (let i = 1; i < h.length; i++) {
-      const d = Math.abs(h[i].t - t);
-      if (d < bd) { bd = d; best = h[i]; }
-    }
-    return bd <= 0.25 ? best.map : null;
   }
 
   _sendBinary(ws, buf) {

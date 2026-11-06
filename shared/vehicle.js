@@ -138,3 +138,73 @@ export function rayVehicle(v, origin, direction, maxDistance) {
     ? [right[0] * sign, 0, right[1] * sign] : [forward[0] * sign, 0, forward[1] * sign];
   return { t: near, tmax: far, normal, point: origin.map((n, i) => n + direction[i] * near), vehicle: v, tag: 'vehicle', mat: 'metal', box: null };
 }
+
+// Ballistic variant of rayVehicle: the simplified solid OBB remains the
+// movement/blast hull, but bullets may enter through the glazed cabin band.
+// A round that enters through glazing is still stopped if it leaves through a
+// solid face (roof, chassis, door, pillar, truck bed); returning null means the
+// whole traversed span is open and the projectile can reach occupants inside.
+// Solid doors, pillars (the ends of the side band), the roof and the chassis
+// still block.
+const CABIN_BOTTOM = 0.95;      // local beltline above the chassis anchor
+const CABIN_EDGE = 0.12;        // skin/pillar margin around the opening
+const CABIN_END = 0.30;         // front/rear overhang that stays solid
+
+// True when `point` lies in a glazed (ballistically open) part of `axis`.
+// axis 0 = side, 1 = roof/floor, 2 = front/rear.
+function glazingOpenAt(axis, point, type, shape) {
+  if (point[1] <= CABIN_BOTTOM || point[1] >= shape.height - CABIN_EDGE) return false;
+  if (axis === 0) return Math.abs(point[2]) <= shape.length / 2 - CABIN_END;
+  if (axis === 2) {
+    // The truck's rear bed/tailgate is solid; its cab windscreen is open.
+    if (type === 'truck' && point[2] < 0) return false;
+    return Math.abs(point[0]) <= shape.width / 2 - CABIN_EDGE;
+  }
+  return false; // roof / floor
+}
+
+function ballisticHit(v, origin, direction, t, tmax, axis, sign, right, forward) {
+  const normal = axis === 1 ? [0, sign, 0] : axis === 0
+    ? [right[0] * sign, 0, right[1] * sign] : [forward[0] * sign, 0, forward[1] * sign];
+  return {
+    t, tmax, normal, point: origin.map((n, i) => n + direction[i] * t),
+    vehicle: v, tag: 'vehicle', mat: 'metal', box: null,
+  };
+}
+
+export function rayVehicleBallistic(v, origin, direction, maxDistance) {
+  const shape = vehicleShape(v.type);
+  const { right, forward } = vehicleAxes(v.yaw);
+  const dx = origin[0] - v.pos[0], dz = origin[2] - v.pos[2];
+  const o = [dx * right[0] + dz * right[1], origin[1] - v.pos[1] + vehicleRideHeight(), dx * forward[0] + dz * forward[1]];
+  const d = [direction[0] * right[0] + direction[2] * right[1], direction[1], direction[0] * forward[0] + direction[2] * forward[1]];
+  const min = [-shape.width / 2, .24, -shape.length / 2], max = [shape.width / 2, shape.height, shape.length / 2];
+  const inside = o.every((value, i) => value >= min[i] && value <= max[i]);
+  // Both the entry and exit slab are needed: a window entry alone does not
+  // make the whole hull transparent. An origin inside the hull is treated as
+  // an open entry so firing out through glazing still works, while an exit
+  // through the roof/chassis is blocked.
+  let near = inside ? 0 : -Infinity, far = Infinity, entryAxis = -1, exitAxis = -1;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(d[i]) < 1e-9) { if (o[i] < min[i] || o[i] > max[i]) return null; continue; }
+    let a = (min[i] - o[i]) / d[i], b = (max[i] - o[i]) / d[i];
+    if (a > b) [a, b] = [b, a];
+    if (a > near) { near = a; entryAxis = i; }
+    if (b < far) { far = b; exitAxis = i; }
+    if (near > far) return null;
+  }
+  if (far < 0 || near > maxDistance || near === -Infinity) return null;
+
+  if (!inside) {
+    const entry = [o[0] + d[0] * near, o[1] + d[1] * near, o[2] + d[2] * near];
+    if (!glazingOpenAt(entryAxis, entry, v.type, shape)) {
+      return ballisticHit(v, origin, direction, near, far, entryAxis, d[entryAxis] > 0 ? -1 : 1, right, forward);
+    }
+  }
+  // Entry was glazing (or the ray began inside). Only a solid exit face stops
+  // it; passing out through another window leaves the round in flight.
+  if (!isFinite(far) || far > maxDistance || exitAxis < 0) return null;
+  const exit = [o[0] + d[0] * far, o[1] + d[1] * far, o[2] + d[2] * far];
+  if (glazingOpenAt(exitAxis, exit, v.type, shape)) return null;
+  return ballisticHit(v, origin, direction, far, far, exitAxis, d[exitAxis] > 0 ? 1 : -1, right, forward);
+}

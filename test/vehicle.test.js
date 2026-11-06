@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Game, Vehicle, emptyInput } from '../shared/sim.js';
 import { CFG, MATCH_STATE } from '../shared/config.js';
 import { rayVehicle, packVehicle, vehiclePairContact } from '../shared/vehicle.js';
-import { tryFire, explode } from '../shared/weapons.js';
+import { tryFire, explode, stepBullets } from '../shared/weapons.js';
 
 function fixture(boxes = []) {
   const game = new Game({ mode: 'tdm' });
@@ -137,6 +137,8 @@ test('shots damage the vehicle hull and destruction emits once with seats releas
   game.world.raycast = (origin, direction, max) => rayVehicle(vehicle, origin, direction, max);
   const hp = vehicle.health;
   tryFire(game, player, { ...emptyInput(), shoot: true }, []);
+  assert.equal(vehicle.health, hp, 'damage is deferred until the bullet arrives');
+  stepBullets(game, CFG.SIM_DT);
   assert.ok(vehicle.health < hp, 'hull must receive authoritative ballistic damage');
   player.pos = [0, 0, 0];
   game.enterVehicle(player, vehicle);

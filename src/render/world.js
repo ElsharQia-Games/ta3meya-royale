@@ -197,6 +197,8 @@ export class WorldRenderer {
     this.dynamicInstances = new Map();
     this.dynamicInstancedGroups = [];
     this.staticMeshes = [];
+    this.glassMeshes = [];
+    this.glassDestroyed = new Set();
     this.treeMeshes = [];
     this.rockMesh = null;
     this.water = null;
@@ -375,7 +377,6 @@ export class WorldRenderer {
   _buildBoxes() {
     const structureGeos = [];
     const brickGeos = [];
-    const glassGeos = [];
     const decalBins = new Map();
 
     const archetypeBins = new Map();
@@ -383,6 +384,10 @@ export class WorldRenderer {
 
     for (const b of this.world.boxes) {
       if (!b.render || b.destroyed) continue;
+      // Glass is destructible but merged into a few spatial meshes instead of
+      // one mesh per pane (248 panes). _rebuildGlass() swaps the merge when a
+      // pane breaks, keeping the draw-call count flat during normal play.
+      if (b.tag === 'glass') continue;
       if (b.dynamic) {
         let key = null;
         if (b.tag === 'barrel') key = (b.id % 3) ? 'barrel_rust' : 'barrel_amber';
@@ -398,8 +403,6 @@ export class WorldRenderer {
       }
 
       if (b.tag === 'glass') {
-        const geo = boxGeometry(b);
-        glassGeos.push(geo.index ? geo.toNonIndexed() : geo);
         continue;
       }
 
@@ -450,11 +453,7 @@ export class WorldRenderer {
       this.scene.add(...meshes); this.staticMeshes.push(...meshes);
     }
 
-    if (glassGeos.length) {
-      const meshes = mergeSpatialGeometry(glassGeos, this.mats.glass, 'static_glass', 160);
-      for (const mesh of meshes) { mesh.castShadow = false; mesh.receiveShadow = true; }
-      this.scene.add(...meshes); this.staticMeshes.push(...meshes);
-    }
+    this._rebuildGlass();
 
     for (const [mat, geos] of decalBins) {
       const meshes = mergeSpatialGeometry(geos, mat, `static_decal_${mat.id}`, 160);
@@ -519,6 +518,27 @@ export class WorldRenderer {
     this.pendingDetailGeos = [];
   }
 
+  // Glass panes share a few merged meshes. Rebuilding only happens when the
+  // set of broken panes changes, so normal play keeps the original topology.
+  _rebuildGlass() {
+    for (const mesh of this.glassMeshes) {
+      this.scene.remove(mesh);
+      mesh.geometry?.dispose();
+    }
+    this.glassMeshes.length = 0;
+    const geos = [];
+    for (const b of this.world.boxes) {
+      if (b.tag !== 'glass' || !b.render || b.destroyed) continue;
+      const geo = boxGeometry(b);
+      geos.push(geo.index ? geo.toNonIndexed() : geo);
+    }
+    if (!geos.length) return;
+    const meshes = mergeSpatialGeometry(geos, this.mats.glass, 'static_glass', 160);
+    for (const mesh of meshes) { mesh.castShadow = false; mesh.receiveShadow = true; }
+    this.scene.add(...meshes);
+    this.glassMeshes.push(...meshes);
+  }
+
   facadeMaterial(box) {
     if (box.tag !== 'wall' || !['plaster', 'brick'].includes(box.mat)) return this.mats[box.mat];
     const x = (box.min[0] + box.max[0]) / 2, z = (box.min[2] + box.max[2]) / 2;
@@ -531,6 +551,13 @@ export class WorldRenderer {
   removeBox(id) {
     const box = this.world.boxes[id];
     if (box?.dynamic) box.destroyed = true;
+    if (box?.tag === 'glass') {
+      if (!this.glassDestroyed.has(id)) {
+        this.glassDestroyed.add(id);
+        this._rebuildGlass();
+      }
+      return;
+    }
     const pool = this.boxPools.get(id);
     if (pool) {
       pool.removeBox(id);
@@ -549,7 +576,9 @@ export class WorldRenderer {
       pool.syncDestruction(destroyed);
     }
     for (const b of this.world.boxes) {
-      if (!b.dynamic || !b.render) continue;
+      if (!b.render) continue;
+      if (b.tag === 'glass') { b.destroyed = destroyed.has(b.id); continue; }
+      if (!b.dynamic) continue;
       const gone = destroyed.has(b.id);
       b.destroyed = gone;
       if (this.boxPools.has(b.id)) continue;
@@ -562,6 +591,17 @@ export class WorldRenderer {
         mesh.name = `dyn_${b.id}`;
         this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
       }
+    }
+    // Rebuild the merged glass only when the broken-pane set actually changed.
+    const nextGlass = new Set();
+    for (const b of this.world.boxes) if (b.tag === 'glass' && b.destroyed) nextGlass.add(b.id);
+    let glassChanged = nextGlass.size !== this.glassDestroyed.size;
+    if (!glassChanged) {
+      for (const id of nextGlass) if (!this.glassDestroyed.has(id)) { glassChanged = true; break; }
+    }
+    if (glassChanged) {
+      this.glassDestroyed = nextGlass;
+      this._rebuildGlass();
     }
   }
 

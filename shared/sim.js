@@ -3,7 +3,7 @@
 // and server (truth). No DOM, no rendering, no network I/O.
 // ============================================================================
 import { CFG, STANCE, MATCH_STATE, TEAMS, combatKit } from './config.js';
-import { RNG, clamp, yawTo, TAU, lerp } from './math.js';
+import { RNG, clamp, yawTo, TAU, lerp, lerpAngle } from './math.js';
 import { World } from './world.js';
 import {
   movePlayer, stanceHeight, stanceEye, supportHeight, capsuleBlocked,
@@ -13,6 +13,7 @@ import { vehicleShape, vehicleRideHeight, vehicleAxes, vehicleFootprint, vehicle
 import {
   tryFire, tryReload, finishReload, switchWeapon, throwGrenade, stepProjectiles,
   tryInteract, spawnWorldLoot, dropInventory, hitboxesFor, applyDamage, explode,
+  stepBullets,
 } from './weapons.js';
 
 export function emptyInput() {
@@ -76,6 +77,8 @@ export class Player {
     this.zoneT = 0;
     this.kit = 'assault';
     this.death = null;
+    this.lifeId = 0;
+    this.spawnTime = 0;
   }
   height() { return this.inVehicle ? CFG.VEHICLE.occupantHeight : stanceHeight(this.stance); }
   eyeHeight() { return this.inVehicle ? CFG.VEHICLE.eyeHeight : stanceEye(this.stance); }
@@ -124,6 +127,8 @@ export class Game {
     this.vehicles = [];
     this.world.vehicles = this.vehicles;
     this.projectiles = [];
+    this.bullets = [];
+    this.nextBulletId = 1;
     this.pendingDamage = [];
     this.loot = [];
     this.events = [];
@@ -227,6 +232,11 @@ export class Game {
     p.prevShoot = false;
     p.respawnAt = 0;
     p.death = null;
+    // Damage already in flight must not cross a respawn boundary. Bullets
+    // capture the shooter's life at launch; spawn times let a victim accept
+    // only rounds fired at or after the current life began.
+    p.lifeId = (p.lifeId || 0) + 1;
+    p.spawnTime = this.time;
   }
 
   begin() {
@@ -243,6 +253,7 @@ export class Game {
     };
     this.loot.length = 0;
     this.projectiles.length = 0;
+    this.bullets.length = 0;
     this.pendingDamage.length = 0;
     this.smokes.length = 0;
     this.stats = { shots: 0, hits: 0, kills: 0, damage: 0 };
@@ -298,10 +309,14 @@ export class Game {
     const cosmetic = !!opts.cosmetic;
     for (const [id, p] of this.players) {
       const input = inputs.get(id) || null;
-      if (p.alive && p.connected) this.stepPlayer(p, input, dt, {
-        targets: fireTargets ? fireTargets.get(id) : null,
-        cosmetic,
-      });
+      if (p.alive && p.connected) {
+        const ft = fireTargets ? fireTargets.get(id) : null;
+        this.stepPlayer(p, input, dt, {
+          targets: ft ? ft.targets : null,
+          catchupAge: ft ? ft.catchupAge : 0,
+          cosmetic,
+        });
+      }
       else if (p.alive && !p.connected) {
         // disconnected players freeze but still collide with the world
         p.vel[0] *= 0.8; p.vel[2] *= 0.8;
@@ -311,6 +326,10 @@ export class Game {
     for (const v of this.vehicles) this.stepVehicle(v, inputs, dt);
     this.resolveVehiclePairs();
     stepProjectiles(this, dt);
+    // Bullets are swept after movement so collision uses the positions the
+    // targets actually occupy this tick. Damage is applied at collision time,
+    // which makes the outcome deterministic regardless of tick rate.
+    stepBullets(this, dt);
     this.stepPendingDamage();
     this.stepSmokes(dt);
     if (this.matchState === MATCH_STATE.LIVE) {
@@ -418,7 +437,9 @@ export class Game {
       const wantFire = W.auto ? input.shoot : (input.shoot && !p.prevShoot);
       if (wantFire) {
         const targets = opts.targets || this.buildTargets();
-        tryFire(this, p, input, targets, { rng: this.rng, cosmetic: opts.cosmetic });
+        tryFire(this, p, input, targets, {
+          rng: this.rng, cosmetic: opts.cosmetic, catchupAge: opts.catchupAge || 0,
+        });
         if (opts.cosmetic) this.pendingDamage.length = 0;
       }
     }
@@ -859,7 +880,11 @@ export class Game {
       if (!p.alive) continue;
       const h = p.height();
       const stance = p.inVehicle ? STANCE.CROUCH : p.stance;
-      out.push({ id: p.id, pos: p.pos, height: h, stance, yaw: p.yaw, alive: p.alive, team: p.team, hitboxes: hitboxesFor(p.pos, h, stance, p.yaw) });
+      out.push({
+        id: p.id, pos: p.pos, height: h, stance, yaw: p.yaw, alive: p.alive, team: p.team,
+        lifeId: p.lifeId, spawnTime: p.spawnTime,
+        hitboxes: hitboxesFor(p.pos, h, stance, p.yaw),
+      });
     }
     return out;
   }
@@ -867,9 +892,18 @@ export class Game {
   captureHitboxes() {
     const out = new Map();
     for (const p of this.players.values()) {
-      if (!p.alive) continue;
+      // Dead players stay in the ring until they respawn. Keeping their last
+      // pose plus deathAt lets sampleHistory resolve the exact death boundary
+      // inside an interpolation bracket instead of dropping the whole bracket.
+      if (!p.alive && !p.death) continue;
       const h = p.height();
-      out.set(p.id, { id: p.id, pos: p.pos.slice(), height: h, stance: p.inVehicle ? STANCE.CROUCH : p.stance, yaw: p.yaw, alive: true, team: p.team });
+      out.set(p.id, {
+        id: p.id, pos: p.pos.slice(), height: h,
+        stance: p.inVehicle ? STANCE.CROUCH : p.stance,
+        yaw: p.yaw, alive: p.alive, team: p.team,
+        lifeId: p.lifeId, spawnTime: p.spawnTime,
+        deathAt: p.alive ? null : p.death.at,
+      });
     }
     return out;
   }
@@ -880,6 +914,104 @@ export class Game {
       out.push({ ...t, hitboxes: hitboxesFor(t.pos, t.height, t.stance, t.yaw || 0) });
     }
     return out;
+  }
+
+  // Interpolate a snapshot of hitbox state at an arbitrary (server clock) time.
+  // `history` is the room's ring of {t, map}. Bracket frames are interpolated
+  // so a client rendering between two 60 Hz ticks gets a correct target pose.
+  // Returns null when the request is outside the retained window, letting the
+  // caller fall back to live targets rather than inventing a pose.
+  static sampleHistory(history, t, maxAge = 0.25) {
+    if (!history || !history.length || !Number.isFinite(t)) return null;
+    let before = null, after = null;
+    for (const h of history) {
+      if (h.t <= t) { if (!before || h.t > before.t) before = h; }
+      else if (!after || h.t < after.t) after = h;
+    }
+    const aliveAt = (entry) => {
+      if (!entry) return false;
+      if (entry.deathAt != null) return t < entry.deathAt;
+      return !!entry.alive;
+    };
+    const only = (frame) => {
+      const out = new Map();
+      for (const [id, e] of frame.map) {
+        if ((e.spawnTime ?? -Infinity) > t || !aliveAt(e)) continue;
+        out.set(id, { ...e });
+      }
+      return out;
+    };
+    if (!before || !after) {
+      const nearest = before || after;
+      if (!nearest || Math.abs(nearest.t - t) > maxAge) return null;
+      return only(nearest);
+    }
+    const span = after.t - before.t;
+    if (span <= 1e-6) return only(before);
+    const f = clamp((t - before.t) / span, 0, 1);
+    const out = new Map();
+    // Iterate the union: a target that is alive in the earlier frame must not
+    // vanish merely because it died (or respawned) in the later frame.
+    const ids = new Set();
+    for (const id of before.map.keys()) ids.add(id);
+    for (const id of after.map.keys()) ids.add(id);
+    for (const id of ids) {
+      const a = before.map.get(id), b = after.map.get(id);
+      if (b && (!a || a.lifeId !== b.lifeId)) {
+        // New life in the later frame. Before its spawn time the previous life
+        // is still the historical truth when it was alive at `t`.
+        if ((b.spawnTime ?? -Infinity) > t) {
+          if (a && (a.spawnTime ?? -Infinity) <= t && aliveAt(a)) {
+            out.set(id, { ...a, alive: true });
+          }
+          continue;
+        }
+        out.set(id, { ...b, alive: aliveAt(b) });
+        continue;
+      }
+      if (b) {
+        // Same life in both frames: interpolate the pose. A death recorded in
+        // the later frame resolves the alive state at the exact boundary.
+        if ((b.spawnTime ?? -Infinity) > t) continue;
+        out.set(id, {
+          id, team: b.team, lifeId: b.lifeId, spawnTime: b.spawnTime,
+          deathAt: b.deathAt ?? null,
+          pos: [
+            a.pos[0] + (b.pos[0] - a.pos[0]) * f,
+            a.pos[1] + (b.pos[1] - a.pos[1]) * f,
+            a.pos[2] + (b.pos[2] - a.pos[2]) * f,
+          ],
+          height: a.height + (b.height - a.height) * f,
+          stance: f < 0.5 ? a.stance : b.stance,
+          yaw: lerpAngle(a.yaw || 0, b.yaw || 0, f),
+          alive: aliveAt(b),
+        });
+        continue;
+      }
+      // Present only in the earlier frame (removed/disconnected edge case):
+      // carry the last known pose while that life is still alive at `t`.
+      if (!a || (a.spawnTime ?? -Infinity) > t || !aliveAt(a)) continue;
+      out.set(id, { ...a, alive: true });
+    }
+    return out;
+  }
+
+  // Build the authoritative firing context for one input frame. `viewTime` is
+  // the server-clock render time the client was looking at; the returned
+  // catch-up age replays bullets from that pose to the current tick exactly
+  // once. Missing, future or excessively old timestamps fall back to the RTT
+  // estimate / zero rewind instead of trusting the client.
+  static fireContext(history, viewTime, now, fallbackAge = CFG.INTERP_DELAY) {
+    let age = fallbackAge;
+    if (Number.isFinite(viewTime) && viewTime > 0 && viewTime <= now) age = now - viewTime;
+    else if (Number.isFinite(viewTime) && viewTime > now) age = 0; // future timestamp
+    age = clamp(age, 0, CFG.MAX_REWIND);
+    const hist = Game.sampleHistory(history, now - age);
+    if (!hist) return null;
+    return {
+      targets: Game.targetsFromHistory(hist),
+      catchupAge: clamp(age, 0, CFG.BULLET.catchupMax),
+    };
   }
 
   // --------------------------------------------------------------------------

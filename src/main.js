@@ -750,7 +750,16 @@ class App {
     const yaw = this.aimYaw + this.recoilYaw;
     const pitch = clamp(this.aimPitch + this.recoilPitch, -CFG.PLAYER.MAX_PITCH, CFG.PLAYER.MAX_PITCH);
     this.seq = (this.seq + 1) >>> 0;
-    const input = this.input.frame(yaw, pitch, this.seq, this.time);
+    // Lag compensation is anchored to the server-clock render time the player
+    // is actually seeing, not local uptime. The server bounds and validates it.
+    let viewTime = 0;
+    if (this.mode === 'online' && this.net?.buffer) {
+      viewTime = remoteRenderTime(this.net.buffer, this.net.rtt, this.net.jitter);
+      if (!(viewTime > 0)) viewTime = 0;
+    } else if (this.mode === 'offline' && this.offlineGame) {
+      viewTime = this.offlineGame.time;
+    }
+    const input = this.input.frame(yaw, pitch, this.seq, viewTime);
     if (blocked) {
       input.f = input.b = input.l = input.r = false;
       input.jump = input.sprint = input.ads = input.shoot = false;
@@ -870,6 +879,13 @@ class App {
     for (const ev of events) {
       switch (ev.k) {
         case 'shot': this.onShot(ev, selfId); break;
+        case 'impact':
+          this.effects?.impact({
+            p: [ev.x, ev.y, ev.z], n: ev.n || [0, 1, 0],
+            tag: ev.tag, mat: ev.mat, bid: ev.bid,
+          });
+          this.audio.impact(ev.mat, [ev.x, ev.y, ev.z], 0);
+          break;
         case 'launch':
           this.effects?.launch(ev);
           if (ev.id !== selfId) { this.characters.get(ev.id)?.fire(); this.audio.shot(ev.w, ...ev.o); }

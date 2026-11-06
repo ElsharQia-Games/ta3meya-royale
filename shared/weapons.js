@@ -5,7 +5,7 @@
 // compensation. All randomness uses the game RNG for determinism.
 // ============================================================================
 import { CFG, MATERIALS, STANCE } from './config.js';
-import { clamp, spreadDirection, dirFromAngles, yawTo, TAU } from './math.js';
+import { clamp, spreadDirection, dirFromAngles, yawTo, TAU, lerpAngle } from './math.js';
 import { rayCapsuleSegment, raySphere, stanceHeight, stanceEye } from './physics.js';
 import { vehicleInReach } from './vehicle.js';
 import { advanceRocket } from './projectiles.js';
@@ -78,7 +78,10 @@ export function nearestPlayerHit(origin, dir, maxT, targets, shooterId, shooterT
 }
 
 // Solve a single bullet. Returns segments (for tracer), impacts and a hit.
-export function solveBallistic(world, origin, dir, W, targets, shooterId, shooterTeam, mode, maxTime = 2.2) {
+// This remains the pure trajectory preview used for the immediate shot event;
+// authoritative damage now comes from stepBullets() against live targets.
+export function solveBallistic(world, origin, dir, W, targets, shooterId, shooterTeam, mode, maxTime = 2.2, opts = {}) {
+  const rayOpts = opts.ballistic ? { ballistic: true } : undefined;
   const vel = [dir[0] * W.mv, dir[1] * W.mv, dir[2] * W.mv];
   const pos = origin.slice();
   const segments = [pos.slice()];
@@ -105,7 +108,7 @@ export function solveBallistic(world, origin, dir, W, targets, shooterId, shoote
     if (segLen < 1e-6) continue;
     const sdir = [sx / segLen, sy / segLen, sz / segLen];
 
-    const wh = world.raycast(prev, sdir, segLen);
+    const wh = world.raycast(prev, sdir, segLen, rayOpts);
     const ph = nearestPlayerHit(prev, sdir, wh ? wh.t : segLen, targets, shooterId, shooterTeam, mode);
 
     if (ph && (!wh || ph.t < wh.t)) {
@@ -187,63 +190,241 @@ export function tryFire(game, p, input, targets, opts = {}) {
       o: origin, v: projectile.vel.slice(), life: projectile.fuse, team: p.team });
     return true;
   }
+  // Ordinary bullets become persistent authoritative projectiles. The shot
+  // event only carries a *predicted* tracer endpoint; hits, world impacts,
+  // destruction and damage are emitted when the projectile actually reaches
+  // them in stepBullets(). This removes the frozen-target + pendingDamage path.
   const tracerEnds = [];
   const flightTimes = [];
-  const allImpacts = [];
-  let firstHit = null;
+  const now = Number.isFinite(game.time) ? game.time : 0;
+  const bullets = game.bullets || (game.bullets = []);
+  const catchupAge = clamp(opts.catchupAge || 0, 0, CFG.BULLET.catchupMax);
+  const catchupFrom = catchupAge > 0 ? targets : null;
+  const catchupTo = catchupAge > 0 && typeof game.buildTargets === 'function'
+    ? game.buildTargets() : null;
   for (let i = 0; i < W.pellets; i++) {
     const dir = spreadDirection(baseDir, spread, rng);
-    const res = solveBallistic(game.world, origin, dir, W, targets, p.id, p.team, game.mode);
-    // Wire payload: keep only the final point of each pellet path. The client
-    // draws a tracer from the muzzle to that point; full polylines would be
-    // several KB per shotgun blast.
+    const bullet = {
+      id: game.nextBulletId = (game.nextBulletId || 0) + 1,
+      ownerId: p.id, team: p.team, weapon: key,
+      pos: origin.slice(), vel: [dir[0] * W.mv, dir[1] * W.mv, dir[2] * W.mv],
+      dist: 0, age: 0, damageMult: 1,
+      life: CFG.BULLET.maxLife,
+      bornAt: now - catchupAge,
+      catchupAge, catchupFrom, catchupTo,
+      dead: false,
+    };
+    bullets.push(bullet);
+    if (bullets.length > CFG.BULLET.maxActive) bullets.splice(0, bullets.length - CFG.BULLET.maxActive);
+    // Predicted tracer endpoint only. It is never used to apply damage.
+    const res = solveBallistic(game.world, origin, dir, W, targets, p.id, p.team, game.mode,
+      CFG.BULLET.maxLife, { ballistic: true });
     const end = res.segments[res.segments.length - 1];
     tracerEnds.push([+end[0].toFixed(2), +end[1].toFixed(2), +end[2].toFixed(2)]);
     flightTimes.push(+res.time.toFixed(3));
-    for (const im of res.impacts) {
-      if (im.vehicle) game.damageVehicle(im.vehicle, W.dmg * .85, p.id);
-      // Destructible props take structural damage from bullet impacts.
-      if (im.box && im.box.dynamic && !im.box.destroyed) {
-        im.box.hp -= W.dmg * 0.75;
-          if (im.box.hp <= 0) {
-            im.box.destroyed = true;
-            game.destroyedBoxes.add(im.box.id);
-          game.events.push({
-            k: 'destroy', id: im.box.id, kind: im.box.kind || im.box.tag,
-            x: +(im.box.min[0] + im.box.max[0]) / 2, y: im.box.min[1],
-            z: +(im.box.min[2] + im.box.max[2]) / 2,
-            sx: +(im.box.max[0] - im.box.min[0]).toFixed(2),
-            sy: +(im.box.max[1] - im.box.min[1]).toFixed(2),
-            sz: +(im.box.max[2] - im.box.min[2]).toFixed(2),
-            mat: im.box.mat,
-          });
-        }
-      }
-      if (allImpacts.length >= 12) break;
-      allImpacts.push({
-        p: [+im.point[0].toFixed(2), +im.point[1].toFixed(2), +im.point[2].toFixed(2)],
-        zone: im.zone || null, tag: im.tag || null, mat: im.mat || null,
-        n: im.normal ? [+im.normal[0].toFixed(2), +im.normal[1].toFixed(2), +im.normal[2].toFixed(2)] : null,
-        tid: im.targetId || null,
-        at: +im.time.toFixed(3), bid: im.box?.id ?? null,
-      });
-    }
-    if (res.hit) {
-      if (!firstHit) firstHit = res.hit;
-      game.pendingDamage.push({
-        at: game.time + res.time,
-        victimId: res.hit.targetId, attackerId: p.id, amount: res.hit.damage,
-        zone: res.hit.zone, point: res.hit.point, weapon: key,
-        headshot: res.hit.zone === 'head', dist: res.hit.dist,
-      });
-    }
   }
   game.events.push({
     k: 'shot', id: p.id, w: key,
     o: [+origin[0].toFixed(2), +origin[1].toFixed(2), +origin[2].toFixed(2)],
-    e: tracerEnds, flight: flightTimes, imps: allImpacts, hit: !!firstHit, team: p.team,
+    e: tracerEnds, flight: flightTimes, imps: [], hit: false, team: p.team,
   });
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Authoritative bullet projectiles
+//
+// A bullet persists across simulation ticks and is swept against the live world
+// and target hitboxes every tick. The only historical work is the bounded
+// catch-up on the first tick, which advances the bullet from the shooter's
+// view time to acceptance time using interpolated target positions. Live
+// simulation then continues once; lag compensation is never applied twice.
+// ---------------------------------------------------------------------------
+
+function interpolateTargets(from, to, f) {
+  if (!from || !to) return to || from || [];
+  const a = new Map(from.map(t => [t.id, t]));
+  const out = [];
+  for (const b of to) {
+    if (!b.alive) continue;
+    const t = a.get(b.id);
+    let pos, height, stance, yaw;
+    if (!t || !t.alive || (t.lifeId !== undefined && b.lifeId !== undefined && t.lifeId !== b.lifeId)) {
+      pos = b.pos.slice(); height = b.height; stance = b.stance || 0; yaw = b.yaw || 0;
+    } else {
+      pos = [
+        t.pos[0] + (b.pos[0] - t.pos[0]) * f,
+        t.pos[1] + (b.pos[1] - t.pos[1]) * f,
+        t.pos[2] + (b.pos[2] - t.pos[2]) * f,
+      ];
+      height = t.height + (b.height - t.height) * f;
+      stance = f < 0.5 ? (t.stance || 0) : (b.stance || 0);
+      yaw = lerpAngle(t.yaw || 0, b.yaw || 0, f);
+    }
+    out.push({
+      id: b.id, pos, height, stance, yaw, alive: true, team: b.team,
+      lifeId: b.lifeId, spawnTime: b.spawnTime,
+      hitboxes: hitboxesFor(pos, height, stance, yaw),
+    });
+  }
+  return out;
+}
+
+function recordWorldImpact(game, bullet, wh, point, distance, W) {
+  game.events.push({
+    k: 'impact', id: bullet.ownerId, w: bullet.weapon,
+    x: +point[0].toFixed(2), y: +point[1].toFixed(2), z: +point[2].toFixed(2),
+    n: wh.normal ? [+wh.normal[0].toFixed(2), +wh.normal[1].toFixed(2), +wh.normal[2].toFixed(2)] : null,
+    tag: wh.tag || null, mat: wh.mat || null,
+    bid: wh.box ? wh.box.id : null, vid: wh.vehicle ? wh.vehicle.id : null,
+    dist: Math.round(distance),
+  });
+  if (wh.vehicle) game.damageVehicle(wh.vehicle, W.dmg * 0.85, bullet.ownerId);
+  const box = wh.box;
+  if (box && box.dynamic && !box.destroyed) {
+    box.hp -= W.dmg * 0.75;
+    if (box.hp <= 0) {
+      box.destroyed = true;
+      const destroyed = game.destroyedBoxes || (game.destroyedBoxes = new Set());
+      destroyed.add(box.id);
+      game.events.push({
+        k: 'destroy', id: box.id, kind: box.kind || box.tag,
+        x: +((box.min[0] + box.max[0]) / 2).toFixed(2), y: box.min[1],
+        z: +((box.min[2] + box.max[2]) / 2).toFixed(2),
+        sx: +(box.max[0] - box.min[0]).toFixed(2),
+        sy: +(box.max[1] - box.min[1]).toFixed(2),
+        sz: +(box.max[2] - box.min[2]).toFixed(2),
+        mat: box.mat,
+      });
+    }
+  }
+}
+
+function eligibleTargets(game, bullet, targets) {
+  if (!targets || !targets.length) return targets || [];
+  const out = [];
+  for (const t of targets) {
+    const victim = game.players ? game.players.get(t.id) : null;
+    // A target that is gone, dead, from a different life, or spawned after
+    // this round was fired cannot be hit. Exclude it before the ray so the
+    // sweep does not repeatedly rediscover and skip it inside the travel guard.
+    if (!t.alive || !victim || !victim.alive) continue;
+    if (t.lifeId !== undefined && victim.lifeId !== undefined &&
+      victim.lifeId !== t.lifeId) continue;
+    if (victim.spawnTime !== undefined &&
+      (bullet.bornAt === undefined || victim.spawnTime > bullet.bornAt)) continue;
+    out.push(t);
+  }
+  return out;
+}
+
+function advanceBullet(game, bullet, W, dt, targets) {
+  if (bullet.dead || dt <= 1e-9) return;
+  targets = eligibleTargets(game, bullet, targets);
+  // Drag + gravity are integrated once per slice, matching the original
+  // solver's per-step model while preserving residual travel on penetration.
+  const speed = Math.hypot(bullet.vel[0], bullet.vel[1], bullet.vel[2]);
+  const dragK = W.drag * speed;
+  bullet.vel[0] -= bullet.vel[0] * dragK * dt;
+  bullet.vel[1] -= bullet.vel[1] * dragK * dt;
+  bullet.vel[2] -= bullet.vel[2] * dragK * dt;
+  bullet.vel[1] -= 9.81 * (W.grav ?? 1) * dt;
+  const vlen = Math.hypot(bullet.vel[0], bullet.vel[1], bullet.vel[2]);
+  if (vlen < 1e-9) return;
+  const dir = [bullet.vel[0] / vlen, bullet.vel[1] / vlen, bullet.vel[2] / vlen];
+  const moveLen = vlen * dt;
+  let travelled = 0;
+  let guard = 0;
+  const base = bullet.pos;
+
+  while (travelled < moveLen - 1e-9 && guard++ <= CFG.BULLET.maxPenetrations) {
+    const start = [base[0] + dir[0] * travelled, base[1] + dir[1] * travelled, base[2] + dir[2] * travelled];
+    const segLen = moveLen - travelled;
+    const wh = game.world.raycast(start, dir, segLen, { ballistic: true });
+    const ph = nearestPlayerHit(start, dir, wh ? wh.t : segLen, targets, bullet.ownerId, bullet.team, game.mode);
+
+    if (ph) {
+      const victim = game.players ? game.players.get(ph.target.id) : null;
+      const sameLife = !victim || ph.target.lifeId === undefined || victim.lifeId === undefined ||
+        victim.lifeId === ph.target.lifeId;
+      const notFutureSpawn = !victim || victim.spawnTime === undefined || victim.spawnTime <= bullet.bornAt;
+      if (victim && victim.alive && sameLife && notFutureSpawn) {
+        const point = [start[0] + dir[0] * ph.t, start[1] + dir[1] * ph.t, start[2] + dir[2] * ph.t];
+        const d = bullet.dist + travelled + ph.t;
+        let mult = 1;
+        const [fs, fe, fm] = W.falloff;
+        if (d > fs) mult = clamp(1 - (d - fs) / (fe - fs), fm, 1);
+        const zoneMult = ph.zone === 'head' ? W.headshot : ph.zone === 'legs' ? 0.82 : 1;
+        const damage = W.dmg * mult * bullet.damageMult * zoneMult;
+        const attacker = game.players ? game.players.get(bullet.ownerId) : null;
+        if (attacker && attacker.id !== victim.id) attacker.damageDealt += damage;
+        if (game.stats) { game.stats.hits++; game.stats.damage += damage; }
+        applyDamage(game, victim, damage, bullet.ownerId, ph.zone, point, bullet.weapon, d);
+        bullet.dead = true;
+        break;
+      }
+      // Defensive fallback for an eligibility change between filtering and the
+      // ray. Normal dead/respawned targets are removed by eligibleTargets().
+      // Treat it as empty space and keep the round moving.
+      const skip = Math.max(ph.t + 0.02, 0.02);
+      travelled = Math.min(moveLen, travelled + skip);
+      continue;
+    }
+
+    if (wh) {
+      const d = bullet.dist + travelled + wh.t;
+      recordWorldImpact(game, bullet, wh, wh.point, d, W);
+      const thickness = (wh.tmax !== undefined && isFinite(wh.tmax) ? wh.tmax - wh.t : Infinity);
+      const mat = MATERIALS[wh.mat] || MATERIALS.concrete;
+      const canPen = wh.box && thickness > 0 && thickness <= W.penetration * (mat.pen || 1) && bullet.damageMult > 0.28;
+      if (!canPen) { bullet.dead = true; break; }
+      bullet.damageMult *= 0.58;
+      // Continue from just past the exit point, still inside this same slice.
+      const exitT = wh.tmax + 0.015;
+      const advance = Math.max(exitT, wh.t + 0.02);
+      travelled = Math.min(moveLen, travelled + advance);
+      continue;
+    }
+
+    travelled += segLen;
+  }
+
+  bullet.pos = [base[0] + dir[0] * travelled, base[1] + dir[1] * travelled, base[2] + dir[2] * travelled];
+  bullet.dist += travelled;
+  bullet.age += dt;
+}
+
+export function stepBullets(game, dt) {
+  const bullets = game.bullets;
+  if (!bullets || !bullets.length) return;
+  const targets = typeof game.buildTargets === 'function' ? game.buildTargets() : [];
+  for (const bullet of bullets) {
+    if (bullet.dead) continue;
+    const W = CFG.WEAPONS[bullet.weapon];
+    if (!W) { bullet.dead = true; continue; }
+
+    // Bounded catch-up from the shooter's view time to acceptance time.
+    if (bullet.catchupAge > 0) {
+      const age = clamp(bullet.catchupAge, 0, CFG.BULLET.catchupMax);
+      const steps = Math.max(1, Math.ceil(age / CFG.SIM_DT));
+      const slice = age / steps;
+      for (let i = 1; i <= steps && !bullet.dead; i++) {
+        const interp = interpolateTargets(bullet.catchupFrom, bullet.catchupTo, i / steps);
+        advanceBullet(game, bullet, W, slice, interp);
+      }
+      bullet.catchupAge = 0;
+      bullet.catchupFrom = null;
+      bullet.catchupTo = null;
+      if (bullet.dead) continue;
+    }
+
+    advanceBullet(game, bullet, W, dt, targets);
+    if (bullet.age >= bullet.life) bullet.dead = true;
+    if (bullet.pos[1] < -20 ||
+      Math.abs(bullet.pos[0]) > CFG.MAP.BOUNDS + 100 ||
+      Math.abs(bullet.pos[2]) > CFG.MAP.BOUNDS + 100) bullet.dead = true;
+  }
+  if (bullets.some(b => b.dead)) game.bullets = bullets.filter(b => !b.dead);
 }
 
 export function applyDamage(game, victim, amount, attackerId, zone, point, weaponKey, dist = 0) {
