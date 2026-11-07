@@ -54,7 +54,7 @@ try {
       const [x, y, z] = a.renderer.camera.position.toArray();
       // A single positioned clip exercises source compatibility separately
       // from the live server join. No gameplay state is altered.
-      return a.audio.playSample('ar-1', { gain: .05, position: [x + 8, y, z - 5] });
+      return a.audio.playSample('ar-a', { gain: .05, position: [x + 8, y, z - 5] });
     });
     const before = await page.evaluate(() => window.__frontline.time);
     await page.waitForFunction(time => window.__frontline.time > time + .2, before, { timeout: 5000 });

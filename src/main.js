@@ -24,6 +24,7 @@ import { Input } from './input.js';
 import { loadSettings, saveSettings } from './settings.js';
 import { HUD } from './ui/hud.js';
 import { AudioEngine } from './audio/audio.js';
+import { nearestPath } from './audio/spatial.js';
 import { NetClient, defaultUrl } from './net/client.js';
 import { joinPeerSession } from './net/peer.js';
 import { Prediction, remoteRenderTime } from './prediction.js';
@@ -77,6 +78,7 @@ class App {
     this.seq = 0;
     this.localFireT = 0;
     this.prevShoot = false;
+    this._wasGrounded = null;
     this.pendingShots = [];
     this.adsF = 0;
 
@@ -417,6 +419,7 @@ class App {
   _returnToLobbyAfterPeerFailure(message) {
     if (this.active) {
       this.active = false;
+      this.audio.endSession();
       this.endShown = false;
       this.manualOpen = false;
       this.input.enabled = false;
@@ -497,6 +500,7 @@ class App {
         this.buildSession(msg.mapSeed ?? CFG.MAP.SEED);
         this.finishBackdrop();
         this.active = true;
+        this.audio.startSession();
         this.input.enabled = true;
         document.activeElement?.blur();
         this.hud.setLobbyVisible(false);
@@ -573,6 +577,7 @@ class App {
       this.offlineInputs.clear();
       this.mode = 'offline';
       this.active = true;
+      this.audio.startSession();
       this.preparing = false;
       this.input.clearHeld();
       document.activeElement?.blur();
@@ -650,6 +655,7 @@ class App {
 
   leave() {
     this.active = false;
+    this.audio.endSession();
     this.input.enabled = false;
     this.input.releaseLock();
     if (this.pendingJoin) { this.pendingJoin.abort(); this.pendingJoin = null; }
@@ -800,6 +806,17 @@ class App {
       const speed = Math.hypot(lp.vx || 0, lp.vz || 0);
       if (speed > 1.4) this.audio.footstep(lp.inWater ? 'water' : this.surfaceAt(lp.x, lp.y, lp.z), speed);
     }
+    // Jump/land are presentation-only transitions derived from replicated
+    // contact state. No simulation value is read back into the engine.
+    if (lp) {
+      const grounded = !!lp.grounded && !lp.inVehicle && !!lp.alive;
+      if (this._wasGrounded === false && grounded) {
+        this.audio.land(lp.inWater ? 'water' : this.surfaceAt(lp.x, lp.y, lp.z), 0.85);
+      } else if (this._wasGrounded === true && !grounded && lp.alive && !lp.inVehicle && (lp.vy || 0) > 1.2) {
+        this.audio.jump();
+      }
+      this._wasGrounded = grounded;
+    } else this._wasGrounded = null;
   }
 
   resolveEnterVehicle(input) {
@@ -907,6 +924,7 @@ class App {
         case 'destroy':
           this.worldView?.removeBox(ev.id);
           this.effects?.destroy(ev);
+          this.audio.play('destruction', { position: [ev.x, ev.y, ev.z] });
           break;
         case 'boom':
           this.effects?.boom(ev);
@@ -931,7 +949,7 @@ class App {
           }
           break;
         case 'reload':
-          if (ev.id === selfId) this.audio.reload(ev.dur);
+          if (ev.id === selfId) this.audio.reload(ev.w, ev.dur);
           break;
         case 'switch':
           if (ev.id === selfId) this.audio.switchWeapon();
@@ -980,7 +998,13 @@ class App {
           if (ev.shrink) this.hud.notify('The zone is closing — move');
           break;
         case 'enterVehicle':
-          if (ev.id === selfId) this.audio.pickup();
+          if (ev.id === selfId) this.audio.enterVehicle(this.vehiclePoint(ev.vid));
+          break;
+        case 'exitVehicle':
+          if (ev.id === selfId) this.audio.exitVehicle(this.vehiclePoint(ev.vid));
+          break;
+        case 'vehicleDestroyed':
+          this.audio.vehicleDestroyed([ev.x, ev.y, ev.z]);
           break;
         case 'vehicleblocked':
           if (ev.id === selfId) this.hud.notify('EXIT BLOCKED — move the vehicle to clear space');
@@ -1003,11 +1027,16 @@ class App {
       const origin = anchor?.getWorldPosition(new THREE.Vector3()).toArray() || ev.o;
       this.effects?.shot({ ...ev, o: origin }, weapon, anchor);
       this.audio.shot(ev.w, ev.o[0], ev.o[1], ev.o[2]);
-      // Crack of a round passing near the local player.
+      // Crack of a round passing near the local player. This uses the actual
+      // projectile path and flight time from the authoritative shot event, not
+      // the shooter's muzzle distance.
       const lp = this.getLocalPlayer();
-      if (lp) {
-        const d = Math.hypot(ev.o[0] - lp.x, ev.o[2] - lp.z);
-        if (d < 45) this.audio.whiz(0);
+      if (lp && Array.isArray(ev.e) && ev.e.length) {
+        const eye = this.renderer.camera.position;
+        const pass = nearestPath([eye.x, eye.y, eye.z], ev.o, ev.e, ev.flight);
+        if (pass && pass.distance < 4.5) {
+          this.audio.whiz(pass.point, { delay: pass.time, distance: pass.distance });
+        }
       }
     } else if (this.effects && this.viewmodel) {
       const origin = this.viewmodel.muzzleWorld().toArray();
@@ -1076,6 +1105,16 @@ class App {
       this.vehicleViews.delete(id);
     }
     this.world.vehicles = list.map(v => ({ ...v, pos: [v.x, v.y, v.z], vel: [v.vx || 0, v.vy || 0, v.vz || 0] }));
+    this.audio.observeVehicles(list);
+  }
+
+  // World point of a vehicle id from whichever source currently owns state.
+  vehiclePoint(id) {
+    const packet = (this.state?.vehicles || []).find(v => v.id === id);
+    if (packet) return [packet.x, packet.y, packet.z];
+    const sim = this.offlineGame?.vehicles?.find(v => v.id === id);
+    if (sim) return [...sim.pos];
+    return null;
   }
 
   buildOfflineState() {
@@ -1121,7 +1160,7 @@ class App {
       const inv = w ? p.inv[w] : null;
       const res = {
         x: p.pos[0], y: p.pos[1], z: p.pos[2],
-        vx: p.vel[0], vz: p.vel[2],
+        vx: p.vel[0], vy: p.vel[1], vz: p.vel[2],
         yaw: p.yaw, pitch: p.pitch,
         stance: p.stance, grounded: p.grounded, inWater: p.inWater, swimming: !!p.swimming,
         alive: p.alive, hp: p.health, armor: p.armor,
@@ -1146,7 +1185,7 @@ class App {
     const spread = this.spreadFor(pred, w, snap);
     const res = {
       x: pos[0], y: pos[1], z: pos[2],
-      vx: pred.vel[0], vz: pred.vel[2],
+      vx: pred.vel[0], vy: pred.vel[1], vz: pred.vel[2],
       yaw: pred.yaw, pitch: pred.pitch,
       stance: pred.stance, grounded: pred.grounded, inWater: pred.inWater, swimming: !!pred.swimming,
       alive: snap.alive === undefined ? true : !!snap.alive, hp: snap.hp ?? 100, armor: snap.armor ?? 0,

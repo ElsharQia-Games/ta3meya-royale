@@ -1,0 +1,25 @@
+{
+  "smoke": {
+    "old": {
+      "calls": 200000,
+      "ms": 45.5,
+      "usPerCall": 0.228,
+      "heapDeltaKiB": 33.4,
+      "hits": 200000
+    },
+    "current": {
+      "calls": 200000,
+      "ms": 6.3,
+      "usPerCall": 0.032,
+      "heapDeltaKiB": 15.8,
+      "hits": 200000
+    }
+  },
+  "snapshot": {
+    "pushes": 3000,
+    "players": 31,
+    "ms": 16.4,
+    "usPerPush": 5.5,
+    "retainedFrames": 30
+  }
+}

@@ -89,12 +89,15 @@ try {
   check('death information names the attacker and weapon', await page.evaluate(() => window.__frontline.hud.combat.panel.textContent.includes('OVERWATCH') && window.__frontline.hud.combat.panel.textContent.includes('AX-50')));
   await steps(245); await capture('09-respawn');
   check('respawn restores the selected heavy kit', await page.evaluate(() => window.__frontline.offlinePlayer.alive && window.__frontline.offlinePlayer.weapons.join(',') === 'lmg,rpg'));
-  await page.waitForFunction(() => window.__frontline.audio.samples?.buffers.size === 36);
-  check('all 36 local SFX decode', await page.evaluate(() => window.__frontline.audio.samples.errors.length === 0));
+  await page.waitForFunction(() => window.__frontline.audio.samples?.hasGroup('core'));
+  check('all 110 core SFX decode', await page.evaluate(() => {
+    const bank = window.__frontline.audio.samples;
+    return bank.errors.length === 0 && bank.buffers.size >= bank.groups.get('core').size;
+  }));
   check('sample voice budget stays bounded', await page.evaluate(() => {
     const audio = window.__frontline.audio;
-    for (let i = 0; i < 70; i++) audio.playSample('ar-1');
-    return audio.voices.size <= 48;
+    for (let i = 0; i < 70; i++) audio.playSample('ar-a');
+    return audio.voices.size <= audio.budget.limit;
   }));
 } catch (error) { check('new journeys completed', false, String(error.stack || error)); }
 finally {

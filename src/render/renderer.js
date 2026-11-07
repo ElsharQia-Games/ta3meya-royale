@@ -332,4 +332,51 @@ export class GameRenderer {
       this._fpsAcc = 0; this._fpsFrames = 0;
     }
   }
+
+  // Live counters for the performance gate. `info.autoReset` is off so these
+  // are the values from the frame that just rendered (draw calls, triangles and
+  // the retained GPU object counts).
+  stats() {
+    const info = this.renderer.info;
+    return {
+      quality: this.settings.quality,
+      pixelRatio: this.renderer.getPixelRatio(),
+      shadows: this.renderer.shadowMap.enabled,
+      cascades: this.csm?.cascades || 0,
+      shadowMap: this.quality.shadowMap,
+      viewDistance: this.camera.far,
+      fogDensity: this.scene.fog?.density ?? null,
+      bloom: !!this.composer,
+      calls: info.render.calls,
+      triangles: info.render.triangles,
+      points: info.render.points,
+      lines: info.render.lines,
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+      programs: info.programs?.length ?? null,
+      fps: this.fps,
+    };
+  }
+
+  // Release renderer-owned GPU state. Scene resources are owned by WorldView /
+  // Effects / entities and are disposed by their owners during session teardown.
+  dispose() {
+    if (this.composer) {
+      for (const pass of this.composer.passes) pass.dispose?.();
+      this.composer.dispose();
+      this.composer = null; this.bloom = null;
+    }
+    if (this.csm) {
+      this.csm.remove();
+      for (const light of this.csm.lights) { light.shadow.map?.dispose(); light.shadow.mapPass?.dispose(); }
+      this.csm.dispose();
+      this.csm = null;
+    }
+    this.directSun?.dispose?.();
+    this.environmentTarget?.dispose();
+    this.sky?.geometry?.dispose(); this.sky?.material?.dispose();
+    this.clouds?.geometry?.dispose(); this.clouds?.material?.dispose();
+    this._materials.clear();
+    this.renderer.dispose();
+  }
 }

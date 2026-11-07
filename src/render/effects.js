@@ -90,6 +90,7 @@ export class Effects {
     this.points.frustumCulled = false;
     this.scene.add(this.points);
     this.particles = [];
+    this._particleColor = new THREE.Color();
     for (let i = 0; i < MAX_PARTICLES; i++) {
       this.particles.push({ live: false, pos: [0, 0, 0], vel: [0, 0, 0], life: 0, max: 1, size: 0.05, grav: 9, color: [1, 1, 1] });
     }
@@ -113,7 +114,7 @@ export class Effects {
     p.pos[0] = x; p.pos[1] = y; p.pos[2] = z;
     p.vel[0] = vx; p.vel[1] = vy; p.vel[2] = vz;
     p.life = life; p.max = life; p.size = size; p.grav = grav;
-    const linear = new THREE.Color(color);
+    const linear = this._particleColor.set(color);
     p.color[0] = linear.r; p.color[1] = linear.g; p.color[2] = linear.b;
   }
 
@@ -132,23 +133,39 @@ export class Effects {
     this.tracers.frustumCulled = false;
     this.tracers.count = 0;
     this.scene.add(this.tracers);
+    // Records are recycled through tracerData; crossing the tracer ring must
+    // not allocate after the first MAX_TRACERS shots. Coordinates are copied
+    // because callers reuse their arrays.
     this.tracerData = [];
+    this._tracerPool = [];
     this.tracerNext = 0;
     this._m = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
     this._up = new THREE.Vector3(0, 1, 0);
+    this._axis = new THREE.Vector3(0, 0, 1);
     this._dir = new THREE.Vector3();
     this._p = new THREE.Vector3();
     this._s = new THREE.Vector3();
+    this._tracerColor = new THREE.Color();
   }
 
   tracer(from, to, color = 0xffe6a8, width = 0.015, flight = null, gravity = .62) {
     const i = this.tracerNext;
     this.tracerNext = (this.tracerNext + 1) % MAX_TRACERS;
-    const distance = Math.hypot(...to.map((n, k) => n - from[k]));
+    const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    const distance = Math.hypot(dx, dy, dz);
     flight = Math.max(.01, flight ?? distance / 880);
-    this.tracerData[i] = { from, to, age: 0, flight, max: flight + .055, width, color, distance, gravity, fresh: true };
-    this.tracers.setColorAt(i, new THREE.Color(color));
+    const t = this._tracerPool.pop() || {
+      live: false, from: [0, 0, 0], to: [0, 0, 0], age: 0, flight: .01,
+      max: .01, width: .015, color: 0, distance: 0, gravity: .62, fresh: false,
+    };
+    t.live = true; t.fresh = true; t.age = 0;
+    t.from[0] = from[0]; t.from[1] = from[1]; t.from[2] = from[2];
+    t.to[0] = to[0]; t.to[1] = to[1]; t.to[2] = to[2];
+    t.flight = flight; t.max = flight + .055; t.width = width;
+    t.color = color; t.distance = distance; t.gravity = gravity;
+    this.tracerData[i] = t;
+    this.tracers.setColorAt(i, this._tracerColor.setHex(color));
     this.tracers.instanceColor.needsUpdate = true;
     this.tracers.count = Math.min(MAX_TRACERS, Math.max(this.tracers.count, i + 1));
   }
@@ -161,18 +178,29 @@ export class Effects {
       if (!t) continue;
       t.age += t.fresh ? Math.min(dt, t.flight) : dt; t.fresh = false;
       dirty = true;
-      if (t.age >= t.max) { this.tracerData[i] = null; m.makeScale(0, 0, 0); this.tracers.setMatrixAt(i, m); continue; }
+      if (t.age >= t.max) {
+        t.live = false;
+        this.tracerData[i] = null;
+        this._tracerPool.push(t);
+        m.makeScale(0, 0, 0); this.tracers.setMatrixAt(i, m);
+        continue;
+      }
       any = true;
       const f = clamp((t.max - t.age) / .055, 0, 1);
       const end = clamp(t.age / t.flight, 0, 1), start = Math.max(0, end - Math.min(7, t.distance) / Math.max(.001, t.distance));
-      const point = u => t.from.map((n, k) => n + (t.to[k] - n) * u +
-        (k === 1 ? .5 * 9.81 * t.gravity * t.flight ** 2 * u * (1 - u) : 0));
-      const a = point(start), b = point(end);
-      dir.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+      // Ballistic drop is only applied on Y, matching the historical path.
+      const drop = t.flight * t.flight * 9.81 * t.gravity * .5;
+      const ax = t.from[0] + (t.to[0] - t.from[0]) * start;
+      const ay = t.from[1] + (t.to[1] - t.from[1]) * start + drop * start * (1 - start);
+      const az = t.from[2] + (t.to[2] - t.from[2]) * start;
+      const bx = t.from[0] + (t.to[0] - t.from[0]) * end;
+      const by = t.from[1] + (t.to[1] - t.from[1]) * end + drop * end * (1 - end);
+      const bz = t.from[2] + (t.to[2] - t.from[2]) * end;
+      dir.set(bx - ax, by - ay, bz - az);
       const len = dir.length() || 0.001;
       dir.divideScalar(len);
-      q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-      p.set(...a);
+      q.setFromUnitVectors(this._axis, dir);
+      p.set(ax, ay, az);
       s.set(t.width * (.25 + f), t.width * (.25 + f), len);
       m.compose(p, q, s);
       this.tracers.setMatrixAt(i, m);
@@ -203,15 +231,16 @@ export class Effects {
     this._dm = new THREE.Matrix4();
     this._dp = new THREE.Vector3();
     this._ds = new THREE.Vector3();
+    this._daxis = new THREE.Vector3(0, 0, 1);
   }
 
   decal(point, normal, size = 0.06, boxId = null) {
     const i = this.decalNext;
     this.decalNext = (this.decalNext + 1) % MAX_DECALS;
-    const n = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
-    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
-    const p = new THREE.Vector3(point[0] + n.x * 0.008, point[1] + n.y * 0.008, point[2] + n.z * 0.008);
-    const m = new THREE.Matrix4().compose(p, q, new THREE.Vector3(size, size, size));
+    const n = this._dn.set(normal[0], normal[1], normal[2]).normalize();
+    const q = this._dq.setFromUnitVectors(this._daxis, n);
+    const p = this._dp.set(point[0] + n.x * 0.008, point[1] + n.y * 0.008, point[2] + n.z * 0.008);
+    const m = this._dm.compose(p, q, this._ds.set(size, size, size));
     this.decals.setMatrixAt(i, m);
     this.decalData[i] = boxId;
     this.decals.count = Math.min(MAX_DECALS, Math.max(this.decals.count, i + 1));

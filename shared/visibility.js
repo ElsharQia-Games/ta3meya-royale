@@ -1,13 +1,17 @@
 // Smoke obscures vision, not ballistics or blast propagation. A short edge
 // crossing remains translucent; a substantial path through a cloud blocks sight.
+// Every value is computed with scalars: this runs for each remote character and
+// bot every frame, so it must not allocate temporaries.
 export function smokeObscures(smokes, from, to) {
-  const delta = to.map((n, i) => n - from[i]), length = Math.hypot(...delta);
+  const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+  const length = Math.hypot(dx, dy, dz);
   if (length < 1e-6) return false;
-  const direction = delta.map(n => n / length);
-  for (const smoke of smokes || []) {
-    const offset = [smoke.x - from[0], smoke.y + 1.1 - from[1], smoke.z - from[2]];
-    const along = offset.reduce((sum, n, i) => sum + n * direction[i], 0);
-    const perpendicular = offset.reduce((sum, n) => sum + n * n, 0) - along * along;
+  const ix = dx / length, iy = dy / length, iz = dz / length;
+  for (let i = 0; i < (smokes?.length || 0); i++) {
+    const smoke = smokes[i];
+    const ox = smoke.x - from[0], oy = smoke.y + 1.1 - from[1], oz = smoke.z - from[2];
+    const along = ox * ix + oy * iy + oz * iz;
+    const perpendicular = ox * ox + oy * oy + oz * oz - along * along;
     const radius = smoke.r || 5.5;
     if (perpendicular >= radius * radius) continue;
     const half = Math.sqrt(Math.max(0, radius * radius - perpendicular));

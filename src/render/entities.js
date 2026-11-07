@@ -18,6 +18,26 @@ import { prepareStaticGeometry } from './world.js';
 const SKIN = [0xc99a72, 0x9c6b4a, 0x6f4a32, 0xe0b48c, 0x8a5a3c];
 const UNIFORM = [0x737961, 0x80765d, 0x60746c, 0x807763];
 
+// Remote-character presentation tiers. `full` animates the rig and shadows,
+// `basic` keeps the cheap body/weapon pose but skips arm IK and terrain shadow
+// queries, `hidden` skips all presentation while lifecycle timers keep moving.
+export const CHARACTER_DETAIL_DISTANCE = 65;
+export const CHARACTER_CULL_DISTANCE = 140;
+export function characterDetail(distance) {
+  if (distance == null) return 'full';
+  // `Infinity` is the explicit "not currently visible" signal from the caller;
+  // NaN/missing camera data means "unknown" and keeps the historical full path.
+  if (distance === Infinity) return 'hidden';
+  if (!Number.isFinite(distance)) return 'full';
+  if (distance > CHARACTER_CULL_DISTANCE) return 'hidden';
+  if (distance > CHARACTER_DETAIL_DISTANCE) return 'basic';
+  return 'full';
+}
+
+const _dropEnd = new THREE.Vector3();
+const _dropQuat = new THREE.Quaternion();
+const _dropEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
 const _armA = new THREE.Vector3();
 const _armB = new THREE.Vector3();
 const _armC = new THREE.Vector3();
@@ -25,6 +45,7 @@ const _armDelta = new THREE.Vector3();
 const _armUp = new THREE.Vector3(0, 1, 0);
 const _armTargetArray = [0, 0, 0];
 const _armPoleArray = [0, 0, 0];
+const _armShoulderArray = [0, 0, 0];
 const _armPose = { elbow: [0, 0, 0], hand: [0, 0, 0], reachable: false };
 
 function placeBone(mesh, from, to) {
@@ -290,6 +311,10 @@ export class CharacterView {
       polygonOffset: true, polygonOffsetFactor: -1 }));
     this.shadow.rotation.x = -Math.PI / 2; scene.add(this.shadow);
     this._hands = [new THREE.Vector3(), new THREE.Vector3()];
+    this._pose = { motion: {}, support: new THREE.Vector3(), trigger: new THREE.Vector3() };
+    this._poseStale = true;
+    this._droppedDone = false;
+    this._detail = 'full';
     this._seatedOffset = new THREE.Vector3();
     this.primaryShadowMeshes = [];
     this.model.root.traverse(o => {
@@ -344,12 +369,16 @@ export class CharacterView {
     const seated = !!this.inVehicle;
     const prone = !seated && this.stance === STANCE.PRONE;
     const crouch = !seated && this.stance === STANCE.CROUCH;
+
+    // Essential lifecycle state advances even when presentation is culled, so
+    // reload/bolt/death/walk timing never rewinds when a character re-enters.
     this.shotT += dt;
     this.hitKick *= Math.exp(-9 * dt);
+    const speed = seated ? 0 : Math.hypot(this.vx || 0, this.vz || 0);
+    this.walk += dt * (2.2 + speed * 1.35);
 
     r.position.set(this.pos[0], this.pos[1], this.pos[2]);
     r.rotation.y = this.yaw;
-    r.visible = this.visible;
     if (seated && this.vehicle) {
       const forward = this.seat < 2 ? (this.vehicle.model.group.name === 'vehicle_truck' ? 1.05 : .15) : -.8;
       const offset = this._seatedOffset.set(this.seat % 2 === 0 ? .43 : -.43, .15, -forward);
@@ -357,10 +386,23 @@ export class CharacterView {
       r.position.copy(this.vehicle.group.localToWorld(offset));
       r.rotation.y = this.vehicle.yaw;
     }
-    const plateY = prone ? .75 : crouch ? 1.42 : 2.0;
-    this.plateY = damp(this.plateY ?? plateY, plateY, 12, dt);
+
+    const plateBase = prone ? .75 : crouch ? 1.42 : 2.0;
+    this.plateY = damp(this.plateY ?? plateBase, plateBase, 12, dt);
+    const d3 = cameraPos
+      ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2])
+      : 99;
+    const detail = characterDetail(this.visible ? (cameraPos ? d3 : null) : Infinity);
+    this._detail = detail;
+    const full = detail === 'full', shown = detail !== 'hidden';
+    if (this._charShadowsEnabled !== full) {
+      this._charShadowsEnabled = full;
+      for (let i = 0; i < this.primaryShadowMeshes.length; i++) {
+        this.primaryShadowMeshes[i].castShadow = full;
+      }
+    }
     this.plate.sprite.position.set(this.pos[0], this.pos[1] + this.plateY, this.pos[2]);
-    this.plate.update(this.name || '', this.team, this.hp ?? 100, 100, !this.alive);
+    if (shown && this.alive) this.plate.update(this.name || '', this.team, this.hp ?? 100, 100, false);
 
     if (!this.alive) {
       if (!this.deathAnimation) {
@@ -368,45 +410,69 @@ export class CharacterView {
           m.gun.updateWorldMatrix(true, true);
           const weapon = createWeaponModel(this.weaponKey, false);
           const position = m.gun.getWorldPosition(new THREE.Vector3()), rotation = m.gun.getWorldQuaternion(new THREE.Quaternion());
+          weapon.root.position.copy(position); weapon.root.quaternion.copy(rotation);
           this.scene.add(weapon.root); this.renderer?.registerObject(weapon.root);
           this.droppedWeapon = { weapon, position, rotation };
         }
         this.deathAnimation = new DeathAnimation(m, this.world, this.pos,
           this.death || { yaw: this.yaw, stance: this.stance }, this.id);
       }
+      // Culled corpses only advance their clock; the terminal pose is sampled
+      // once on re-entry. Their dropped weapon rides the same lifecycle.
+      if (!shown) {
+        this.deathAnimation.advance(dt);
+        this.deathT = this.deathAnimation.age;
+        if (this.droppedWeapon) this.droppedWeapon.weapon.root.visible = false;
+        r.visible = false;
+        this.plate.sprite.visible = false;
+        this.shadow.visible = false;
+        return;
+      }
       const delta = Number.isFinite(this.deathAge) ? Math.max(0, this.deathAge - this.deathAnimation.age) : dt;
       const hands = this.deathAnimation.update(delta);
       this.deathT = this.deathAnimation.age;
       this.updateDroppedWeapon();
-      this.poseArms(hands);
+      if (this.droppedWeapon) this.droppedWeapon.weapon.root.visible = true;
+      r.visible = this.visible;
       m.gun.visible = false;
       this.plate.sprite.visible = false;
-      this.updateShadow();
+      if (full) { this.poseArms(hands); this.updateShadow(); } else this.shadow.visible = false;
       return;
     }
     if (this.deathAnimation) {
       this.deathAnimation.dispose(); this.deathAnimation = null; this.death = null;
       this.droppedWeapon?.weapon.dispose(); this.droppedWeapon = null;
+      this._droppedDone = false; this._poseStale = true;
     }
     this.deathT = 0;
     r.rotation.x = 0;
     r.rotation.z = 0;
     m.gun.visible = !(seated && this.seat === 0);
+
+    if (!shown) {
+      this._poseStale = true;
+      r.visible = false;
+      this.plate.sprite.visible = false;
+      this.shadow.visible = false;
+      return;
+    }
+    // After culling, settle scalar damping in one accelerated step instead of
+    // replaying the missed frames. Authoritative reload/bolt timers are intact.
+    const poseDt = this._poseStale ? .5 : dt;
+    this._poseStale = false;
     this.plate.sprite.visible = true;
 
     // Stance: lower the hips and fold the knees so the boots stay on the
     // ground; prone folds the whole body down and extends the legs behind it.
     const targetHip = seated ? .31 : prone ? .34 : crouch ? .54 : .94;
-    m.hips.position.y = damp(m.hips.position.y, targetHip, 12, dt);
-    m.hips.position.z = damp(m.hips.position.z, prone ? .66 : 0, 12, dt);
-    m.torso.position.y = damp(m.torso.position.y, seated ? -.2 : prone ? -.15 : crouch ? -.18 : 0, 12, dt);
+    m.hips.position.y = damp(m.hips.position.y, targetHip, 12, poseDt);
+    m.hips.position.z = damp(m.hips.position.z, prone ? .66 : 0, 12, poseDt);
+    m.torso.position.y = damp(m.torso.position.y, seated ? -.2 : prone ? -.15 : crouch ? -.18 : 0, 12, poseDt);
     m.torso.rotation.x = damp(m.torso.rotation.x,
-      seated ? 0 : prone ? -1.28 : crouch ? .32 : clamp(this.pitch * .2, -.2, .2), 10, dt);
+      seated ? 0 : prone ? -1.28 : crouch ? .32 : clamp(this.pitch * .2, -.2, .2), 10, poseDt);
     m.torso.rotation.z = this.hitKick * (this.id % 2 ? 1 : -1);
 
     // Walk cycle from horizontal velocity estimate.
-    const speed = seated ? 0 : Math.hypot(this.vx || 0, this.vz || 0);
-    this.walk += dt * (2.2 + speed * 1.35);
     const swing = Math.min(1, speed / 5) * 0.62;
     let thighL = Math.sin(this.walk) * swing;
     let thighR = -Math.sin(this.walk) * swing;
@@ -423,60 +489,49 @@ export class CharacterView {
       thighL = thighR = -1.35;
       shin = 0.1;
     }
-    m.legL.rotation.x = damp(m.legL.rotation.x, thighL, 12, dt);
-    m.legR.rotation.x = damp(m.legR.rotation.x, thighR, 12, dt);
-    m.kneeL.rotation.x = damp(m.kneeL.rotation.x, shin, 12, dt);
-    m.kneeR.rotation.x = damp(m.kneeR.rotation.x, shin, 12, dt);
-    m.head.rotation.x = damp(m.head.rotation.x, clamp(this.pitch - m.torso.rotation.x, -.85, 1.25), 10, dt);
+    m.legL.rotation.x = damp(m.legL.rotation.x, thighL, 12, poseDt);
+    m.legR.rotation.x = damp(m.legR.rotation.x, thighR, 12, poseDt);
+    m.kneeL.rotation.x = damp(m.kneeL.rotation.x, shin, 12, poseDt);
+    m.kneeR.rotation.x = damp(m.kneeR.rotation.x, shin, 12, poseDt);
+    m.head.rotation.x = damp(m.head.rotation.x, clamp(this.pitch - m.torso.rotation.x, -.85, 1.25), 10, poseDt);
     m.head.rotation.y = seated && this.vehicle ? clamp(Math.atan2(Math.sin(this.yaw - this.vehicle.yaw), Math.cos(this.yaw - this.vehicle.yaw)), -.8, .8) : 0;
     // Keep the rifle level in prone: the torso is pitched ~73 degrees forward,
     // so an unrotated gun would point its muzzle into the terrain.
-    const { motion, support, trigger } = poseWeaponMechanics(m.weapon, this.reloadT, this.shotT, this.ammo);
-    m.gun.rotation.x = damp(m.gun.rotation.x, this.pitch - m.torso.rotation.x + motion.lift * .14, 10, dt);
+    const { motion, support, trigger } = poseWeaponMechanics(m.weapon, this.reloadT, this.shotT, this.ammo, this._pose);
+    m.gun.rotation.x = damp(m.gun.rotation.x, this.pitch - m.torso.rotation.x + motion.lift * .14, 10, poseDt);
     m.gun.rotation.z = motion.lift * .3;
-    m.gun.position.y = damp(m.gun.position.y, (this.ads && !motion.active ? .47 : .31) + (prone ? .23 : 0) + Math.sin(this.walk * .7) * .003 + motion.lift * .07, 14, dt);
+    m.gun.position.y = damp(m.gun.position.y, (this.ads && !motion.active ? .47 : .31) + (prone ? .23 : 0) + Math.sin(this.walk * .7) * .003 + motion.lift * .07, 14, poseDt);
     const recoil = Math.sin(Math.PI * clamp(this.shotT / .19, 0, 1)) * .035;
-    m.gun.position.z = damp(m.gun.position.z, (prone ? -.18 : -.19) + recoil, 14, dt);
+    m.gun.position.z = damp(m.gun.position.z, (prone ? -.18 : -.19) + recoil, 14, poseDt);
     m.gun.updateMatrix();
-    for (let i = 0; i < m.arms.length; i++) {
-      const arm = m.arms[i];
-      const target = this._hands[i];
-      if (seated && this.seat === 0) {
-        target.set(arm.side * .155, .5, -.27);
-      } else {
-        target.copy(arm.side < 0 ? support : trigger).applyMatrix4(m.gun.matrix);
+    if (full) {
+      for (let i = 0; i < m.arms.length; i++) {
+        const arm = m.arms[i];
+        const target = this._hands[i];
+        if (seated && this.seat === 0) {
+          target.set(arm.side * .155, .5, -.27);
+        } else {
+          target.copy(arm.side < 0 ? support : trigger).applyMatrix4(m.gun.matrix);
+        }
       }
-    }
-    this.poseArms(this._hands);
-    this.updateShadow();
-
-    const d3 = cameraPos
-      ? Math.hypot(cameraPos[0] - this.pos[0], cameraPos[1] - (this.pos[1] + this.plateY), cameraPos[2] - this.pos[2]) : 99;
-    if (d3 > 140) {
-      r.visible = false;
-      this.plate.sprite.visible = false;
+      this.poseArms(this._hands);
+      this.updateShadow();
+    } else {
       this.shadow.visible = false;
-      return;
     }
-    r.visible = this.visible;
-    const enableShadow = d3 < 65;
-    if (this._charShadowsEnabled !== enableShadow) {
-      this._charShadowsEnabled = enableShadow;
-      for (let i = 0; i < this.primaryShadowMeshes.length; i++) {
-        this.primaryShadowMeshes[i].castShadow = enableShadow;
-      }
-    }
+
     const plateHeight = clamp(d3 * .032, .15, 1.45);
     this.plate.sprite.scale.set(plateHeight * 4, plateHeight, 1);
     this.plate.sprite.visible = this.alive && this.visible && !seated && d3 > 1.6 &&
-      (!cameraPos || !smokeObscures(this.smokes, cameraPos, [r.position.x, r.position.y + this.plateY - .3, r.position.z]));
+      (!full || !cameraPos || !smokeObscures(this.smokes, cameraPos, [r.position.x, r.position.y + this.plateY - .3, r.position.z]));
   }
 
   poseArms(hands) {
     const m = this.model;
     for (let i = 0; i < m.arms.length; i++) {
       const arm = m.arms[i], target = hands[i];
-      const shoulder = [arm.side * .245, .405, 0];
+      const shoulder = _armShoulderArray;
+      shoulder[0] = arm.side * .245; shoulder[1] = .405; shoulder[2] = 0;
       _armTargetArray[0] = target.x; _armTargetArray[1] = target.y; _armTargetArray[2] = target.z;
       _armPoleArray[0] = arm.side * .5; _armPoleArray[1] = .02; _armPoleArray[2] = .03;
       solveTwoBone(shoulder, _armTargetArray, _armPoleArray, .29, .3, _armPose);
@@ -504,15 +559,18 @@ export class CharacterView {
 
   updateDroppedWeapon() {
     const dropped = this.droppedWeapon;
-    if (!dropped) return;
+    if (!dropped || this._droppedDone) return;
     const t = clamp((this.deathT - .1) / .65, 0, 1), ease = t * t * (3 - 2 * t);
     const side = this.id % 2 ? 1 : -1;
     const x = dropped.position.x + side * .23, z = dropped.position.z + .12;
     const y = this.world ? supportHeight(this.world, x, z, this.pos[1], .1, .25) : this.pos[1];
-    dropped.weapon.root.position.copy(dropped.position).lerp(new THREE.Vector3(x, y + .075, z), ease);
+    _dropEnd.set(x, y + .075, z);
+    dropped.weapon.root.position.copy(dropped.position).lerp(_dropEnd, ease);
     dropped.weapon.root.position.y += Math.sin(t * Math.PI) * .07;
-    dropped.weapon.root.quaternion.copy(dropped.rotation).slerp(
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, this.yaw + .18, Math.PI / 2, 'YXZ')), ease);
+    _dropEuler.set(0, this.yaw + .18, Math.PI / 2);
+    _dropQuat.setFromEuler(_dropEuler);
+    dropped.weapon.root.quaternion.copy(dropped.rotation).slerp(_dropQuat, ease);
+    if (t >= 1) this._droppedDone = true;
   }
 
   dispose() {

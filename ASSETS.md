@@ -25,7 +25,7 @@ specified families/weights. Copyright and license notices accompany the fonts.
 | Concrete, brick, wood, metal, fallback ground, rock, camouflage, bark, decals, sky textures | Canvas2D / DataTexture generation at runtime | Original, project-owned |
 | Characters, weapons, vehicles | Procedural Three.js geometry | Original, project-owned |
 | Field equipment, rocket rounds, scope details, contact-shadow/dust textures | Original Three.js geometry and Canvas2D generation | Original, project-owned; no commercial-game assets |
-| Additional ambience, sub-bass and tonal feedback | WebAudio synthesis, mixed with the CC0 recordings below | Original, project-owned |
+| Audio mixing, distance filtering, occlusion, stereo panning and convolution reverb tail | Web Audio processing of the CC0 recordings below | Processing only; no synthesized core sound effect |
 | UI, icons, minimap | CSS/Canvas drawn | Original, project-owned |
 
 ## Dependencies (npm)
@@ -56,14 +56,48 @@ in `public/models/nature/NOTICE.md`. Pro/Source editions were not purchased.
 
 ## Sampled audio
 
-36 local CC0 clips now supplement the original synthesis: firearm recordings by
-Ben Jaszczak, Brian Nelson, Kevin Heras and Matthew Nanney (archived Free Firearm
-Sound Library), plus selected Kenney impacts/steps/interface/blast layers.
-`public/audio/NOTICE.md` identifies the sources, actual licences and the requested
-LANDR/Pixabay access/licensing result. `manifest.json` and `tools/build-audio.py`
-record exact selections, edits, hashes and encoding. Runtime payload:359,719B.
-No LANDR/Pixabay files were acquired; owner-provided licensed selections can be
-imported through the documented clip-slot workflow.
+**128 recorded CC0 clips (1,636,252 bytes)** are served locally; the game makes
+no runtime requests to stock-audio sites. Every core gameplay sound is a real
+recording. The only generated signal is a convolution impulse used as a reverb
+tail — processing of the recorded mix, not a substitute sound.
+
+| Source | Author | Licence | Used for |
+|---|---|---|---|
+| [The Free Firearm Sound Library](https://opengameart.org/content/the-free-firearm-sound-library) | Ben Jaszczak, Brian Nelson, Kevin Heras, Matthew Nanney | CC0-1.0 | 26 pistol/SMG/AR/DMR/shotgun/sniper/LMG shot recordings |
+| [Kenney Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0-1.0 | mechanism, metal impact, shell and heavy-impact layers |
+| [Kenney Sci-fi Sounds](https://kenney.nl/assets/sci-fi-sounds) | Kenney | CC0-1.0 | explosions, rocket launch, vehicle destruction |
+| [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds) | Kenney | CC0-1.0 | UI select/confirm/error/open/click, hitmarker, kill confirm |
+| [75 CC0 breaking / falling / hit sfx](https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx) | rubberduck | CC0-1.0 | impacts, body fall, destruction, vehicle impact |
+| [100 CC0 SFX #2](https://opengameart.org/content/100-cc0-sfx-2) | rubberduck | CC0-1.0 | impacts, footsteps, jump, pickup |
+| [25 CC0 mud sfx](https://opengameart.org/content/25-cc0-mud-sfx) | rubberduck | CC0-1.0 | dirt impacts and footsteps |
+| [40 CC0 water splash / slime sfx](https://opengameart.org/content/40-cc0-water-splash-slime-sfx) | rubberduck | CC0-1.0 | water impacts and footsteps |
+| [Impact](https://opengameart.org/content/impact) | qubodup | CC0-1.0 | stone/wood/metal/meat impacts |
+| [Different steps on wood, stone, leaves, gravel and mud](https://opengameart.org/content/different-steps-on-wood-stone-leaves-gravel-and-mud) | TinyWorlds | CC0-1.0 | concrete/wood/grass/dirt footsteps |
+| [Metal footsteps on concrete](https://opengameart.org/content/metal-footsteps-on-concrete) | Thimras | CC0-1.0 | metal footsteps |
+| [Park ambiences](https://opengameart.org/content/park-ambiences) | Thimras | CC0-1.0 | wind and bird beds |
+| [Jump Landing](https://opengameart.org/content/jump-landing) | Macro | CC0-1.0 | landing variations |
+| [Jump Landing Sound](https://opengameart.org/content/jump-landing-sound) | qubodup | CC0-1.0 | landing variation |
+| [Gun reload sounds](https://opengameart.org/content/gun-reload-sounds) | SpringySpringo | CC0-1.0 | pump, rifle and generic reloads |
+| [Handgun Reload Sound Effect](https://opengameart.org/content/handgun-reload-sound-effect) | zer0_sol | CC0-1.0 | handgun reload |
+| [2 Gun Reloads](https://opengameart.org/content/2-gun-reloads) | StarNinjas | CC0-1.0 | alternative reloads |
+| [equipment clicks III](https://opengameart.org/content/equipment-clicks-iii) | LFA | CC0-1.0 | weapon-switch clicks |
+| [Short Alarm](https://opengameart.org/content/short-alarm) | yd | CC0-1.0 | zone alarm loop |
+| [Car Sound Effects Pack](https://opengameart.org/content/car-sound-effects-pack-low-quality) | GGBotNet | CC0-1.0 | engine idle/drive/start/stop, door, brake |
+| [Freesound](https://freesound.org/) (13 recordings) | morganpurkis, Kostrava, jawbutch, MPierluissi, qubodup, modusmogulus, AndrewAlexander, audible-edge, Jim-Bretherick | CC0-1.0 | distant gunfire/explosion, flesh impacts, dry fire, whiz-bys, car idle, tyre skid, battle bed |
+
+`public/audio/NOTICE.md` identifies the sources and `AUDIO_FETCH_LOG.md` records
+the acquisition routes, rejected licences and failed downloads. The three Kenney
+`License.txt` files are shipped as `LICENSE-Kenney-*.txt`.
+`manifest.json` records the exact source file, source start, author, URL,
+download date, processing, output SHA-256 and byte count per clip;
+`tools/build-audio.py` reproduces the bank and `tools/validate-audio.py` decodes
+every clip into `qa/reports/audio-bank-validation.json`.
+
+Rejected for licence reasons: CC-BY `shotgunsounds.zip` / `shotgun-shoot-reload`,
+the AudioJungle-sourced `NenadSimic_-_Muffled_Distant_Explosion.wav`, and
+CC-BY-3.0 `sounds.zip` (Vincent Sevedge). No LANDR or Pixabay files were acquired.
+Owner-provided licensed selections can be imported through the documented
+clip-slot workflow.
 
 ## Reference-only imagery
 

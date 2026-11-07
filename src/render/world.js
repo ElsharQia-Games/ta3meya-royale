@@ -19,6 +19,14 @@ import { assetUrl } from '../asset.js';
 
 const _v = new THREE.Vector3();
 
+// Loot models of the same shape can be swapped between pickups. Weapon loot
+// includes its key so an AR mesh never becomes a pistol.
+export function lootPoolKey(item) {
+  return item.type === 'weapon'
+    ? `weapon:${item.weapon || 'ar'}`
+    : `${item.type || 'item'}:${item.sub || ''}`;
+}
+
 // Project a box's UVs in world space so textures tile at a constant scale and
 // never stretch on long walls. Must be called after the geometry is translated.
 function applyWorldUVs(geo, tile) {
@@ -205,6 +213,10 @@ export class WorldRenderer {
     this.lootGroup = new THREE.Group();
     this.lootGroup.name = 'loot';
     this.scene.add(this.lootGroup);
+    this._lootMeshes = new Map();
+    this._lootPool = new Map();
+    this._lootPoolCount = 0;
+    this.lootStats = { created: 0, reused: 0, disposed: 0 };
     this._buildTerrain();
     this._buildRoads();
     this._buildBoxes();
@@ -620,6 +632,12 @@ export class WorldRenderer {
     geometries.forEach(g => g.dispose());
     materials.forEach(m => m.dispose());
     this.ownedTextures.forEach(t => t.dispose());
+    // Active loot was traversed above; pooled, detached meshes need explicit
+    // ownership cleanup or their buffers survive the match teardown.
+    for (const pool of this._lootPool.values()) for (const mesh of pool) this._disposeLootMesh(mesh);
+    this._lootPool.clear();
+    this._lootMeshes.clear();
+    this._lootPoolCount = 0;
   }
 
   _buildArchitecture() {
@@ -902,36 +920,72 @@ export class WorldRenderer {
     this.nature?.update(this.renderer.camera);
   }
 
-  // Loot rendering is driven by the server's interest-filtered list.
+  // Loot rendering is driven by the server's interest-filtered list. Meshes are
+  // created within 65 m, retained until 78 m (hysteresis avoids churn exactly at
+  // the boundary) and recycled through a small bounded per-shape pool.
   syncLoot(list) {
-    const seen = new Set();
+    const camera = this.renderer.camera.position;
+    const CREATE_SQ = 65 * 65, RETAIN_SQ = 78 * 78;
+    const seen = this._lootSeen || (this._lootSeen = new Set());
+    seen.clear();
     for (const item of list) {
-      if (Math.hypot(item.x - this.renderer.camera.position.x, item.z - this.renderer.camera.position.z) > 65) continue;
-      seen.add(item.id);
-      let mesh = this._lootMeshes?.get(item.id);
-      if (!mesh) {
-        mesh = this._makeLootMesh(item);
-        if (!this._lootMeshes) this._lootMeshes = new Map();
+      const dx = item.x - camera.x, dz = item.z - camera.z;
+      const distSq = dx * dx + dz * dz;
+      let mesh = this._lootMeshes.get(item.id);
+      if (mesh) {
+        seen.add(item.id);
+        if (distSq > RETAIN_SQ) { mesh.visible = false; continue; }
+      } else {
+        if (distSq > CREATE_SQ) continue;
+        seen.add(item.id);
+        const key = lootPoolKey(item);
+        mesh = this._takeLootMesh(key) || this._makeLootMesh(item);
         this._lootMeshes.set(item.id, mesh);
         this.lootGroup.add(mesh);
       }
+      mesh.visible = true;
       mesh.position.set(item.x, item.y, item.z);
       mesh.rotation.y = (item.id % 7) * 0.9;
     }
-    if (this._lootMeshes) {
-      for (const [id, mesh] of this._lootMeshes) {
-        if (seen.has(id)) continue;
-        this.lootGroup.remove(mesh);
-        const geometries = new Set(), materials = new Set();
-        mesh.traverse(o => { if (o.geometry) geometries.add(o.geometry); if (o.material) materials.add(o.material); });
-        geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose());
-        this._lootMeshes.delete(id);
-      }
+    // Absent from the authoritative list means picked up or despawned: release
+    // it now rather than retaining every object ever seen.
+    for (const [id, mesh] of this._lootMeshes) {
+      if (seen.has(id)) continue;
+      this._lootMeshes.delete(id);
+      this.lootGroup.remove(mesh);
+      this._recycleLootMesh(mesh);
     }
+  }
+
+  _takeLootMesh(key) {
+    const pool = this._lootPool.get(key);
+    if (!pool?.length) return null;
+    this._lootPoolCount--;
+    this.lootStats.reused++;
+    return pool.pop();
+  }
+
+  _recycleLootMesh(mesh) {
+    if (this._lootPoolCount >= 16) { this._disposeLootMesh(mesh); return; }
+    const key = mesh.userData.lootKey || 'item';
+    mesh.visible = false;
+    let pool = this._lootPool.get(key);
+    if (!pool) { pool = []; this._lootPool.set(key, pool); }
+    pool.push(mesh);
+    this._lootPoolCount++;
+  }
+
+  _disposeLootMesh(mesh) {
+    const geometries = new Set(), materials = new Set();
+    mesh.traverse(o => { if (o.geometry) geometries.add(o.geometry); if (o.material) materials.add(o.material); });
+    geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose());
+    this.lootStats.disposed++;
   }
 
   _makeLootMesh(item) {
     const g = new THREE.Group();
+    g.userData.lootKey = lootPoolKey(item);
+    this.lootStats.created++;
     let color;
     const material = (colour, metalness = .05) => new THREE.MeshStandardMaterial({ color: colour, roughness: .8, metalness });
     const add = (geometry, mat, x, y, z) => { const mesh = new THREE.Mesh(geometry, mat); mesh.position.set(x, y, z); g.add(mesh); return mesh; };

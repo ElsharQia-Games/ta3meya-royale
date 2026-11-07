@@ -4,26 +4,34 @@ import { clamp } from '../../shared/math.js';
 
 const smooth = value => { const x = clamp(value, 0, 1); return x * x * (3 - 2 * x); };
 
-export function reloadMotion(remaining, duration) {
+// These run for every animated character and the first-person view model each
+// frame. Callers that own a long-lived record pass `out` so the hot path does
+// not allocate a fresh object; omitting it preserves the historical pure API.
+export function reloadMotion(remaining, duration, out = null) {
   const active = remaining > 0;
   const progress = active ? 1 - clamp(remaining / duration, 0, 1) : 1;
-  return { active, progress,
-    lift: active ? Math.sin(progress * Math.PI) : 0,
-    grasp: smooth(progress / .14) * (1 - smooth((progress - .82) / .18)),
-    extract: smooth((progress - .15) / .22) * (1 - smooth((progress - .54) / .26)),
-    feed: smooth((progress - .08) / .2) * (1 - smooth((progress - .69) / .23)),
-    rack: Math.sin(Math.PI * clamp((progress - .82) / .16, 0, 1)),
-    stage: !active ? 'ready' : progress < .15 ? 'grasp' : progress < .42 ? 'remove' : progress < .58 ? 'exchange' : progress < .82 ? 'insert' : 'settle',
-  };
+  const motion = out || {};
+  motion.active = active;
+  motion.progress = progress;
+  motion.lift = active ? Math.sin(progress * Math.PI) : 0;
+  motion.grasp = smooth(progress / .14) * (1 - smooth((progress - .82) / .18));
+  motion.extract = smooth((progress - .15) / .22) * (1 - smooth((progress - .54) / .26));
+  motion.feed = smooth((progress - .08) / .2) * (1 - smooth((progress - .69) / .23));
+  motion.rack = Math.sin(Math.PI * clamp((progress - .82) / .16, 0, 1));
+  motion.stage = !active ? 'ready' : progress < .15 ? 'grasp' : progress < .42 ? 'remove' : progress < .58 ? 'exchange' : progress < .82 ? 'insert' : 'settle';
+  return motion;
 }
 
-export function boltMotion(age) {
-  if (!Number.isFinite(age)) return { hand: 0, lift: 0, travel: 0 };
-  return {
-    hand: smooth((age - .12) / .14) * (1 - smooth((age - .94) / .2)),
-    lift: smooth((age - .2) / .1) * (1 - smooth((age - .86) / .13)),
-    travel: smooth((age - .32) / .17) * (1 - smooth((age - .64) / .2)),
-  };
+export function boltMotion(age, out = null) {
+  const motion = out || {};
+  if (!Number.isFinite(age)) {
+    motion.hand = motion.lift = motion.travel = 0;
+    return motion;
+  }
+  motion.hand = smooth((age - .12) / .14) * (1 - smooth((age - .94) / .2));
+  motion.lift = smooth((age - .2) / .1) * (1 - smooth((age - .86) / .13));
+  motion.travel = smooth((age - .32) / .17) * (1 - smooth((age - .64) / .2));
+  return motion;
 }
 
 export function solveTwoBone(shoulder, target, pole, upper, lower, out = null) {

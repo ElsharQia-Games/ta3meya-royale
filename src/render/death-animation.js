@@ -8,11 +8,15 @@ import { supportHeight } from '../../shared/physics.js';
 const UP = new THREE.Vector3(0, 1, 0);
 const TIMES = [0, .14, .38, .82, 1.4];
 const q = (x, y = 0, z = 0) => new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z));
+const _worldPos = new THREE.Vector3();
+const HAND_ENDS = [new THREE.Vector3(-.32, .06, -.12), new THREE.Vector3(.29, .21, .07)];
 
 export class DeathAnimation {
   constructor(model, world, position, death = {}, id = 0) {
     this.model = model; this.world = world; this.position = position.slice(); this.age = 0;
     this.duration = 1.4;
+    this.settled = false;
+    this.poseApplied = false;
     const yaw = death.yaw || 0;
     let direction = death.direction || [Math.sin(yaw), 0, Math.cos(yaw)];
     if (world) {
@@ -66,6 +70,8 @@ export class DeathAnimation {
       rotations(knee, [q(prone ? .1 : -.5), q(prone ? -.08 : -1.2), q(prone ? -.13 : restKnee - .1), q(prone ? -.11 : restKnee)]);
     }
     this.handStart = m.arms.map(arm => arm.hand.position.clone());
+    this._hands = this.handStart.map(start => start.clone());
+    this._liftNodes = [m.head, m.hips, m.kneeL, m.kneeR];
     this.clip = new THREE.AnimationClip(`collapse-${id}`, this.duration, tracks);
     this.mixer = new THREE.AnimationMixer(m.root);
     this.action = this.mixer.clipAction(this.clip);
@@ -79,27 +85,50 @@ export class DeathAnimation {
     }
   }
 
-  update(dt) {
+  // Advance time without touching the rig. Culled corpses keep correct age so
+  // they re-enter view at the pose the authority says they should have.
+  advance(dt) {
+    const before = this.age;
     this.age = Math.min(this.duration, this.age + dt);
+    if (this.age !== before) this.poseApplied = false;
+    return this.age;
+  }
+
+  // Sample and place the terminal pose. All scratch storage is owned by this
+  // instance/module; no vectors or arrays are allocated per rendered frame.
+  applyPose() {
     // setTime resets action time. LoopOnce's clamp pauses the action at its end;
     // unpause before sampling or the next frame evaluates time zero again.
     this.action.paused = false;
     this.mixer.setTime(this.age);
     const fraction = clamp(this.age / .82, 0, 1), ease = fraction * fraction * (3 - 2 * fraction);
-    this.model.root.position.set(...this.position).addScaledVector(this.offset, ease);
+    this.model.root.position.set(this.position[0], this.position[1], this.position[2]).addScaledVector(this.offset, ease);
     this.model.root.rotation.set(0, this.yaw, 0);
     if (this.world) {
       this.model.root.updateWorldMatrix(true, true);
       let lift = 0;
-      for (const node of [this.model.head, this.model.hips, this.model.kneeL, this.model.kneeR]) {
-        const at = node.getWorldPosition(new THREE.Vector3());
-        const ground = supportHeight(this.world, at.x, at.z, this.position[1], .13, .25);
-        lift = Math.max(lift, ground + .13 - at.y);
+      for (const node of this._liftNodes) {
+        node.getWorldPosition(_worldPos);
+        const ground = supportHeight(this.world, _worldPos.x, _worldPos.z, this.position[1], .13, .25);
+        lift = Math.max(lift, ground + .13 - _worldPos.y);
       }
       this.model.root.position.y += lift;
     }
-    return this.handStart.map((start, i) => start.clone().lerp(
-      new THREE.Vector3(i === 0 ? -.32 : .29, i === 0 ? .06 : .21, i === 0 ? -.12 : .07), ease));
+    for (let i = 0; i < this._hands.length; i++) {
+      this._hands[i].copy(this.handStart[i]).lerp(HAND_ENDS[i], ease);
+    }
+    this.poseApplied = true;
+    return this._hands;
+  }
+
+  update(dt) {
+    this.advance(dt);
+    // Once the clamp pose is on the rig it is stable for a corpse that stays
+    // in view: skip mixing, world-matrix and terrain queries entirely.
+    if (this.settled && this.poseApplied) return this._hands;
+    const hands = this.applyPose();
+    this.settled = this.age >= this.duration;
+    return hands;
   }
 
   dispose() {

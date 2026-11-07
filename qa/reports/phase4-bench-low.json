@@ -1,0 +1,90 @@
+{
+  "tiers": {
+    "full": {
+      "frames": 300,
+      "updates": 7200,
+      "totalMs": 49.9,
+      "usPerUpdate": 6.9,
+      "tier": "full"
+    },
+    "basic": {
+      "frames": 300,
+      "updates": 7200,
+      "totalMs": 21.3,
+      "usPerUpdate": 3,
+      "tier": "basic"
+    },
+    "hidden": {
+      "frames": 300,
+      "updates": 7200,
+      "totalMs": 8.1,
+      "usPerUpdate": 1.1,
+      "tier": "hidden"
+    }
+  },
+  "lootBoundary": {
+    "created": 1,
+    "reused": 0,
+    "disposed": 0
+  },
+  "lootBoundaryMs": 11.9,
+  "lootPool": {
+    "created": 2,
+    "reused": 48,
+    "disposed": 0,
+    "pooled": 1
+  },
+  "lootPoolMs": 21.4,
+  "tracers": {
+    "pool": 1,
+    "live": 0
+  },
+  "tracersMs": 13.1,
+  "audio": {
+    "enabled": true,
+    "core": 110,
+    "vehicle": 15,
+    "ambience": 3,
+    "decoded": 113,
+    "errors": 0,
+    "voiceLimit": 40,
+    "activeVoices": 0
+  },
+  "playback": {
+    "played": true,
+    "afterOne": 1,
+    "peak": 40,
+    "afterCancel": 0,
+    "context": "running"
+  },
+  "playbackMs": 9.8,
+  "alarm": {
+    "started": true,
+    "retainedLoops": 0,
+    "alarmVoices": 0
+  },
+  "renderStats": {
+    "quality": "low",
+    "pixelRatio": 0.85,
+    "shadows": false,
+    "cascades": 0,
+    "shadowMap": 512,
+    "viewDistance": 650,
+    "fogDensity": 0.0022,
+    "bloom": false,
+    "calls": 237,
+    "triangles": 1425038,
+    "points": 900,
+    "lines": 0,
+    "geometries": 345,
+    "textures": 45,
+    "programs": 29,
+    "fps": 0.41561032376661955
+  },
+  "env": {
+    "url": "http://127.0.0.1:3300/",
+    "quality": "low",
+    "renderer": "WebKit WebGL",
+    "browserErrors": 0
+  }
+}

@@ -17,6 +17,7 @@ const _vmTargetArray = [0, 0, 0];
 const _vmPose = { elbow: [0, 0, 0], hand: [0, 0, 0], reachable: false };
 const _vmQuat = new THREE.Quaternion();
 const _vmEuler = new THREE.Euler();
+const _vmBolt = {};
 
 function vmPlace(mesh, a, b) {
   _vmDir.subVectors(b, a);
@@ -49,6 +50,7 @@ export class ViewModel {
     this.switchT = 0;
     this.ads = 0;
     this.lastLook = [0, 0];
+    this._pose = { motion: {}, support: new THREE.Vector3(), trigger: new THREE.Vector3() };
     this._mats = {
       sleeve: new THREE.MeshStandardMaterial({ color: 0x93a08a, map: texture('fabric'), bumpMap: texture('webbing'), bumpScale: .003, roughness: .95 }),
       glove: new THREE.MeshStandardMaterial({ color: 0x58614e, map: texture('webbing'), roughness: .91 }),
@@ -122,7 +124,7 @@ export class ViewModel {
     const { speed, grounded, ads, lookDX, lookDY, reloadT, switchT, moving } = ctx;
     if (ctx.weapon && ctx.weapon !== this.weapon) this.build(ctx.weapon);
     this.shotT += dt;
-    const bolt = this.weapon === 'sniper' ? boltMotion(this.shotT).hand : 0;
+    const bolt = this.weapon === 'sniper' ? boltMotion(this.shotT, _vmBolt).hand : 0;
     const targetAds = ads && reloadT <= 0 && !ctx.healT ? 1 - bolt * .85 : 0;
     this.ads = damp(this.ads, targetAds, 16, dt);
     this.kick = damp(this.kick, 0, 12, dt);
@@ -150,7 +152,7 @@ export class ViewModel {
     let ry = this.kickYaw + this.swayX * 2.2 * free;
     let rz = 0;
 
-    const { motion, support, trigger } = poseWeaponMechanics(this.model, reloadT, this.shotT, ctx.mag || 0);
+    const { motion, support, trigger } = poseWeaponMechanics(this.model, reloadT, this.shotT, ctx.mag || 0, this._pose);
     this.reloadStage = motion.stage;
     if (this.model.reticle) this.model.reticle.visible = this.ads > .6;
 

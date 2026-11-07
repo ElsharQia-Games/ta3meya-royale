@@ -28,7 +28,9 @@
     "qa:vehicle": "node qa/vehicle.mjs",
     "qa:journeys": "node qa/journeys.mjs",
     "qa:scenes": "node qa/scenes.mjs",
-    "qa:record": "node qa/record.mjs"
+    "qa:record": "node qa/record.mjs",
+    "qa:phase4": "node qa/phase4-bench.mjs",
+    "bench:phase4": "node --expose-gc qa/phase4-microbench.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",

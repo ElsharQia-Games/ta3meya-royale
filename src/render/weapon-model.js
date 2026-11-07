@@ -9,6 +9,14 @@ import { clamp } from '../../shared/math.js';
 import { reloadMotion, boltMotion } from './animation.js';
 import { createLauncherModel } from './launcher-model.js';
 
+// Scratch vectors for the presentation pose. They are consumed inside the
+// call; the returned support/trigger vectors always belong to the caller.
+const _roundGrip = new THREE.Vector3();
+const _supportOffset = new THREE.Vector3();
+const _shotgunTarget = new THREE.Vector3();
+const _shellOffset = new THREE.Vector3();
+const _boltHand = new THREE.Vector3();
+
 export const WEAPON_VISUALS = {
   pistol: { receiver: .19, barrel: .02, stock: 0, optic: 'iron', sightY: .051, tint: 0x747d6e, marking: 'P92 / 9MM' },
   smg: { receiver: .24, barrel: .16, stock: .15, optic: 'reflex', sightY: .123, tint: 0x596354, marking: 'VEX / 9MM' },
@@ -236,12 +244,14 @@ export function createWeaponModel(key = 'ar', detailed = true) {
 }
 
 // One presentation timeline for first- and third-person equipment. This reads
-// timers/ammo; authoritative inventory is never mutated here.
-export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) {
+// timers/ammo; authoritative inventory is never mutated here. Pass `out` with
+// `{ motion, support, trigger }` to reuse per-frame records/vectors.
+export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0, out = null) {
   const W = CFG.WEAPONS[model.key] || CFG.WEAPONS.ar;
-  const motion = reloadMotion(reloadT, W.reload);
-  const support = model.gripRest.clone();
-  const trigger = model.rightGrip.position.clone();
+  const motion = reloadMotion(reloadT, W.reload, out?.motion || null);
+  const support = out ? out.support.copy(model.gripRest) : model.gripRest.clone();
+  const trigger = out ? out.trigger.copy(model.rightGrip.position) : model.rightGrip.position.clone();
+  const result = out ? out : { motion, support, trigger };
   if (model.key === 'rpg') {
     model.magazine.position.copy(model.magRest); model.magazine.rotation.set(0, 0, 0);
     model.magazine.visible = ammo > 0;
@@ -257,11 +267,11 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
       model.magazine.visible = p > .1;
       model.magazine.position.set(-.07 * (1 - aligned), -.15 * (1 - aligned), model.magRest.z - .6 * (1 - eased));
       model.magazine.rotation.x = .24 * (1 - aligned);
-      const roundGrip = new THREE.Vector3(-.031, -.025, .14 - eased * .28).applyEuler(model.magazine.rotation).add(model.magazine.position);
-      support.lerp(roundGrip, hold);
+      _roundGrip.set(-.031, -.025, .14 - eased * .28).applyEuler(model.magazine.rotation).add(model.magazine.position);
+      support.lerp(_roundGrip, hold);
       motion.stage = p < .12 ? 'grasp' : p < .34 ? 'align' : p < .78 ? 'insert' : 'settle';
     }
-    return { motion, support, trigger };
+    return result;
   }
   model.magazine.position.copy(model.magRest); model.magazine.rotation.set(0, 0, 0);
   model.magazine.visible = model.key !== 'shotgun';
@@ -279,7 +289,8 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
     model.bolt.position.z = model.boltRestZ + Math.max(cycle.travel, motion.rack) * .09;
     model.bolt.rotation.z = -Math.max(cycle.lift, motion.rack) * .95;
     if (model.key === 'sniper' && !motion.active) {
-      trigger.lerp(model.bolt.position.clone().add(new THREE.Vector3(.033, -.03, 0)), cycle.hand);
+      _boltHand.copy(model.bolt.position).add(_supportOffset.set(.033, -.03, 0));
+      trigger.lerp(_boltHand, cycle.hand);
     }
   }
   if (model.shell) model.shell.visible = false;
@@ -289,15 +300,14 @@ export function poseWeaponMechanics(model, reloadT, shotT = Infinity, ammo = 0) 
       model.magazine.position.x -= motion.extract * .08;
       model.magazine.position.y -= motion.extract * (model.key === 'pistol' ? .11 : .16) + stow * .2;
       model.magazine.rotation.z = motion.extract * -.16;
-      support.lerp(model.magazine.position.clone().add(new THREE.Vector3(-.028, -.035, .01)), motion.grasp);
+      support.lerp(_supportOffset.copy(model.magazine.position).add(_shotgunTarget.set(-.028, -.035, .01)), motion.grasp);
     } else {
       const rounds = Math.max(1, W.mag - ammo);
       const feed = Math.sin(clamp((motion.progress - .12) / .74, 0, 1) * Math.PI * rounds);
-      const target = new THREE.Vector3(-.018, -.14 - Math.abs(feed) * .11, .025);
-      support.lerp(target, motion.grasp);
-      model.shell.position.copy(support).add(new THREE.Vector3(.015, .025, -.03));
+      support.lerp(_shotgunTarget.set(-.018, -.14 - Math.abs(feed) * .11, .025), motion.grasp);
+      model.shell.position.copy(support).add(_shellOffset.set(.015, .025, -.03));
       model.shell.visible = motion.progress > .12 && motion.progress < .85;
     }
   }
-  return { motion, support, trigger };
+  return result;
 }

@@ -24,10 +24,27 @@ export function loadSettings() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULTS };
-    return { ...DEFAULTS, ...JSON.parse(raw) };
+    const merged = { ...DEFAULTS, ...JSON.parse(raw) };
+    merged.quality = normalizeQuality(merged.quality);
+    merged.fov = Number.isFinite(merged.fov) ? Math.min(110, Math.max(60, merged.fov)) : DEFAULTS.fov;
+    merged.volume = Number.isFinite(merged.volume) ? Math.min(1, Math.max(0, merged.volume)) : DEFAULTS.volume;
+    return merged;
   } catch {
     return { ...DEFAULTS };
   }
+}
+
+export const QUALITY_NAMES = ['low', 'medium', 'high'];
+
+// Unknown or malformed values fall back to the safest supported preset rather
+// than leaking unbounded pixel ratios / shadow-map sizes into the renderer.
+export function normalizeQuality(name) {
+  return QUALITY_NAMES.includes(name) ? name : 'high';
+}
+
+export function qualityPreset(name) {
+  const preset = QUALITY_PRESETS[normalizeQuality(name)];
+  return { ...preset };
 }
 
 export function saveSettings(s) {
@@ -40,12 +57,11 @@ export function resetSettings() {
   return defaults;
 }
 
-export function qualityPreset(name) {
-  if (name === 'low') {
-    return { pixelRatio: 0.85, shadows: false, bloom: false, cascades: 0, shadowMap: 512, fogDensity: 0.0022, viewDistance: 650 };
-  }
-  if (name === 'medium') {
-    return { pixelRatio: 1.0, shadows: true, bloom: false, cascades: 1, shadowMap: 1024, fogDensity: 0.0018, viewDistance: 950 };
-  }
-  return { pixelRatio: 1.0, shadows: true, bloom: false, cascades: 2, shadowMap: 1024, fogDensity: 0.0015, viewDistance: 1250 };
-}
+// Quality is a strict monotonic ladder: every step raises or holds shadow,
+// distance and pixel budgets. Tests assert this so a preset cannot regress into
+// paying more for less.
+const QUALITY_PRESETS = {
+  low: { pixelRatio: 0.85, shadows: false, bloom: false, cascades: 0, shadowMap: 512, fogDensity: 0.0022, viewDistance: 650 },
+  medium: { pixelRatio: 1.0, shadows: true, bloom: false, cascades: 1, shadowMap: 1024, fogDensity: 0.0018, viewDistance: 950 },
+  high: { pixelRatio: 1.0, shadows: true, bloom: false, cascades: 2, shadowMap: 1024, fogDensity: 0.0015, viewDistance: 1250 },
+};
