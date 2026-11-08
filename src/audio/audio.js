@@ -16,7 +16,7 @@ import { CFG } from '../../shared/config.js';
 import { SampleBank, ReloadCues } from './samples.js';
 import {
   SOUNDS, CATEGORY_DEFAULTS, IMPACT_SOUNDS, FOOTSTEP_SOUNDS,
-  UI_SOUNDS, RELOAD_SOUNDS, pickClip,
+  UI_SOUNDS, pickClip,
 } from './sounds.js';
 import { spatialFor, indoorAt, cutoffFor } from './spatial.js';
 import { VoiceBudget } from './voices.js';
@@ -146,7 +146,11 @@ export class AudioEngine {
     const def = SOUNDS[sound];
     if (!def) return false;
     const variant = opts.variant ?? null;
-    const cooldownKey = `${sound}:${variant ?? ''}`;
+    // Cooldowns are per source, not per sound: two different players firing the
+    // same weapon must not cancel each other. Local/unsourced calls share the
+    // empty source key.
+    const source = opts.source ?? '';
+    const cooldownKey = `${sound}:${variant ?? ''}:${source}`;
     const now = this.ctx?.currentTime ?? 0;
     if (!opts.bypassCooldown && def.cooldown > 0) {
       const last = this._lastPlayed.get(cooldownKey);
@@ -299,25 +303,49 @@ export class AudioEngine {
   // -------------------------------------------------------------------------
   // Game actions
   // -------------------------------------------------------------------------
-  shot(weaponKey, x, y, z) {
+  // Gunfire near/far routing. The audible boundary is the 640 m distant
+  // profile, not the 420 m close-shot profile, and the two recordings
+  // crossfade over 90-130 m instead of switching hard at 110 m.
+  shot(weaponKey, x, y, z, source = null) {
     if (!this.enabled) return false;
     const weapon = weaponKey || 'ar';
     const position = [x, y, z];
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
-    const s = spatialFor(this.listenerPos, this.listenerYaw, position, SOUNDS.shot.range);
-    if (s && s.dist > 110) {
-      // Distant gunfire uses dedicated far-field recordings rather than the
-      // close shot low-passed into mush.
-      return this.play('distantShot', { position, gain: clamp(0.45 + s.dist / 500, 0.45, 1) });
+    const s = spatialFor(this.listenerPos, this.listenerYaw, position, SOUNDS.distantShot.range);
+    if (!s) return false;
+    const NEAR_FULL = 90, FAR_FULL = 130;
+    const nearWeight = clamp((FAR_FULL - s.dist) / (FAR_FULL - NEAR_FULL), 0, 1);
+    const farWeight = 1 - nearWeight;
+    let played = false;
+    if (nearWeight > 0) {
+      played = this.play('shot', { position, variant: weapon, gain: nearWeight, source }) || played;
+      if (nearWeight === 1 && s.dist < 14 && weapon !== 'rpg') {
+        this.play('shellCasing', { position, gain: 0.55, delay: 0.06 + Math.random() * 0.05, source });
+      }
     }
-    const played = this.play('shot', { position, variant: weapon });
-    if (played && s && s.dist < 14 && weapon !== 'rpg') {
-      this.play('shellCasing', { position, gain: 0.55, delay: 0.06 + Math.random() * 0.05 });
+    if (farWeight > 0) {
+      const farGain = farWeight * clamp(0.45 + s.dist / 500, 0.45, 1);
+      played = this.play('distantShot', {
+        position, gain: farGain, source: source == null ? 'far' : `${source}:far`,
+      }) || played;
     }
     return played;
   }
 
-  dryFire() { return this.play('dryFire'); }
+  // Local prediction and the authoritative dry event describe the same trigger
+  // pull; suppress the event when a prediction was just played.
+  dryFire(origin = 'local') {
+    const now = this.ctx?.currentTime ?? 0;
+    if (!this._dryPredictions) this._dryPredictions = [];
+    while (this._dryPredictions.length && now - this._dryPredictions[0] > 1.2) this._dryPredictions.shift();
+    if (origin === 'event') {
+      if (this._dryPredictions.length) { this._dryPredictions.shift(); return false; }
+    } else {
+      this._dryPredictions.push(now);
+      if (this._dryPredictions.length > 4) this._dryPredictions.shift();
+    }
+    return this.play('dryFire');
+  }
 
   reload(weapon, dur) {
     // Backwards compatibility: old callers passed only the duration.
@@ -326,7 +354,10 @@ export class AudioEngine {
     this.reloadCues.active = false;
     this.reloadCues.key = null;
     this.reloadCues.last = -1;
-    return this.play(RELOAD_SOUNDS[key] || 'reloadGeneric', { gain: 0.9 });
+    // The per-phase cue stepper in updateActions() is the single reload Foley
+    // path. Playing a complete reload recording here as well layered two
+    // mechanical performances (and a magazine-insert double) on every reload.
+    return !!key || dur !== undefined;
   }
 
   switchWeapon() {
@@ -355,8 +386,17 @@ export class AudioEngine {
     return this.play('explosion', { position });
   }
 
-  vehicleDestroyed(position) {
-    return this.play('vehicleDestroy', { position });
+  vehicleDestroyed(position, id = null) {
+    if (id != null) {
+      if (!this._vehicleDead) this._vehicleDead = new Set();
+      if (this._vehicleDead.has(id)) return false;
+      this._vehicleDead.add(id);
+      if (this._vehicleDead.size > 64) {
+        const oldest = this._vehicleDead.values().next().value;
+        this._vehicleDead.delete(oldest);
+      }
+    }
+    return this.play('vehicleDestroy', { position, source: id ?? 'vehicle' });
   }
 
   impact(material, position, flight = 0) {
@@ -452,7 +492,7 @@ export class AudioEngine {
       const health = v.health ?? 0;
       if (prev) {
         if (prev.health > 0 && health <= 0) {
-          this.vehicleDestroyed([v.x, v.y, v.z]);
+          this.vehicleDestroyed([v.x, v.y, v.z], v.id);
         } else {
           const dv = prev.speed - speed;
           const hit = dv > 6.5 || prev.health - health > 8;
@@ -463,6 +503,8 @@ export class AudioEngine {
           }
         }
       }
+      // A repaired/respawned vehicle may be destroyed again later.
+      if (health > 0) this._vehicleDead?.delete(v.id);
       this._observe.set(v.id, { speed, health });
     }
     if (this._observe.size > seen.size + 8) {
@@ -586,6 +628,8 @@ export class AudioEngine {
       this._lastPlayed.clear();
       this._observe.clear();
       this._impactAt.clear();
+      this._vehicleDead?.clear();
+      this._dryPredictions = [];
       this._vehicleId = null;
       this._braking = false;
       this.lastActionWeapon = null;
@@ -603,6 +647,8 @@ export class AudioEngine {
     this._steps.clear();
     this._observe.clear();
     this._impactAt.clear();
+    this._vehicleDead?.clear();
+    this._dryPredictions = [];
     this._vehicleId = null;
     this._braking = false;
   }
@@ -617,7 +663,10 @@ export class AudioEngine {
       if (loop) this._setLoop(loop, { gain, rate: 1 });
     };
     set('amb-wind', 'ambWind', SOUNDS.ambWind.gain * (inside ? 0.45 : 1));
-    set('amb-birds', 'ambBirds', SOUNDS.ambBirds.gain * (inside ? 0.18 : 1));
+    // Recorded bird ambience stays in the library but is not part of the
+    // default mix: it is a fixed loop that reads as repetitive after minutes of
+    // play. Keep it explicitly stopped if an older session started it.
+    this._stopLoop('amb-birds', 0.4);
     set('amb-battle', 'ambBattle', SOUNDS.ambBattle.gain * (inside ? 0.7 : 1));
   }
 

@@ -880,7 +880,7 @@ class App {
     this.recoilYaw += (Math.random() - 0.5) * 2 * W.recoilYaw * adsScale;
     this.shake = Math.min(1, this.shake + (W.cls === 'sniper' ? 0.9 : 0.35));
     const cam = this.renderer.camera;
-    this.audio.shot(wkey, cam.position.x, cam.position.y, cam.position.z);
+    this.audio.shot(wkey, cam.position.x, cam.position.y, cam.position.z, 'self');
     this.effects?.casings.eject(this.viewmodel.model, wkey === 'sniper' ? .44 : .015);
     if (this.effects && this.viewmodel) {
       const m = this.viewmodel.muzzleWorld();
@@ -893,6 +893,9 @@ class App {
   // Events
   // -------------------------------------------------------------------------
   handleEvents(events, selfId) {
+    // Destructible props are removed in one batch so several panes/props broken
+    // by the same explosion rebuild their merged cells/instance buffers once.
+    const destroyedIds = [];
     for (const ev of events) {
       switch (ev.k) {
         case 'shot': this.onShot(ev, selfId); break;
@@ -905,7 +908,7 @@ class App {
           break;
         case 'launch':
           this.effects?.launch(ev);
-          if (ev.id !== selfId) { this.characters.get(ev.id)?.fire(); this.audio.shot(ev.w, ...ev.o); }
+          if (ev.id !== selfId) { this.characters.get(ev.id)?.fire(); this.audio.shot(ev.w, ...ev.o, ev.id); }
           break;
         case 'projectileend':
           this.effects?.stopProjectile(ev.projectileId);
@@ -922,7 +925,7 @@ class App {
           break;
         }
         case 'destroy':
-          this.worldView?.removeBox(ev.id);
+          destroyedIds.push(ev.id);
           this.effects?.destroy(ev);
           this.audio.play('destruction', { position: [ev.x, ev.y, ev.z] });
           break;
@@ -955,7 +958,7 @@ class App {
           if (ev.id === selfId) this.audio.switchWeapon();
           break;
         case 'dry':
-          if (ev.id === selfId) this.audio.dryFire();
+          if (ev.id === selfId) this.audio.dryFire('event');
           break;
         case 'pickup':
           if (ev.lootId !== undefined) this.loot = this.loot.filter(item => item.id !== ev.lootId);
@@ -1004,7 +1007,7 @@ class App {
           if (ev.id === selfId) this.audio.exitVehicle(this.vehiclePoint(ev.vid));
           break;
         case 'vehicleDestroyed':
-          this.audio.vehicleDestroyed([ev.x, ev.y, ev.z]);
+          this.audio.vehicleDestroyed([ev.x, ev.y, ev.z], ev.vid);
           break;
         case 'vehicleblocked':
           if (ev.id === selfId) this.hud.notify('EXIT BLOCKED — move the vehicle to clear space');
@@ -1014,6 +1017,7 @@ class App {
         default: break;
       }
     }
+    if (destroyedIds.length) this.worldView?.removeBoxes(destroyedIds);
   }
 
   onShot(ev, selfId) {
@@ -1026,7 +1030,7 @@ class App {
       const anchor = character?.model.weapon.muzzle;
       const origin = anchor?.getWorldPosition(new THREE.Vector3()).toArray() || ev.o;
       this.effects?.shot({ ...ev, o: origin }, weapon, anchor);
-      this.audio.shot(ev.w, ev.o[0], ev.o[1], ev.o[2]);
+      this.audio.shot(ev.w, ev.o[0], ev.o[1], ev.o[2], ev.id);
       // Crack of a round passing near the local player. This uses the actual
       // projectile path and flight time from the authoritative shot event, not
       // the shooter's muzzle distance.

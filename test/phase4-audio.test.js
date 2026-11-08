@@ -16,6 +16,7 @@ import {
   indoorAt, cutoffFor,
 } from '../src/audio/spatial.js';
 import { VoiceBudget } from '../src/audio/voices.js';
+import { AudioEngine } from '../src/audio/audio.js';
 import { SampleBank, ReloadCues } from '../src/audio/samples.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -247,4 +248,122 @@ test('material and UI mappings point at defined sounds', () => {
   for (const sound of Object.values(RELOAD_SOUNDS)) assert.ok(SOUNDS[sound], sound);
   assert.equal(IMPACT_SOUNDS.flesh, 'fleshImpact');
   assert.equal(FOOTSTEP_SOUNDS.water, 'footstepWater');
+});
+
+// A minimal engine shell: real methods, stubbed output. Keeps these tests free
+// of WebAudio while exercising routing, dedupe and ambience decisions.
+function fakeEngine() {
+  const engine = Object.create(AudioEngine.prototype);
+  engine.enabled = true;
+  engine.sessionActive = true;
+  engine.indoor = false;
+  engine.listenerPos = [0, 0, 0];
+  engine.listenerYaw = 0;
+  engine.ctx = { currentTime: 1 };
+  engine._observe = new Map();
+  engine._impactAt = new Map();
+  engine._vehicleDead = new Set();
+  engine._lastPlayed = new Map();
+  engine._lastClip = new Map();
+  engine.calls = [];
+  engine.play = (sound, opts = {}) => { engine.calls.push({ sound, ...opts }); return true; };
+  return engine;
+}
+
+test('gunfire keeps routing past the old 420 m limit and crossfades near/far', () => {
+  const engine = fakeEngine();
+  // 300 m: inside the distant profile but beyond the old close-shot limit.
+  assert.equal(engine.shot('ar', 0, 0, -300, 'p1'), true);
+  assert.ok(engine.calls.some(c => c.sound === 'distantShot'), '300 m must still be audible');
+  assert.ok(!engine.calls.some(c => c.sound === 'shot'), '300 m is already far-field');
+
+  engine.calls.length = 0;
+  engine.shot('ar', 0, 0, -100, 'p1');
+  const near = engine.calls.find(c => c.sound === 'shot');
+  const far = engine.calls.find(c => c.sound === 'distantShot');
+  assert.ok(near && far, '100 m sits inside the crossfade band');
+  assert.ok(near.gain > 0 && near.gain < 1, 'near layer is attenuated while crossfading');
+  assert.ok(far.gain > 0 && far.gain < 1, 'far layer is attenuated while crossfading');
+
+  engine.calls.length = 0;
+  engine.shot('ar', 0, 0, -70, 'p1');
+  const close = engine.calls.find(c => c.sound === 'shot');
+  assert.equal(close.gain, 1, 'inside 90 m the close recording plays at full gain');
+  assert.ok(!engine.calls.some(c => c.sound === 'distantShot'));
+
+  engine.calls.length = 0;
+  assert.equal(engine.shot('ar', 0, 0, -900, 'p1'), false, 'beyond the distant profile is silent');
+  assert.equal(engine.calls.length, 0);
+});
+
+test('shot cooldowns are keyed by source, not just sound and variant', () => {
+  const engine = fakeEngine();
+  const now = { t: 1 };
+  engine.ctx = { get currentTime() { return now.t; } };
+  engine._lastPlayed = new Map();
+  engine._lastClip = new Map();
+  engine._observe = new Map();
+  engine._impactAt = new Map();
+  engine._vehicleDead = new Set();
+  engine._playClip = () => true;
+  engine.play = AudioEngine.prototype.play.bind(engine);
+
+  // Two different shooters firing the same weapon in the same tick must both
+  // play; the second must not be swallowed by the first's cooldown.
+  assert.equal(engine.play('shot', { variant: 'ar', position: [0, 0, -5], source: 'a' }), true);
+  assert.equal(engine.play('shot', { variant: 'ar', position: [0, 0, -6], source: 'b' }), true);
+  // The same source firing again inside the cooldown is suppressed.
+  assert.equal(engine.play('shot', { variant: 'ar', position: [0, 0, -5], source: 'a' }), false);
+  now.t += SOUNDS.shot.cooldown + 0.01;
+  assert.equal(engine.play('shot', { variant: 'ar', position: [0, 0, -5], source: 'a' }), true);
+});
+
+test('predicted and authoritative dry-fire describe one trigger pull', () => {
+  const engine = fakeEngine();
+  engine._dryPredictions = [];
+  assert.equal(engine.dryFire('local'), true);
+  assert.equal(engine.dryFire('event'), false, 'the server echo must not play a second click');
+  assert.equal(engine.dryFire('event'), true, 'a later event with no pending prediction is a new pull');
+  // A genuine later pull with no recent prediction still speaks.
+  engine.ctx.currentTime += 5;
+  assert.equal(engine.dryFire('event'), true);
+});
+
+test('a destroyed vehicle reports once per vehicle id, and repairs re-arm it', () => {
+  const engine = fakeEngine();
+  assert.equal(engine.vehicleDestroyed([0, 1, 0], 7), true);
+  assert.equal(engine.vehicleDestroyed([0, 1, 0], 7), false, 'state + event must not double-play');
+  assert.equal(engine.vehicleDestroyed([0, 1, 0], 8), true);
+
+  // Respawned/repaired: observing positive health clears the latch.
+  engine._observe = new Map([[7, { speed: 0, health: 100 }]]);
+  engine.observeVehicles([{ id: 7, x: 0, y: 1, z: 0, speed: 0, health: 80 }]);
+  assert.equal(engine.vehicleDestroyed([0, 1, 0], 7), true, 'a repaired vehicle can be destroyed again');
+});
+
+test('ambience defaults exclude the repetitive bird loop', () => {
+  const engine = fakeEngine();
+  const loops = new Map();
+  engine._ensureGroup = () => {};
+  engine._startLoop = (key, def, clip, opts = {}) => {
+    const loop = { key, clip, opts };
+    loops.set(key, loop);
+    return loop;
+  };
+  engine._setLoop = () => {};
+  engine._stopLoop = (key) => { loops.delete(key); };
+  engine._syncAmbience();
+  assert.ok(loops.has('amb-wind'));
+  assert.ok(loops.has('amb-battle'));
+  assert.ok(!loops.has('amb-birds'), 'birds are opt-in, not part of the default mix');
+});
+
+test('reload starts the cue stepper without layering a full recording', () => {
+  const engine = fakeEngine();
+  engine.budget = { cancel: () => {} };
+  engine.reloadCues = { active: true, key: 'ar', last: 0.5 };
+  engine.reload('ar', 4.6);
+  assert.equal(engine.calls.length, 0, 'reload() must be cue-only');
+  assert.equal(engine.reloadCues.active, false, 'a new reload restarts the cue phases');
+  assert.equal(engine.reloadCues.last, -1);
 });

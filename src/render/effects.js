@@ -45,6 +45,33 @@ export class Effects {
     this.dustTexture = dustTexture();
     this.puffs = []; this.shockwaves = [];
     this._puffPool = [];
+    // Shared rocket assets: one template is cloned per rocket, so geometry and
+    // materials are created once instead of per launch/disposal.
+    this._rocketTemplateAsset = null;
+    this._exhaustMaterial = new THREE.SpriteMaterial({
+      map: this.dustTexture, color: 0xffb066, transparent: true, opacity: .5,
+      depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+    });
+    // Explosion lights are a fixed pool: adding/removing lights changes the
+    // scene's light count and forces every lit material to recompile.
+    this._lights = [];
+    for (let i = 0; i < 2; i++) {
+      const light = new THREE.PointLight(0xff9a40, 0, 40, 2);
+      this.scene.add(light);
+      this._lights.push({ light, busy: false });
+    }
+    this._explosionPool = [];
+    this._shockPool = [];
+    this._shockGeometry = new THREE.RingGeometry(.74, 1, 40);
+    // Debris shares one unit box scaled per chunk and four roughness materials.
+    this._debrisGeometry = new THREE.BoxGeometry(1, 1, 1);
+    this._debrisMaterials = [0x8a643c, 0x6f747b, 0x9b8a63, 0x9a9a92].map(color =>
+      renderer.registerMaterial(new THREE.MeshStandardMaterial({ color, roughness: 0.9 })));
+    this._trailFrom = new THREE.Vector3();
+    this._trailTo = new THREE.Vector3();
+    this._rocketForward = new THREE.Vector3(0, 0, -1);
+    this._rocketDir = new THREE.Vector3();
+    this._trailPos = [0, 0, 0];
     this.casings = new Casings(this.scene, renderer, world);
   }
 
@@ -388,36 +415,78 @@ export class Effects {
     }
   }
 
+  _acquireLight() {
+    for (const entry of this._lights) if (!entry.busy) { entry.busy = true; return entry; }
+    return null;
+  }
+
+  _acquireExplosion() {
+    let entry = this._explosionPool.pop();
+    if (!entry) {
+      const material = new THREE.SpriteMaterial({ map: this.blastTexture, color: 0xffbc75,
+        transparent: true, opacity: 0, depthWrite: false, toneMapped: false });
+      const mesh = new THREE.Group(); mesh.material = material;
+      for (let i = 0; i < 5; i++) {
+        const card = new THREE.Sprite(material);
+        const angle = i * 2.399;
+        card.position.set(Math.cos(angle) * .3, .05 + i * .12, Math.sin(angle) * .3);
+        card.scale.set(.9 + i * .06, .95 + i * .1, 1); mesh.add(card);
+      }
+      entry = { mesh, material };
+    }
+    this.scene.add(entry.mesh);
+    return entry;
+  }
+
+  _acquireShock() {
+    let entry = this._shockPool.pop();
+    if (!entry) {
+      const material = new THREE.MeshBasicMaterial({ color: 0xc4b48e, transparent: true,
+        opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(this._shockGeometry, material);
+      mesh.rotation.x = -Math.PI / 2;
+      entry = { mesh, material };
+    }
+    this.scene.add(entry.mesh);
+    return entry;
+  }
+
   boom(ev) {
     if (ev.projectileId) this.stopProjectile(ev.projectileId);
     const p = [ev.x, ev.y, ev.z];
     const radius = ev.r || 7;
-    const mat = new THREE.SpriteMaterial({ map: this.blastTexture, color: 0xffbc75,
-      transparent: true, opacity: .88, depthWrite: false, toneMapped: false });
-    const mesh = new THREE.Group(); mesh.material = mat;
-    for (let i = 0; i < 5; i++) {
-      const card = new THREE.Sprite(mat);
-      const angle = i * 2.399;
-      card.position.set(Math.cos(angle) * .3, .05 + i * .12, Math.sin(angle) * .3);
-      card.scale.set(.9 + i * .06, .95 + i * .1, 1); mesh.add(card);
+    const explosion = this._acquireExplosion();
+    explosion.material.color.setHex(0xffbc75);
+    explosion.material.opacity = 0;
+    explosion.mesh.position.set(p[0], p[1], p[2]);
+    explosion.mesh.scale.setScalar(0.6);
+    const lightEntry = this._acquireLight();
+    const light = lightEntry?.light || null;
+    if (light) {
+      light.color.setHex(0xff9a40);
+      light.position.set(p[0], p[1] + 1, p[2]);
+      light.distance = radius * 5;
+      light.intensity = 40;
     }
-    mesh.position.set(p[0], p[1], p[2]);
-    mesh.scale.setScalar(0.6);
-    this.scene.add(mesh);
-    const light = new THREE.PointLight(0xff9a40, 40, radius * 5, 2);
-    light.position.set(p[0], p[1] + 1, p[2]);
-    this.scene.add(light);
-    this.explosions.push({ mesh, light, t: 0, radius });
+    this.explosions.push({ mesh: explosion.mesh, material: explosion.material, light: lightEntry, t: 0, radius });
+    // Expanding smoke body: warm core cards plus slower, darker lingering
+    // smoke so the explosion reads as volume rather than a single bright flash.
     for (let i = 0; i < 18; i++) {
       const a = i * 2.399, speed = 2 + i % 4;
       this.puff([p[0], p[1] + .2, p[2]], [Math.cos(a) * speed, .55 + i % 3 * .7, Math.sin(a) * speed],
         i % 3 ? 0x9c9178 : 0x55564d, 1.1 + (i % 3) * .45, 2 + (i % 4) * .2, .6);
     }
-    const ring = new THREE.Mesh(new THREE.RingGeometry(.74, 1, 48), new THREE.MeshBasicMaterial({ color: 0xc4b48e,
-      transparent: true, opacity: .26, depthWrite: false, side: THREE.DoubleSide }));
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(p[0], (this.world?.terrainHeight(p[0], p[2]) ?? p[1]) + .07, p[2]);
-    this.scene.add(ring); this.shockwaves.push({ mesh: ring, t: 0, radius });
+    for (let i = 0; i < 8; i++) {
+      const a = i * 2.399 + 0.7, speed = 1 + (i % 3) * .8;
+      this.puff([p[0], p[1] + .7 + i * .12, p[2]],
+        [Math.cos(a) * speed, 1.2 + (i % 3) * .6, Math.sin(a) * speed],
+        i % 2 ? 0x38352f : 0x554c40, 1.6 + (i % 3) * .5, 3.2 + (i % 4) * .5, .5);
+    }
+    const shock = this._acquireShock();
+    shock.material.opacity = .26;
+    shock.mesh.position.set(p[0], (this.world?.terrainHeight(p[0], p[2]) ?? p[1]) + .07, p[2]);
+    shock.mesh.scale.setScalar(1);
+    this.shockwaves.push({ entry: shock, t: 0, radius });
     for (let i = 0; i < 42; i++) {
       const a = Math.random() * Math.PI * 2, b = Math.random() * Math.PI;
       const sp = 5 + Math.random() * 16;
@@ -425,6 +494,13 @@ export class Effects {
         Math.cos(a) * Math.sin(b) * sp, Math.cos(b) * sp * 0.8 + 2, Math.sin(a) * Math.sin(b) * sp,
         0.35 + Math.random() * 0.6, 0.12 + Math.random() * 0.16,
         [0xffd070, 0xff8a3a, 0x6b5a4a][i % 3], 10);
+    }
+    // Fast ember streaks arc further and fall under gravity.
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 9 + Math.random() * 12;
+      this.spawnParticle(p[0], p[1] + 0.5, p[2],
+        Math.cos(a) * sp, 3 + Math.random() * 7, Math.sin(a) * sp,
+        0.5 + Math.random() * 0.5, 0.06 + Math.random() * 0.05, i % 2 ? 0xffe2a0 : 0xff9a3a, 16);
     }
     for (let i = 0; i < 18; i++) {
       this.spawnParticle(p[0], p[1] + 0.6, p[2],
@@ -440,18 +516,16 @@ export class Effects {
     }
     const cx = ev.x, cy = ev.y, cz = ev.z;
     const n = 6;
-    const colors = [0x8a643c, 0x6f747b, 0x9b8a63, 0x9a9a92];
     for (let i = 0; i < 5; i++) this.puff([cx, cy + .3, cz], [(Math.random() - .5) * 2, .4 + Math.random(), (Math.random() - .5) * 2], 0x928d79, .5, 1.4, .43);
     for (let i = 0; i < n; i++) {
-      const geo = new THREE.BoxGeometry(
+      const mat = this._debrisMaterials[i % this._debrisMaterials.length];
+      const m = new THREE.Mesh(this._debrisGeometry, mat);
+      m.castShadow = true;
+      m.scale.set(
         Math.max(0.1, (ev.sx || 1) / n) * (0.6 + Math.random() * 0.6),
         Math.max(0.1, (ev.sy || 1) / n) * (0.6 + Math.random() * 0.6),
         Math.max(0.1, (ev.sz || 1) / n) * (0.6 + Math.random() * 0.6),
       );
-      const mat = new THREE.MeshStandardMaterial({ color: colors[i % colors.length], roughness: 0.9 });
-      this.renderer.registerMaterial(mat);
-      const m = new THREE.Mesh(geo, mat);
-      m.castShadow = true;
       m.position.set(cx + (Math.random() - 0.5) * (ev.sx || 1), cy + Math.random() * (ev.sy || 1), cz + (Math.random() - 0.5) * (ev.sz || 1));
       this.scene.add(m);
       this.debris.push({
@@ -474,18 +548,34 @@ export class Effects {
     });
   }
 
+  _rocketTemplate() {
+    if (!this._rocketTemplateAsset) {
+      this._rocketTemplateAsset = createRocketGeometry(false);
+      this.renderer.registerObject(this._rocketTemplateAsset.root);
+    }
+    return this._rocketTemplateAsset;
+  }
+
   launch(ev) {
     if (this.rockets.has(ev.projectileId)) return;
-    const model = createRocketGeometry(false);
-    this.renderer.registerObject(model.root); this.scene.add(model.root);
-    const rocket = { id: ev.projectileId, model, weapon: ev.w || 'rpg', pos: ev.o.slice(),
+    const template = this._rocketTemplate();
+    const root = template.root.clone();
+    // Cloned meshes share the template's geometry/materials; only the sprites
+    // and transform state below are per-rocket.
+    const exhaust = new THREE.Sprite(this._exhaustMaterial);
+    exhaust.position.set(0, 0, 0.34);
+    exhaust.scale.set(0.3, 0.42, 1);
+    root.add(exhaust);
+    this.scene.add(root);
+    const rocket = { id: ev.projectileId, model: { root, materials: template.materials, shared: true },
+      exhaust, weapon: ev.w || 'rpg', pos: ev.o.slice(),
       vel: ev.v.slice(), fuse: ev.life || CFG.WEAPONS.rpg.rocket.life, accumulator: 0,
       correction: new THREE.Vector3(), held: false, trailT: 0, trailPosition: new THREE.Vector3(...ev.o) };
-    model.root.position.set(...rocket.pos); this.rockets.set(rocket.id, rocket);
+    root.position.set(...rocket.pos); this.rockets.set(rocket.id, rocket);
     for (let i = 0; i < 10; i++) this.spawnParticle(...ev.o,
       (Math.random() - .5) * 2, Math.random() * 1.2, (Math.random() - .5) * 2, .3 + Math.random() * .3, .15, 0xa5ac93, 0);
-    const direction = new THREE.Vector3(...ev.v).normalize();
-    for (let i = 0; i < 4; i++) this.puff(new THREE.Vector3(...ev.o).addScaledVector(direction, -.8 - i * .4).toArray(),
+    const direction = this._rocketDir.set(ev.v[0], ev.v[1], ev.v[2]).normalize();
+    for (let i = 0; i < 4; i++) this.puff(this._trailFrom.set(ev.o[0], ev.o[1], ev.o[2]).addScaledVector(direction, -.8 - i * .4).toArray(),
       direction.clone().multiplyScalar(-2).add(new THREE.Vector3(0, .3, 0)).toArray(), 0xb5b2a0, .24 + i * .08, .55, .26);
   }
 
@@ -533,9 +623,17 @@ export class Effects {
   stopProjectile(id) {
     const rocket = this.rockets?.get(id);
     if (rocket) {
-      rocket.model.root.traverse(o => o.geometry?.dispose());
-      rocket.model.materials.forEach(material => material.dispose());
-      rocket.model.root.removeFromParent(); this.rockets.delete(id);
+      if (rocket.model.shared) {
+        // Geometry/materials belong to the shared template; only the clone's
+        // transform and exhaust sprite are per-rocket.
+        rocket.exhaust?.removeFromParent();
+        rocket.model.root.removeFromParent();
+      } else {
+        rocket.model.root.traverse(o => o.geometry?.dispose());
+        rocket.model.materials.forEach(material => material.dispose());
+        rocket.model.root.removeFromParent();
+      }
+      this.rockets.delete(id);
     }
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
@@ -568,9 +666,14 @@ export class Effects {
     }
     for (let i = this.shockwaves.length - 1; i >= 0; i--) {
       const wave = this.shockwaves[i]; wave.t += dt;
-      wave.mesh.scale.setScalar(.4 + wave.t * wave.radius * 2.6);
-      wave.mesh.material.opacity = Math.max(0, 1 - wave.t / .6) ** 2 * .2;
-      if (wave.t >= .6) { wave.mesh.removeFromParent(); wave.mesh.geometry.dispose(); wave.mesh.material.dispose(); this.shockwaves.splice(i, 1); }
+      const { mesh, material } = wave.entry;
+      mesh.scale.setScalar(.4 + wave.t * wave.radius * 2.6);
+      material.opacity = Math.max(0, 1 - wave.t / .6) ** 2 * .2;
+      if (wave.t >= .6) {
+        mesh.removeFromParent();
+        this._shockPool.push(wave.entry);
+        this.shockwaves.splice(i, 1);
+      }
     }
     for (const rocket of this.rockets.values()) {
       rocket.accumulator += dt; rocket.trailT += dt;
@@ -581,11 +684,25 @@ export class Effects {
       rocket.correction.multiplyScalar(Math.exp(-18 * dt));
       const model = rocket.model.root;
       model.position.set(...rocket.pos).add(rocket.correction);
-      model.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), new THREE.Vector3(...rocket.vel).normalize());
+      this._rocketDir.set(rocket.vel[0], rocket.vel[1], rocket.vel[2]);
+      if (this._rocketDir.lengthSq() > 1e-8) {
+        this._rocketDir.normalize();
+        model.quaternion.setFromUnitVectors(this._rocketForward, this._rocketDir);
+      }
+      if (rocket.exhaust) {
+        const flicker = .78 + Math.random() * .45;
+        rocket.exhaust.scale.set(.3 * flicker, .42 * flicker, 1);
+      }
       if (rocket.trailT > .024) {
         rocket.trailT = 0;
         const distance = model.position.distanceTo(rocket.trailPosition), count = Math.min(5, Math.ceil(distance / 1.5));
-        for (let i = 1; i <= count; i++) this.puff(rocket.trailPosition.clone().lerp(model.position, i / count).toArray(), [0, .1, 0], 0xb7bbaf, .13, .7, .22);
+        for (let i = 1; i <= count; i++) {
+          this._trailFrom.copy(rocket.trailPosition).lerp(model.position, i / count);
+          this._trailPos[0] = this._trailFrom.x;
+          this._trailPos[1] = this._trailFrom.y;
+          this._trailPos[2] = this._trailFrom.z;
+          this.puff(this._trailPos, [0, .1, 0], 0xb7bbaf, .13, .7, .22);
+        }
         rocket.trailPosition.copy(model.position);
         this.spawnParticle(model.position.x, model.position.y, model.position.z, 0, 0, 0, .07, .12, 0xffc17d, 0);
       }
@@ -643,11 +760,12 @@ export class Effects {
       e.t += dt;
       const f = clamp(e.t / 0.45, 0, 1);
       e.mesh.scale.setScalar(.4 + Math.sqrt(f) * e.radius * .48);
-      e.mesh.material.opacity = Math.pow(1 - f, 1.4) * .86;
-      e.light.intensity = 40 * (1 - f) * (1 - f);
+      e.material.opacity = Math.pow(1 - f, 1.4) * .86;
+      if (e.light) e.light.light.intensity = 40 * (1 - f) * (1 - f);
       if (f >= 1) {
-        this.scene.remove(e.mesh, e.light);
-        e.mesh.material.dispose();
+        this.scene.remove(e.mesh);
+        this._explosionPool.push({ mesh: e.mesh, material: e.material });
+        if (e.light) { e.light.busy = false; e.light.light.intensity = 0; }
         this.explosions.splice(i, 1);
       }
     }
@@ -672,7 +790,6 @@ export class Effects {
       }
       if (d.mesh.position.y < -30 || d.t > d.life) {
         this.scene.remove(d.mesh);
-        d.mesh.geometry.dispose(); d.mesh.material.dispose();
         this.debris.splice(i, 1);
       }
     }
@@ -709,6 +826,18 @@ export class Effects {
       if (o.geometry) geometries.add(o.geometry);
       if (o.material) { materials.add(o.material); if (o.material.map) maps.add(o.material.map); }
     });
+    // Shared assets live outside the scene graph between uses.
+    for (const template of [this._rocketTemplateAsset]) {
+      if (!template) continue;
+      template.root.traverse(o => { if (o.geometry) geometries.add(o.geometry); });
+      for (const material of template.materials) materials.add(material);
+    }
+    geometries.add(this._shockGeometry);
+    geometries.add(this._debrisGeometry);
+    for (const material of this._debrisMaterials) materials.add(material);
+    materials.add(this._exhaustMaterial);
+    for (const entry of this._explosionPool) materials.add(entry.material);
+    for (const entry of this._shockPool) materials.add(entry.material);
     geometries.forEach(g => g.dispose());
     materials.forEach(m => m.dispose());
     maps.forEach(t => t.dispose());

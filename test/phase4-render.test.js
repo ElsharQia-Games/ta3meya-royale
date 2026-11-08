@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import {
   characterDetail, CHARACTER_DETAIL_DISTANCE, CHARACTER_CULL_DISTANCE,
 } from '../src/render/entities.js';
-import { lootPoolKey } from '../src/render/world.js';
+import { lootPoolKey, glassCellKey, ArchetypePool } from '../src/render/world.js';
 import { Effects } from '../src/render/effects.js';
 import { DeathAnimation } from '../src/render/death-animation.js';
 import { reloadMotion, boltMotion } from '../src/render/animation.js';
@@ -133,4 +133,72 @@ test('a settled death pose is not resampled or terrain-queried again', () => {
   assert.equal(death.age, death.duration);
   assert.equal(death.settled, true);
   death.dispose();
+});
+
+test('glass panes are binned into the merged renderer cells', () => {
+  const box = (min, max) => ({ min, max });
+  assert.equal(glassCellKey(box([-335, 5, 92], [-334, 6, 93])), '-3,0');
+  assert.equal(glassCellKey(box([-1, 0, -1], [1, 1, 1])), '0,0', 'the cell comes from the pane centre');
+  assert.equal(glassCellKey(box([159, 0, 159], [161, 1, 161])), '1,1');
+  assert.equal(glassCellKey(box([0, 0, 0], [1, 1, 1]), 100), '0,0');
+});
+
+test('archetype destruction batches removals, skips no-ops and can restore', () => {
+  const boxes = [1, 2, 3, 4].map(id => ({ id, min: [id, 0, 0], max: [id + 1, 1, 1] }));
+  const instanced = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), boxes.length);
+  const pool = new ArchetypePool('test', [instanced], boxes);
+  assert.equal(pool.activeCount, 4);
+
+  pool.syncDestruction(new Set());
+  assert.equal(pool.activeCount, 4, 'an unchanged empty set keeps every instance');
+
+  pool.syncDestruction(new Set([1]));
+  assert.equal(pool.activeCount, 3);
+  pool.syncDestruction(new Set([1, 3]));
+  assert.equal(pool.activeCount, 2, 'added ids apply incrementally');
+  const count = instanced.count;
+  pool.syncDestruction(new Set([1, 3]));
+  assert.equal(instanced.count, count, 'an unchanged set does not upload instance buffers');
+
+  // Restoration needs the original order and brings the recovered prop back.
+  pool.syncDestruction(new Set([3]));
+  assert.equal(pool.activeCount, 3);
+  assert.equal(pool.destroyedIds.has(1), false);
+
+  pool.removeBoxes([2, 4]);
+  assert.equal(pool.activeCount, 1);
+  pool.removeBoxes([2, 4]);
+  assert.equal(pool.activeCount, 1, 'batched removal is idempotent');
+  instanced.geometry.dispose();
+  instanced.material.dispose();
+});
+
+test('explosion debris and shockwaves reuse shared geometry', () => {
+  const fx = Object.create(Effects.prototype);
+  fx.scene = new THREE.Scene();
+  fx.debris = [];
+  fx.decalData = [];
+  fx.puffs = [];
+  fx._puffPool = [];
+  fx.dustTexture = new THREE.Texture();
+  fx._debrisGeometry = new THREE.BoxGeometry(1, 1, 1);
+  fx._debrisMaterials = [new THREE.MeshBasicMaterial({ color: 0x8a643c })];
+  fx.destroy({ id: 7, x: 0, y: 1, z: 0, sx: 2, sy: 2, sz: 2 });
+  fx.destroy({ id: 8, x: 1, y: 1, z: 0, sx: 2, sy: 2, sz: 2 });
+  assert.equal(fx.debris.length, 12);
+  for (const d of fx.debris) {
+    assert.equal(d.mesh.geometry, fx._debrisGeometry, 'debris must not allocate one box per chunk');
+    assert.ok(fx._debrisMaterials.includes(d.mesh.material));
+  }
+
+  fx._shockPool = [];
+  fx._shockGeometry = new THREE.RingGeometry(.74, 1, 40);
+  const first = fx._acquireShock();
+  const geometry = first.mesh.geometry;
+  first.mesh.removeFromParent();
+  fx._shockPool.push(first);
+  const second = fx._acquireShock();
+  assert.equal(second.mesh.geometry, geometry, 'shockwave rings are pooled');
+  second.mesh.removeFromParent();
 });

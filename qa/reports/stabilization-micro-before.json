@@ -1,0 +1,85 @@
+{
+  "glass": {
+    "perPane": {
+      "meshes": 19,
+      "destroyed": 5
+    },
+    "perPaneMs": 27.4,
+    "batch": {
+      "meshes": 19,
+      "destroyed": 5,
+      "batched": false
+    },
+    "batchMs": 27.8,
+    "noopSync200": {
+      "destroyed": 5,
+      "glassMeshes": 19
+    },
+    "noopSync200Ms": 25.1,
+    "noopSyncPerCallUs": 125.5
+  },
+  "rocket": {
+    "launch60": {
+      "rockets": 60
+    },
+    "launch60Ms": 26.4,
+    "launchPerUs": 440,
+    "flight300": {
+      "rockets": 1
+    },
+    "flight300Ms": 18.4,
+    "flightPerFrameUs": 61.3
+  },
+  "explosion": {
+    "boom40Ms": 8,
+    "boomPerUs": 200,
+    "boom": {
+      "explosions": 40,
+      "puffs": 80,
+      "particlesLive": 900
+    },
+    "destroy20Ms": 3,
+    "destroyPerUs": 150,
+    "destroy": {
+      "debris": 120
+    }
+  },
+  "audio": {
+    "explosion200Ms": 24.1,
+    "explosion200": {
+      "played": 5,
+      "peak": 5,
+      "remaining": 0
+    },
+    "birdsLoopDefault": true,
+    "loops": [
+      "amb-wind",
+      "amb-birds",
+      "amb-battle"
+    ]
+  },
+  "renderStats": {
+    "quality": "low",
+    "pixelRatio": 0.85,
+    "shadows": false,
+    "cascades": 0,
+    "shadowMap": 512,
+    "viewDistance": 650,
+    "fogDensity": 0.0022,
+    "bloom": false,
+    "calls": 240,
+    "triangles": 1425018,
+    "points": 900,
+    "lines": 0,
+    "geometries": 332,
+    "textures": 45,
+    "programs": 29,
+    "fps": 0.39243387489391657
+  },
+  "env": {
+    "quality": "low",
+    "url": "http://127.0.0.1:3300/",
+    "renderer": "WebKit WebGL",
+    "browserErrors": 0
+  }
+}

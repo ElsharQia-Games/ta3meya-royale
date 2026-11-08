@@ -1,0 +1,445 @@
+{
+  "measuredAt": "2026-11-08T00:16:42.603Z",
+  "method": "ffmpeg ebur128=peak=true over the shipped 48 kHz mono OGG files",
+  "disclaimer": "Objective loudness/peak audit only. No human listening test was performed in this environment.",
+  "shots": [
+    {
+      "weapon": "pistol",
+      "clips": [
+        {
+          "name": "pistol-a",
+          "file": "public/audio/pistol-a.ogg",
+          "integratedLufs": -24.5,
+          "maxMomentaryLufs": -20,
+          "truePeakDbfs": -2.6
+        },
+        {
+          "name": "pistol-b",
+          "file": "public/audio/pistol-b.ogg",
+          "integratedLufs": -19.7,
+          "maxMomentaryLufs": -15.7,
+          "truePeakDbfs": -2.9
+        },
+        {
+          "name": "pistol-c",
+          "file": "public/audio/pistol-c.ogg",
+          "integratedLufs": -19.8,
+          "maxMomentaryLufs": -19.8,
+          "truePeakDbfs": -1.3
+        },
+        {
+          "name": "pistol-d",
+          "file": "public/audio/pistol-d.ogg",
+          "integratedLufs": -23.9,
+          "maxMomentaryLufs": -19.3,
+          "truePeakDbfs": -1.8
+        }
+      ],
+      "spreadLu": 4.3,
+      "meanLufs": -18.7,
+      "integratedSpreadLu": 4.8
+    },
+    {
+      "weapon": "smg",
+      "clips": [
+        {
+          "name": "smg-a",
+          "file": "public/audio/smg-a.ogg",
+          "integratedLufs": -22.6,
+          "maxMomentaryLufs": -19.8,
+          "truePeakDbfs": -2.1
+        },
+        {
+          "name": "smg-b",
+          "file": "public/audio/smg-b.ogg",
+          "integratedLufs": -16.5,
+          "maxMomentaryLufs": -14.4,
+          "truePeakDbfs": -1.5
+        },
+        {
+          "name": "smg-c-1",
+          "file": "public/audio/smg-c-1.ogg",
+          "integratedLufs": -14.7,
+          "maxMomentaryLufs": -14.5,
+          "truePeakDbfs": -1.2
+        },
+        {
+          "name": "smg-c-2",
+          "file": "public/audio/smg-c-2.ogg",
+          "integratedLufs": -14.1,
+          "maxMomentaryLufs": -13.9,
+          "truePeakDbfs": -1.3
+        }
+      ],
+      "spreadLu": 5.9,
+      "meanLufs": -15.6,
+      "integratedSpreadLu": 8.5
+    },
+    {
+      "weapon": "ar",
+      "clips": [
+        {
+          "name": "ar-a",
+          "file": "public/audio/ar-a.ogg",
+          "integratedLufs": -23.6,
+          "maxMomentaryLufs": -20.7,
+          "truePeakDbfs": -2.5
+        },
+        {
+          "name": "ar-b",
+          "file": "public/audio/ar-b.ogg",
+          "integratedLufs": -20.5,
+          "maxMomentaryLufs": -16.2,
+          "truePeakDbfs": -2.2
+        }
+      ],
+      "spreadLu": 4.5,
+      "meanLufs": -18.4,
+      "integratedSpreadLu": 3.1
+    },
+    {
+      "weapon": "dmr",
+      "clips": [
+        {
+          "name": "dmr-a",
+          "file": "public/audio/dmr-a.ogg",
+          "integratedLufs": -20.4,
+          "maxMomentaryLufs": -20.4,
+          "truePeakDbfs": -2.5
+        },
+        {
+          "name": "dmr-b",
+          "file": "public/audio/dmr-b.ogg",
+          "integratedLufs": -23.6,
+          "maxMomentaryLufs": -19.2,
+          "truePeakDbfs": -1.9
+        },
+        {
+          "name": "dmr-c",
+          "file": "public/audio/dmr-c.ogg",
+          "integratedLufs": -20.8,
+          "maxMomentaryLufs": -20.8,
+          "truePeakDbfs": -2.3
+        },
+        {
+          "name": "dmr-d",
+          "file": "public/audio/dmr-d.ogg",
+          "integratedLufs": -23.4,
+          "maxMomentaryLufs": -20.6,
+          "truePeakDbfs": -2.2
+        }
+      ],
+      "spreadLu": 1.6,
+      "meanLufs": -20.2,
+      "integratedSpreadLu": 3.2
+    },
+    {
+      "weapon": "shotgun",
+      "clips": [
+        {
+          "name": "shotgun-a",
+          "file": "public/audio/shotgun-a.ogg",
+          "integratedLufs": -25,
+          "maxMomentaryLufs": -20.4,
+          "truePeakDbfs": -2.9
+        },
+        {
+          "name": "shotgun-b",
+          "file": "public/audio/shotgun-b.ogg",
+          "integratedLufs": -20.6,
+          "maxMomentaryLufs": -20.6,
+          "truePeakDbfs": -2.2
+        },
+        {
+          "name": "shotgun-c",
+          "file": "public/audio/shotgun-c.ogg",
+          "integratedLufs": -20.4,
+          "maxMomentaryLufs": -20.4,
+          "truePeakDbfs": -2.2
+        },
+        {
+          "name": "shotgun-d",
+          "file": "public/audio/shotgun-d.ogg",
+          "integratedLufs": -23.4,
+          "maxMomentaryLufs": -17.8,
+          "truePeakDbfs": -2.2
+        }
+      ],
+      "spreadLu": 2.8,
+      "meanLufs": -19.8,
+      "integratedSpreadLu": 4.6
+    },
+    {
+      "weapon": "sniper",
+      "clips": [
+        {
+          "name": "sniper-a",
+          "file": "public/audio/sniper-a.ogg",
+          "integratedLufs": -20.5,
+          "maxMomentaryLufs": -20.4,
+          "truePeakDbfs": -1.9
+        },
+        {
+          "name": "sniper-b",
+          "file": "public/audio/sniper-b.ogg",
+          "integratedLufs": -20.7,
+          "maxMomentaryLufs": -20.7,
+          "truePeakDbfs": -1.5
+        },
+        {
+          "name": "sniper-c",
+          "file": "public/audio/sniper-c.ogg",
+          "integratedLufs": -23,
+          "maxMomentaryLufs": -18.3,
+          "truePeakDbfs": -2.8
+        },
+        {
+          "name": "sniper-d",
+          "file": "public/audio/sniper-d.ogg",
+          "integratedLufs": -23.6,
+          "maxMomentaryLufs": -18.6,
+          "truePeakDbfs": -2.4
+        }
+      ],
+      "spreadLu": 2.4,
+      "meanLufs": -19.5,
+      "integratedSpreadLu": 3.1
+    },
+    {
+      "weapon": "lmg",
+      "clips": [
+        {
+          "name": "lmg-a",
+          "file": "public/audio/lmg-a.ogg",
+          "integratedLufs": -20.7,
+          "maxMomentaryLufs": -20.7,
+          "truePeakDbfs": -1.8
+        },
+        {
+          "name": "lmg-b",
+          "file": "public/audio/lmg-b.ogg",
+          "integratedLufs": -15.9,
+          "maxMomentaryLufs": -14.7,
+          "truePeakDbfs": -1.7
+        },
+        {
+          "name": "lmg-c-1",
+          "file": "public/audio/lmg-c-1.ogg",
+          "integratedLufs": -19.7,
+          "maxMomentaryLufs": -16.4,
+          "truePeakDbfs": -2.2
+        },
+        {
+          "name": "lmg-c-2",
+          "file": "public/audio/lmg-c-2.ogg",
+          "integratedLufs": -20.3,
+          "maxMomentaryLufs": -17.3,
+          "truePeakDbfs": -2.1
+        }
+      ],
+      "spreadLu": 6,
+      "meanLufs": -17.3,
+      "integratedSpreadLu": 4.8
+    },
+    {
+      "weapon": "rpg",
+      "clips": [
+        {
+          "name": "rocket-launch",
+          "file": "public/audio/rocket-launch.ogg",
+          "integratedLufs": -16.6,
+          "maxMomentaryLufs": -16.3,
+          "truePeakDbfs": -3.6
+        }
+      ],
+      "spreadLu": 0,
+      "meanLufs": -16.3,
+      "integratedSpreadLu": 0
+    }
+  ],
+  "layers": [
+    {
+      "name": "bolt-a",
+      "file": "public/audio/bolt-a.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -10.4
+    },
+    {
+      "name": "bolt-b",
+      "file": "public/audio/bolt-b.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -8.6
+    },
+    {
+      "name": "distant-1",
+      "file": "public/audio/distant-1.ogg",
+      "integratedLufs": -39.3,
+      "maxMomentaryLufs": -39.3,
+      "truePeakDbfs": -17.9
+    },
+    {
+      "name": "distant-2",
+      "file": "public/audio/distant-2.ogg",
+      "integratedLufs": -30.9,
+      "maxMomentaryLufs": -30.9,
+      "truePeakDbfs": -15.1
+    },
+    {
+      "name": "distant-3",
+      "file": "public/audio/distant-3.ogg",
+      "integratedLufs": -39.7,
+      "maxMomentaryLufs": -33,
+      "truePeakDbfs": -18.1
+    },
+    {
+      "name": "distant-4",
+      "file": "public/audio/distant-4.ogg",
+      "integratedLufs": -42.6,
+      "maxMomentaryLufs": -37.2,
+      "truePeakDbfs": -17.8
+    },
+    {
+      "name": "mag-in-a",
+      "file": "public/audio/mag-in-a.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -8.8
+    },
+    {
+      "name": "mag-in-b",
+      "file": "public/audio/mag-in-b.ogg",
+      "integratedLufs": -31,
+      "maxMomentaryLufs": -31,
+      "truePeakDbfs": -7.3
+    },
+    {
+      "name": "mag-out-a",
+      "file": "public/audio/mag-out-a.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -9.2
+    },
+    {
+      "name": "mag-out-b",
+      "file": "public/audio/mag-out-b.ogg",
+      "integratedLufs": -30,
+      "maxMomentaryLufs": -30,
+      "truePeakDbfs": -7.4
+    },
+    {
+      "name": "pump-1",
+      "file": "public/audio/pump-1.ogg",
+      "integratedLufs": -25.1,
+      "maxMomentaryLufs": -25.1,
+      "truePeakDbfs": -12.1
+    },
+    {
+      "name": "reloadAlt",
+      "file": "public/audio/reloadAlt.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "reloadGeneric",
+      "file": "public/audio/reloadGeneric.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "reloadHandgun",
+      "file": "public/audio/reloadHandgun.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "reloadRifle",
+      "file": "public/audio/reloadRifle.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "shell-a",
+      "file": "public/audio/shell-a.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -10.5
+    },
+    {
+      "name": "shell-b",
+      "file": "public/audio/shell-b.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -7.8
+    },
+    {
+      "name": "shell-casing",
+      "file": "public/audio/shell-casing.ogg",
+      "integratedLufs": -70,
+      "maxMomentaryLufs": -120.7,
+      "truePeakDbfs": -9.8
+    },
+    {
+      "name": "uiClick",
+      "file": "public/audio/uiClick.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "uiConfirm",
+      "file": "public/audio/uiConfirm.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "uiError",
+      "file": "public/audio/uiError.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "uiOpen",
+      "file": "public/audio/uiOpen.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    },
+    {
+      "name": "uiSelect",
+      "file": "public/audio/uiSelect.ogg",
+      "integratedLufs": null,
+      "maxMomentaryLufs": null,
+      "truePeakDbfs": null
+    }
+  ],
+  "flags": [
+    {
+      "weapon": "pistol",
+      "spreadLu": 4.3,
+      "note": "max-momentary level differs by more than 4 LU inside the pool; check gain staging"
+    },
+    {
+      "weapon": "smg",
+      "spreadLu": 5.9,
+      "note": "max-momentary level differs by more than 4 LU inside the pool; check gain staging"
+    },
+    {
+      "weapon": "ar",
+      "spreadLu": 4.5,
+      "note": "max-momentary level differs by more than 4 LU inside the pool; check gain staging"
+    },
+    {
+      "weapon": "lmg",
+      "spreadLu": 6,
+      "note": "max-momentary level differs by more than 4 LU inside the pool; check gain staging"
+    }
+  ]
+}

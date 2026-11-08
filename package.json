@@ -30,7 +30,10 @@
     "qa:scenes": "node qa/scenes.mjs",
     "qa:record": "node qa/record.mjs",
     "qa:phase4": "node qa/phase4-bench.mjs",
-    "bench:phase4": "node --expose-gc qa/phase4-microbench.mjs"
+    "bench:phase4": "node --expose-gc qa/phase4-microbench.mjs",
+    "qa:stabilize": "node qa/stabilization-bench.mjs",
+    "qa:stabilize:mp": "node qa/stabilization-multiplayer.mjs",
+    "qa:audio-mix": "node qa/audio-mix-audit.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",

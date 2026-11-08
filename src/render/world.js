@@ -18,6 +18,16 @@ import { loadCoastalSurfaces } from './surfaces.js';
 import { assetUrl } from '../asset.js';
 
 const _v = new THREE.Vector3();
+const _poolMatrix = new THREE.Matrix4();
+const GLASS_CELL = 160;
+
+// Spatial bin used by mergeSpatialGeometry's default cell. Kept as a pure
+// helper so the incremental glass rebuild can be regression-tested.
+export function glassCellKey(box, cell = GLASS_CELL) {
+  const cx = (box.min[0] + box.max[0]) / 2;
+  const cz = (box.min[2] + box.max[2]) / 2;
+  return `${Math.floor(cx / cell)},${Math.floor(cz / cell)}`;
+}
 
 // Loot models of the same shape can be swapped between pickups. Weapon loot
 // includes its key so an AR mesh never becomes a pistol.
@@ -75,7 +85,7 @@ export function prepareStaticGeometry(geo, color) {
   return nonIndexed;
 }
 
-class ArchetypePool {
+export class ArchetypePool {
   constructor(key, meshes, boxes) {
     this.key = key;
     this.meshes = meshes;
@@ -84,6 +94,7 @@ class ArchetypePool {
     this.boxIdToIndex = new Map();
     this.indexToBoxId = new Array(boxes.length);
     this.baseMatrices = new Map();
+    this.destroyedIds = new Set();
 
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < boxes.length; i++) {
@@ -102,17 +113,16 @@ class ArchetypePool {
     }
   }
 
-  removeBox(boxId) {
+  _remove(boxId) {
     const idx = this.boxIdToIndex.get(boxId);
-    if (idx === undefined || idx >= this.activeCount) return;
+    if (idx === undefined || idx >= this.activeCount) return false;
 
     const lastIdx = this.activeCount - 1;
     if (idx !== lastIdx) {
       const lastBoxId = this.indexToBoxId[lastIdx];
-      const tempMatrix = new THREE.Matrix4();
       for (const im of this.meshes) {
-        im.getMatrixAt(lastIdx, tempMatrix);
-        im.setMatrixAt(idx, tempMatrix);
+        im.getMatrixAt(lastIdx, _poolMatrix);
+        im.setMatrixAt(idx, _poolMatrix);
       }
       this.boxIdToIndex.set(lastBoxId, idx);
       this.indexToBoxId[idx] = lastBoxId;
@@ -121,13 +131,58 @@ class ArchetypePool {
     }
 
     this.activeCount--;
+    this.destroyedIds.add(boxId);
+    return true;
+  }
+
+  _flush() {
     for (const im of this.meshes) {
       im.count = this.activeCount;
       im.instanceMatrix.needsUpdate = true;
     }
   }
 
+  removeBox(boxId) {
+    if (this._remove(boxId)) this._flush();
+  }
+
+  // Batched destruction: one instance-buffer upload per pool per event frame
+  // instead of one per destroyed box.
+  removeBoxes(ids) {
+    let changed = false;
+    for (const id of ids) if (this._remove(id)) changed = true;
+    if (changed) this._flush();
+  }
+
   syncDestruction(destroyedSet) {
+    // Track only ids this pool actually owns; the authoritative set also
+    // contains glass and other archetypes.
+    let changed = false;
+    for (const id of destroyedSet) {
+      if (this.baseMatrices.has(id) && !this.destroyedIds.has(id)) { changed = true; break; }
+    }
+    if (!changed) {
+      for (const id of this.destroyedIds) if (!destroyedSet.has(id)) { changed = true; break; }
+    }
+    // Unchanged state is the common case (every state sync), so return before
+    // touching 248-pane-style instance buffers.
+    if (!changed) return;
+
+    // Pure additions stay incremental; any restoration requires the original
+    // archetype order, which only a full rebuild can restore.
+    let additionsOnly = true;
+    for (const id of this.destroyedIds) {
+      if (!destroyedSet.has(id)) { additionsOnly = false; break; }
+    }
+    if (additionsOnly) {
+      const ids = [];
+      for (const id of destroyedSet) {
+        if (this.baseMatrices.has(id) && !this.destroyedIds.has(id)) ids.push(id);
+      }
+      this.removeBoxes(ids);
+      return;
+    }
+
     let i = 0;
     for (const [boxId, mat] of this.baseMatrices) {
       this.boxIdToIndex.set(boxId, i);
@@ -138,17 +193,14 @@ class ArchetypePool {
       i++;
     }
     this.activeCount = this.maxCount;
+    this.destroyedIds.clear();
 
+    const removed = [];
     for (const id of destroyedSet) {
-      if (this.baseMatrices.has(id)) {
-        this.removeBox(id);
-      }
+      if (this.baseMatrices.has(id) && !this.destroyedIds.has(id)) removed.push(id);
     }
-
-    for (const im of this.meshes) {
-      im.count = this.activeCount;
-      im.instanceMatrix.needsUpdate = true;
-    }
+    for (const id of removed) this._remove(id);
+    this._flush();
   }
 }
 
@@ -206,7 +258,10 @@ export class WorldRenderer {
     this.dynamicInstancedGroups = [];
     this.staticMeshes = [];
     this.glassMeshes = [];
+    this.glassCells = new Map();
     this.glassDestroyed = new Set();
+    this.glassIds = new Set();
+    this.dynamicBoxList = [];
     this.treeMeshes = [];
     this.rockMesh = null;
     this.water = null;
@@ -395,28 +450,33 @@ export class WorldRenderer {
     const nonArchetypeDynamic = [];
 
     for (const b of this.world.boxes) {
-      if (!b.render || b.destroyed) continue;
+      if (!b.render) continue;
       // Glass is destructible but merged into a few spatial meshes instead of
-      // one mesh per pane (248 panes). _rebuildGlass() swaps the merge when a
-      // pane breaks, keeping the draw-call count flat during normal play.
-      if (b.tag === 'glass') continue;
+      // one mesh per pane (248 panes). _rebuildGlass() swaps only the affected
+      // spatial cell when a pane breaks, keeping draw calls flat.
+      if (b.tag === 'glass') {
+        this.glassIds.add(b.id);
+        if (b.destroyed) this.glassDestroyed.add(b.id);
+        continue;
+      }
       if (b.dynamic) {
         let key = null;
         if (b.tag === 'barrel') key = (b.id % 3) ? 'barrel_rust' : 'barrel_amber';
         else if (['sandbag', 'crate', 'fence'].includes(b.tag)) key = b.tag;
         if (key) {
+          // Instance pools start from the surviving props; anything already
+          // destroyed at join time is restored by a full pool rebuild.
+          if (b.destroyed) continue;
           let list = archetypeBins.get(key);
           if (!list) { list = []; archetypeBins.set(key, list); }
           list.push(b);
         } else {
+          // Kept even when destroyed so syncDestruction can restore it.
           nonArchetypeDynamic.push(b);
         }
         continue;
       }
-
-      if (b.tag === 'glass') {
-        continue;
-      }
+      if (b.destroyed) continue;
 
       const model = this.fieldAssets.create(b);
       if (model) {
@@ -510,12 +570,14 @@ export class WorldRenderer {
     }
 
     for (const b of nonArchetypeDynamic) {
+      if (b.destroyed) continue;
       const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
       mesh.castShadow = true; mesh.receiveShadow = true;
       mesh.name = `dyn_${b.id}`;
       this.scene.add(mesh);
       this.dynamicMeshes.set(b.id, mesh);
     }
+    this.dynamicBoxList = nonArchetypeDynamic;
   }
 
   _mergeDetailGeometries() {
@@ -530,25 +592,143 @@ export class WorldRenderer {
     this.pendingDetailGeos = [];
   }
 
-  // Glass panes share a few merged meshes. Rebuilding only happens when the
-  // set of broken panes changes, so normal play keeps the original topology.
-  _rebuildGlass() {
-    for (const mesh of this.glassMeshes) {
-      this.scene.remove(mesh);
-      mesh.geometry?.dispose();
+  // Glass panes are merged into spatial cells (matching mergeSpatialGeometry's
+  // 160 m bins). A break only rebuilds the cell that actually contains the
+  // pane, so a single pane costs one small merge instead of re-merging all 248.
+  _glassCellKey(box) {
+    return glassCellKey(box);
+  }
+
+  _rebuildGlass(cells = null) {
+    let keys = cells;
+    if (!keys) {
+      keys = new Set();
+      for (const b of this.world.boxes) if (b.tag === 'glass' && b.render) keys.add(this._glassCellKey(b));
     }
-    this.glassMeshes.length = 0;
-    const geos = [];
+    for (const key of keys) {
+      const meshes = this.glassCells.get(key);
+      if (meshes) {
+        for (const mesh of meshes) {
+          this.scene.remove(mesh);
+          mesh.geometry?.dispose();
+        }
+        this.glassCells.delete(key);
+      }
+    }
+    // Only collect panes that live in the cells being rebuilt.
+    const bins = new Map();
     for (const b of this.world.boxes) {
       if (b.tag !== 'glass' || !b.render || b.destroyed) continue;
+      const key = this._glassCellKey(b);
+      if (!keys.has(key)) continue;
+      const list = bins.get(key) || [];
       const geo = boxGeometry(b);
-      geos.push(geo.index ? geo.toNonIndexed() : geo);
+      list.push(geo.index ? geo.toNonIndexed() : geo);
+      bins.set(key, list);
     }
-    if (!geos.length) return;
-    const meshes = mergeSpatialGeometry(geos, this.mats.glass, 'static_glass', 160);
-    for (const mesh of meshes) { mesh.castShadow = false; mesh.receiveShadow = true; }
-    this.scene.add(...meshes);
-    this.glassMeshes.push(...meshes);
+    // Lazily create the Map entry for cells that never had panes (initial call).
+    for (const key of keys) {
+      if (!bins.has(key)) this.glassCells.set(key, []);
+    }
+    for (const [key, geos] of bins) {
+      if (!geos.length) continue;
+      const meshes = mergeSpatialGeometry(geos, this.mats.glass, 'static_glass', GLASS_CELL);
+      for (const mesh of meshes) { mesh.castShadow = false; mesh.receiveShadow = true; }
+      this.scene.add(...meshes);
+      this.glassCells.set(key, meshes);
+    }
+    this.glassMeshes = [];
+    for (const meshes of this.glassCells.values()) this.glassMeshes.push(...meshes);
+  }
+
+  removeBoxes(ids) {
+    const glassCells = new Set();
+    const byPool = new Map();
+    for (const id of ids) {
+      const box = this.world.boxes[id];
+      if (!box) continue;
+      if (box.dynamic) box.destroyed = true;
+      if (box.tag === 'glass') {
+        if (!this.glassDestroyed.has(id)) {
+          box.destroyed = true;
+          this.glassDestroyed.add(id);
+          glassCells.add(this._glassCellKey(box));
+        }
+        continue;
+      }
+      const pool = this.boxPools.get(id);
+      if (pool) {
+        const list = byPool.get(pool) || [];
+        list.push(id);
+        byPool.set(pool, list);
+        continue;
+      }
+      const mesh = this.dynamicMeshes.get(id);
+      if (!mesh) continue;
+      this.scene.remove(mesh);
+      mesh.traverse(part => part.geometry?.dispose());
+      this.dynamicMeshes.delete(id);
+    }
+    for (const [pool, list] of byPool) pool.removeBoxes(list);
+    if (glassCells.size) this._rebuildGlass(glassCells);
+  }
+
+  removeBox(id) {
+    this.removeBoxes([id]);
+  }
+
+  syncDestruction(ids) {
+    const destroyed = new Set(ids);
+    for (const pool of this.pools.values()) {
+      pool.syncDestruction(destroyed);
+    }
+    for (const b of this.dynamicBoxList) {
+      const gone = destroyed.has(b.id);
+      if (b.destroyed === gone) continue;
+      b.destroyed = gone;
+      if (gone) {
+        const mesh = this.dynamicMeshes.get(b.id);
+        if (!mesh) continue;
+        this.scene.remove(mesh);
+        mesh.traverse(part => part.geometry?.dispose());
+        this.dynamicMeshes.delete(b.id);
+      } else {
+        b.hp = b.maxHp;
+        const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.name = `dyn_${b.id}`;
+        this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
+      }
+    }
+    // Glass: only the destroyed ids that are actually glass matter, so this is
+    // O(destroyed) rather than a scan of every pane on every state sync.
+    let glassChanged = false;
+    for (const id of destroyed) {
+      if (this.glassIds.has(id) && !this.glassDestroyed.has(id)) { glassChanged = true; break; }
+    }
+    if (!glassChanged) {
+      for (const id of this.glassDestroyed) if (!destroyed.has(id)) { glassChanged = true; break; }
+    }
+    if (glassChanged) {
+      const cells = new Set();
+      const nextGlass = new Set();
+      for (const id of destroyed) if (this.glassIds.has(id)) nextGlass.add(id);
+      for (const id of nextGlass) {
+        if (!this.glassDestroyed.has(id)) {
+          const box = this.world.boxes[id];
+          box.destroyed = true;
+          cells.add(this._glassCellKey(box));
+        }
+      }
+      for (const id of this.glassDestroyed) {
+        if (nextGlass.has(id)) continue;
+        const box = this.world.boxes[id];
+        box.destroyed = false;
+        cells.add(this._glassCellKey(box));
+      }
+      this.glassDestroyed = nextGlass;
+      if (cells.size) this._rebuildGlass(cells);
+    }
   }
 
   facadeMaterial(box) {
@@ -558,63 +738,6 @@ export class WorldRenderer {
     if (!building) return this.mats[box.mat];
     if (box.mat === 'brick' && building.type === 'urban') return this.mats.brick;
     return this.facadeMaterials[this.buildingStyles.get(building)];
-  }
-
-  removeBox(id) {
-    const box = this.world.boxes[id];
-    if (box?.dynamic) box.destroyed = true;
-    if (box?.tag === 'glass') {
-      if (!this.glassDestroyed.has(id)) {
-        this.glassDestroyed.add(id);
-        this._rebuildGlass();
-      }
-      return;
-    }
-    const pool = this.boxPools.get(id);
-    if (pool) {
-      pool.removeBox(id);
-      return;
-    }
-    const mesh = this.dynamicMeshes.get(id);
-    if (!mesh) return;
-    this.scene.remove(mesh);
-    mesh.traverse(part => part.geometry?.dispose());
-    this.dynamicMeshes.delete(id);
-  }
-
-  syncDestruction(ids) {
-    const destroyed = new Set(ids);
-    for (const pool of this.pools.values()) {
-      pool.syncDestruction(destroyed);
-    }
-    for (const b of this.world.boxes) {
-      if (!b.render) continue;
-      if (b.tag === 'glass') { b.destroyed = destroyed.has(b.id); continue; }
-      if (!b.dynamic) continue;
-      const gone = destroyed.has(b.id);
-      b.destroyed = gone;
-      if (this.boxPools.has(b.id)) continue;
-      if (gone) {
-        this.removeBox(b.id);
-      } else if (!this.dynamicMeshes.has(b.id)) {
-        b.hp = b.maxHp;
-        const mesh = this.fieldAssets.create(b) || new THREE.Mesh(boxGeometry(b), this.mats[b.mat]);
-        mesh.castShadow = true; mesh.receiveShadow = true;
-        mesh.name = `dyn_${b.id}`;
-        this.scene.add(mesh); this.dynamicMeshes.set(b.id, mesh);
-      }
-    }
-    // Rebuild the merged glass only when the broken-pane set actually changed.
-    const nextGlass = new Set();
-    for (const b of this.world.boxes) if (b.tag === 'glass' && b.destroyed) nextGlass.add(b.id);
-    let glassChanged = nextGlass.size !== this.glassDestroyed.size;
-    if (!glassChanged) {
-      for (const id of nextGlass) if (!this.glassDestroyed.has(id)) { glassChanged = true; break; }
-    }
-    if (glassChanged) {
-      this.glassDestroyed = nextGlass;
-      this._rebuildGlass();
-    }
   }
 
   dispose() {

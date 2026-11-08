@@ -1,0 +1,728 @@
+{
+  "env": {
+    "base": "http://127.0.0.1:3312/",
+    "room": "STAB7587",
+    "viewport": "640x360",
+    "quality": "low",
+    "renderer": "SwiftShader"
+  },
+  "setup": {
+    "a": {
+      "targetId": 818,
+      "clear": false,
+      "probes": [
+        {
+          "id": 818,
+          "d": 9.4,
+          "blast": 0.7,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 854,
+          "d": 10,
+          "blast": 0.8,
+          "tag": "wall",
+          "box": 855,
+          "exposed": false
+        },
+        {
+          "id": 823,
+          "d": 14.4,
+          "blast": 12.2,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 811,
+          "d": 14.4,
+          "blast": 12.6,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 859,
+          "d": 14.6,
+          "blast": 12.3,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 847,
+          "d": 14.9,
+          "blast": 13,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 613,
+          "d": 32.6,
+          "blast": 31.1,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 651,
+          "d": 32.8,
+          "blast": 31.3,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 785,
+          "d": 34.1,
+          "blast": 7.6,
+          "tag": "wall",
+          "box": 794,
+          "exposed": false
+        },
+        {
+          "id": 776,
+          "d": 36.7,
+          "blast": 33,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 781,
+          "d": 40.5,
+          "blast": 14,
+          "tag": "wall",
+          "box": 794,
+          "exposed": false
+        },
+        {
+          "id": 620,
+          "d": 40.9,
+          "blast": 39.5,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        }
+      ],
+      "glassIds": [
+        818,
+        823,
+        854,
+        859
+      ],
+      "panes": 4,
+      "target": [
+        -334.8,
+        6.1,
+        92.8
+      ],
+      "distance": 9.4,
+      "player": [
+        -325.5,
+        4.5,
+        94.3
+      ]
+    },
+    "b": {
+      "targetId": 1584,
+      "clear": true,
+      "probes": [
+        {
+          "id": 1584,
+          "d": 18.2,
+          "blast": 0,
+          "tag": "glass",
+          "box": 1584,
+          "exposed": true
+        },
+        {
+          "id": 1598,
+          "d": 21,
+          "blast": 3,
+          "tag": "glass",
+          "box": 1584,
+          "exposed": true
+        },
+        {
+          "id": 1591,
+          "d": 25.8,
+          "blast": 13.2,
+          "tag": "wall",
+          "box": 1587,
+          "exposed": false
+        },
+        {
+          "id": 1508,
+          "d": 41.3,
+          "blast": 0,
+          "tag": "glass",
+          "box": 1508,
+          "exposed": true
+        },
+        {
+          "id": 1761,
+          "d": 43.3,
+          "blast": 32.3,
+          "tag": "wall",
+          "box": 1602,
+          "exposed": false
+        },
+        {
+          "id": 1773,
+          "d": 46,
+          "blast": 35,
+          "tag": "wall",
+          "box": 1587,
+          "exposed": false
+        },
+        {
+          "id": 1628,
+          "d": 46.1,
+          "blast": 0,
+          "tag": "glass",
+          "box": 1628,
+          "exposed": true
+        },
+        {
+          "id": 1567,
+          "d": 47.3,
+          "blast": 6.9,
+          "tag": "wall",
+          "box": 1556,
+          "exposed": false
+        },
+        {
+          "id": 1616,
+          "d": 47.4,
+          "blast": 0.7,
+          "tag": "wall",
+          "box": 1613,
+          "exposed": false
+        },
+        {
+          "id": 1560,
+          "d": 48.1,
+          "blast": 9.5,
+          "tag": "wall",
+          "box": 1571,
+          "exposed": false
+        },
+        {
+          "id": 1513,
+          "d": 49.6,
+          "blast": 8.7,
+          "tag": "wall",
+          "box": 1509,
+          "exposed": false
+        },
+        {
+          "id": 1768,
+          "d": 52.3,
+          "blast": 39.4,
+          "tag": "wall",
+          "box": 1602,
+          "exposed": false
+        }
+      ],
+      "glassIds": [
+        1584,
+        1598
+      ],
+      "panes": 2,
+      "target": [
+        267.3,
+        5.2,
+        200.7
+      ],
+      "distance": 18.2,
+      "player": [
+        282.3,
+        3.3,
+        190.3
+      ]
+    }
+  },
+  "audio": {
+    "routing": {
+      "near": true,
+      "far": true,
+      "beyond": true,
+      "plays": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            174,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            294,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    "eventRouting": [
+      "distantShot"
+    ],
+    "dryFire": {
+      "calls": 2,
+      "plays": 1
+    },
+    "vehicleDestroyPlays": 1,
+    "reloadPlays": [
+      "magOut",
+      "magIn",
+      "bolt"
+    ],
+    "birds": false
+  },
+  "launches": [
+    {
+      "attempt": 1,
+      "frames": {
+        "count": 5,
+        "p50": 1883.2,
+        "p95": 5933.1,
+        "p99": 5933.1,
+        "max": 5933.1,
+        "workCount": 5,
+        "workP50": 5.1,
+        "workP95": 5921.7,
+        "workP99": 5921.7,
+        "workMax": 5921.7
+      },
+      "destroyedDelta": 2,
+      "glass": 2,
+      "sounds": [
+        "explosion",
+        "destruction",
+        "dryFire",
+        "dryFire"
+      ]
+    },
+    {
+      "attempt": 2,
+      "frames": {
+        "count": 7,
+        "p50": 200,
+        "p95": 1300,
+        "p99": 1300,
+        "max": 1300,
+        "workCount": 7,
+        "workP50": 7.7,
+        "workP95": 1312,
+        "workP99": 1312,
+        "workMax": 1312
+      },
+      "destroyedDelta": 2,
+      "glass": 4,
+      "sounds": [
+        "shot",
+        "explosion",
+        "destruction",
+        "dryFire"
+      ]
+    },
+    {
+      "attempt": 3,
+      "frames": {
+        "count": 7,
+        "p50": 600,
+        "p95": 2883.2,
+        "p99": 2883.2,
+        "max": 2883.2,
+        "workCount": 7,
+        "workP50": 8.3,
+        "workP95": 2886.9,
+        "workP99": 2886.9,
+        "workMax": 2886.9
+      },
+      "destroyedDelta": 2,
+      "glass": 6,
+      "sounds": [
+        "explosion",
+        "destruction",
+        "dryFire",
+        "dryFire"
+      ]
+    },
+    {
+      "attempt": 4,
+      "frames": {
+        "count": 5,
+        "p50": 733.2,
+        "p95": 983.3,
+        "p99": 983.3,
+        "max": 983.3,
+        "workCount": 5,
+        "workP50": 7.5,
+        "workP95": 8.1,
+        "workP99": 8.1,
+        "workMax": 8.1
+      },
+      "destroyedDelta": 0,
+      "glass": 6,
+      "sounds": [
+        "explosion",
+        "dryFire"
+      ]
+    }
+  ],
+  "secondClientLaunch": {
+    "destroyedDelta": 2,
+    "glass": 8,
+    "sounds": [
+      "explosion",
+      "destruction",
+      "dryFire",
+      "dryFire"
+    ]
+  },
+  "frameWindows": {
+    "before": {
+      "count": 7,
+      "p50": 1916.5,
+      "p95": 2033.3,
+      "p99": 2033.3,
+      "max": 2033.3,
+      "workCount": 7,
+      "workP50": 7.6,
+      "workP95": 18,
+      "workP99": 18,
+      "workMax": 18
+    },
+    "after": {
+      "count": 2,
+      "p50": 6766.4,
+      "p95": 6766.4,
+      "p99": 6766.4,
+      "max": 6766.4,
+      "workCount": 2,
+      "workP50": 8.4,
+      "workP95": 8.4,
+      "workP99": 8.4,
+      "workMax": 8.4
+    },
+    "secondClient": {
+      "count": 5,
+      "p50": 2049.9,
+      "p95": 6166.4,
+      "p99": 6166.4,
+      "max": 6166.4,
+      "workCount": 5,
+      "workP50": 6.6,
+      "workP95": 6167.3,
+      "workP99": 6167.3,
+      "workMax": 6167.3
+    }
+  },
+  "server": {
+    "before": {
+      "code": "STAB7587",
+      "mode": "tdm",
+      "state": 2,
+      "tick": 1862,
+      "time": 31,
+      "players": 2,
+      "humans": 2,
+      "bots": 0,
+      "alive": 2,
+      "score": [
+        0,
+        0
+      ],
+      "zone": {
+        "r": 450,
+        "phase": 0,
+        "shrinking": false
+      },
+      "tickMs": 0.285,
+      "tickP50Ms": 0.302,
+      "tickP95Ms": 0.946,
+      "tickP99Ms": 1.799,
+      "tickMaxMs": 2.539,
+      "tickOverBudget": 0,
+      "tickSamples": 600,
+      "tickWindowCapacity": 600,
+      "tickCount": 1862,
+      "tickTotalMs": 467.366,
+      "tickLifetimeMaxMs": 2.539,
+      "snapshotKiBps": 1.81,
+      "droppedInputs": 0,
+      "skippedSnapshots": 0,
+      "staleInputs": 1914,
+      "simResets": 0,
+      "avgPing": 34,
+      "uptime": 31
+    },
+    "after": {
+      "code": "STAB7587",
+      "mode": "tdm",
+      "state": 2,
+      "tick": 4926,
+      "time": 82.1,
+      "players": 2,
+      "humans": 2,
+      "bots": 0,
+      "alive": 2,
+      "score": [
+        0,
+        0
+      ],
+      "zone": {
+        "r": 450,
+        "phase": 0,
+        "shrinking": false
+      },
+      "tickMs": 0.313,
+      "tickP50Ms": 0.309,
+      "tickP95Ms": 1.05,
+      "tickP99Ms": 1.764,
+      "tickMaxMs": 5.694,
+      "tickOverBudget": 0,
+      "tickSamples": 600,
+      "tickWindowCapacity": 600,
+      "tickCount": 4926,
+      "tickTotalMs": 1559.546,
+      "tickLifetimeMaxMs": 13.947,
+      "snapshotKiBps": 1.68,
+      "droppedInputs": 0,
+      "skippedSnapshots": 0,
+      "staleInputs": 7119,
+      "simResets": 0,
+      "avgPing": 2,
+      "uptime": 82
+    }
+  },
+  "checks": [
+    {
+      "name": "both clients found a destructible glass cluster",
+      "ok": true,
+      "detail": {
+        "a": 4,
+        "b": 2
+      }
+    },
+    {
+      "name": "glass cluster is close enough for an RPG blast",
+      "ok": true,
+      "detail": {
+        "a": 9.4,
+        "b": 18.2
+      }
+    },
+    {
+      "name": "near shot uses close recordings",
+      "ok": true,
+      "detail": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            174,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            294,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mid shot uses distant recordings",
+      "ok": true,
+      "detail": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            174,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            294,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shot beyond 420 m still routes to the 640 m distant range",
+      "ok": true,
+      "detail": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            174,
+            6,
+            94
+          ]
+        },
+        {
+          "sound": "distantShot",
+          "position": [
+            294,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    {
+      "name": "authoritative shot event far away routes to distant sound",
+      "ok": true,
+      "detail": [
+        "distantShot"
+      ]
+    },
+    {
+      "name": "vehicle destruction plays once across event + observation",
+      "ok": true,
+      "detail": {
+        "plays": 1
+      }
+    },
+    {
+      "name": "reload does not layer a full recording and per-phase cues",
+      "ok": true,
+      "detail": [
+        "magOut",
+        "magIn",
+        "bolt"
+      ]
+    },
+    {
+      "name": "continuous bird ambience is off by default",
+      "ok": true,
+      "detail": {
+        "birdsLoop": false
+      }
+    },
+    {
+      "name": "dry-fire plays at most once per trigger pull",
+      "ok": true,
+      "detail": {
+        "calls": 2,
+        "plays": 1
+      }
+    },
+    {
+      "name": "RPG explosions destroyed authoritative glass panes",
+      "ok": true,
+      "detail": {
+        "totalDestroyed": 8,
+        "alpha": [
+          2,
+          2,
+          2,
+          0
+        ],
+        "bravo": 2
+      }
+    },
+    {
+      "name": "clients observed the glass removals",
+      "ok": true,
+      "detail": {
+        "observedGlass": 8,
+        "alpha": [
+          2,
+          4,
+          6,
+          6
+        ],
+        "bravo": 8
+      }
+    },
+    {
+      "name": "RPG launch played explosion/rocket audio",
+      "ok": true,
+      "detail": [
+        [
+          "explosion",
+          "destruction",
+          "dryFire",
+          "dryFire"
+        ],
+        [
+          "shot",
+          "explosion",
+          "destruction",
+          "dryFire"
+        ],
+        [
+          "explosion",
+          "destruction",
+          "dryFire",
+          "dryFire"
+        ],
+        [
+          "explosion",
+          "dryFire"
+        ],
+        [
+          "explosion",
+          "destruction",
+          "dryFire",
+          "dryFire"
+        ]
+      ]
+    },
+    {
+      "name": "no browser errors",
+      "ok": true,
+      "detail": []
+    }
+  ],
+  "errors": []
+}

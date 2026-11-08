@@ -1,0 +1,652 @@
+{
+  "env": {
+    "base": "http://127.0.0.1:3312/",
+    "room": "STAB9570",
+    "viewport": "640x360",
+    "quality": "low",
+    "renderer": "SwiftShader"
+  },
+  "setup": {
+    "a": {
+      "targetId": 818,
+      "clear": false,
+      "probes": [
+        {
+          "id": 818,
+          "d": 9.4,
+          "blast": 0.7,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 854,
+          "d": 10,
+          "blast": 0.8,
+          "tag": "wall",
+          "box": 855,
+          "exposed": false
+        },
+        {
+          "id": 823,
+          "d": 14.4,
+          "blast": 12.2,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 811,
+          "d": 14.4,
+          "blast": 12.6,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 859,
+          "d": 14.6,
+          "blast": 12.3,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 847,
+          "d": 14.9,
+          "blast": 13,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 613,
+          "d": 32.6,
+          "blast": 31.1,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 651,
+          "d": 32.8,
+          "blast": 31.3,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 785,
+          "d": 34.1,
+          "blast": 7.6,
+          "tag": "wall",
+          "box": 794,
+          "exposed": false
+        },
+        {
+          "id": 776,
+          "d": 36.7,
+          "blast": 33,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        },
+        {
+          "id": 781,
+          "d": 40.5,
+          "blast": 14,
+          "tag": "wall",
+          "box": 794,
+          "exposed": false
+        },
+        {
+          "id": 620,
+          "d": 40.9,
+          "blast": 39.5,
+          "tag": "wall",
+          "box": 819,
+          "exposed": false
+        }
+      ],
+      "glassIds": [
+        818,
+        823,
+        854,
+        859
+      ],
+      "panes": 4,
+      "target": [
+        -334.8,
+        6.1,
+        92.8
+      ],
+      "distance": 9.4,
+      "player": [
+        -325.5,
+        4.5,
+        94.3
+      ]
+    },
+    "b": {
+      "targetId": 1584,
+      "clear": true,
+      "probes": [
+        {
+          "id": 1584,
+          "d": 18.2,
+          "blast": 0,
+          "tag": "glass",
+          "box": 1584,
+          "exposed": true
+        },
+        {
+          "id": 1598,
+          "d": 21,
+          "blast": 3,
+          "tag": "glass",
+          "box": 1584,
+          "exposed": true
+        },
+        {
+          "id": 1591,
+          "d": 25.8,
+          "blast": 13.2,
+          "tag": "wall",
+          "box": 1587,
+          "exposed": false
+        },
+        {
+          "id": 1508,
+          "d": 41.3,
+          "blast": 0,
+          "tag": "glass",
+          "box": 1508,
+          "exposed": true
+        },
+        {
+          "id": 1761,
+          "d": 43.3,
+          "blast": 32.3,
+          "tag": "wall",
+          "box": 1602,
+          "exposed": false
+        },
+        {
+          "id": 1773,
+          "d": 46,
+          "blast": 35,
+          "tag": "wall",
+          "box": 1587,
+          "exposed": false
+        },
+        {
+          "id": 1628,
+          "d": 46.1,
+          "blast": 0,
+          "tag": "glass",
+          "box": 1628,
+          "exposed": true
+        },
+        {
+          "id": 1567,
+          "d": 47.3,
+          "blast": 6.9,
+          "tag": "wall",
+          "box": 1556,
+          "exposed": false
+        },
+        {
+          "id": 1616,
+          "d": 47.4,
+          "blast": 0.7,
+          "tag": "wall",
+          "box": 1613,
+          "exposed": false
+        },
+        {
+          "id": 1560,
+          "d": 48.1,
+          "blast": 9.5,
+          "tag": "wall",
+          "box": 1571,
+          "exposed": false
+        },
+        {
+          "id": 1513,
+          "d": 49.6,
+          "blast": 8.7,
+          "tag": "wall",
+          "box": 1509,
+          "exposed": false
+        },
+        {
+          "id": 1768,
+          "d": 52.3,
+          "blast": 39.4,
+          "tag": "wall",
+          "box": 1602,
+          "exposed": false
+        }
+      ],
+      "glassIds": [
+        1584,
+        1598
+      ],
+      "panes": 2,
+      "target": [
+        267.3,
+        5.2,
+        200.7
+      ],
+      "distance": 18.2,
+      "player": [
+        282.3,
+        3.3,
+        190.3
+      ]
+    }
+  },
+  "audio": {
+    "routing": {
+      "near": true,
+      "far": false,
+      "beyond": false,
+      "plays": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    "eventRouting": [],
+    "dryCalls": 2,
+    "vehicleDestroyPlays": 2,
+    "reloadPlays": [
+      "reloadRifle"
+    ],
+    "birds": true
+  },
+  "launches": [
+    {
+      "attempt": 1,
+      "frames": {
+        "count": 2,
+        "p50": 1316.7,
+        "p95": 1316.7,
+        "p99": 1316.7,
+        "max": 1316.7,
+        "workCount": 2,
+        "workP50": 6088.4,
+        "workP95": 6088.4,
+        "workP99": 6088.4,
+        "workMax": 6088.4
+      },
+      "destroyedDelta": 2,
+      "glass": 2,
+      "sounds": [
+        "shot",
+        "explosion",
+        "destruction",
+        "destruction"
+      ]
+    },
+    {
+      "attempt": 2,
+      "frames": {
+        "count": 1,
+        "p50": 533.3,
+        "p95": 533.3,
+        "p99": 533.3,
+        "max": 533.3,
+        "workCount": 1,
+        "workP50": 3.1,
+        "workP95": 3.1,
+        "workP99": 3.1,
+        "workMax": 3.1
+      },
+      "destroyedDelta": 2,
+      "glass": 4,
+      "sounds": [
+        "shot",
+        "explosion",
+        "destruction"
+      ]
+    },
+    {
+      "attempt": 3,
+      "frames": {
+        "count": 8,
+        "p50": 366.6,
+        "p95": 2049.9,
+        "p99": 2049.9,
+        "max": 2049.9,
+        "workCount": 8,
+        "workP50": 6.1,
+        "workP95": 2044.3,
+        "workP99": 2044.3,
+        "workMax": 2044.3
+      },
+      "destroyedDelta": 2,
+      "glass": 6,
+      "sounds": [
+        "explosion",
+        "destruction",
+        "dryFire"
+      ]
+    },
+    {
+      "attempt": 4,
+      "frames": {
+        "count": 5,
+        "p50": 700,
+        "p95": 6666.4,
+        "p99": 6666.4,
+        "max": 6666.4,
+        "workCount": 5,
+        "workP50": 7.5,
+        "workP95": 6659.3,
+        "workP99": 6659.3,
+        "workMax": 6659.3
+      },
+      "destroyedDelta": 0,
+      "glass": 6,
+      "sounds": [
+        "distantExplosion",
+        "dryFire",
+        "dryFire"
+      ]
+    }
+  ],
+  "secondClientLaunch": {
+    "destroyedDelta": 2,
+    "glass": 8,
+    "sounds": [
+      "explosion",
+      "destruction",
+      "destruction",
+      "dryFire",
+      "dryFire"
+    ]
+  },
+  "frameWindows": {
+    "before": {
+      "count": 8,
+      "p50": 1883.2,
+      "p95": 1883.2,
+      "p99": 1883.2,
+      "max": 1883.2,
+      "workCount": 8,
+      "workP50": 6.8,
+      "workP95": 8.8,
+      "workP99": 8.8,
+      "workMax": 8.8
+    },
+    "after": {
+      "count": 3,
+      "p50": 516.6,
+      "p95": 9749.6,
+      "p99": 9749.6,
+      "max": 9749.6,
+      "workCount": 3,
+      "workP50": 7,
+      "workP95": 7.5,
+      "workP99": 7.5,
+      "workMax": 7.5
+    },
+    "secondClient": {
+      "count": 5,
+      "p50": 1950,
+      "p95": 5933.1,
+      "p99": 5933.1,
+      "max": 5933.1,
+      "workCount": 5,
+      "workP50": 4.6,
+      "workP95": 5925,
+      "workP99": 5925,
+      "workMax": 5925
+    }
+  },
+  "server": {
+    "before": {
+      "code": "STAB9570",
+      "mode": "tdm",
+      "state": 2,
+      "tick": 2260,
+      "time": 37.7,
+      "players": 2,
+      "humans": 2,
+      "bots": 0,
+      "alive": 2,
+      "score": [
+        0,
+        0
+      ],
+      "zone": {
+        "r": 450,
+        "phase": 0,
+        "shrinking": false
+      },
+      "tickMs": 0.461,
+      "tickP50Ms": 0.309,
+      "tickP95Ms": 1.127,
+      "tickP99Ms": 2.323,
+      "tickMaxMs": 4.372,
+      "tickOverBudget": 0,
+      "tickSamples": 600,
+      "tickWindowCapacity": 600,
+      "tickCount": 2260,
+      "tickTotalMs": 621.897,
+      "tickLifetimeMaxMs": 4.637,
+      "snapshotKiBps": 2.02,
+      "droppedInputs": 0,
+      "skippedSnapshots": 0,
+      "staleInputs": 2621,
+      "simResets": 0,
+      "avgPing": 196,
+      "uptime": 38
+    },
+    "after": {
+      "code": "STAB9570",
+      "mode": "tdm",
+      "state": 2,
+      "tick": 5867,
+      "time": 97.8,
+      "players": 2,
+      "humans": 2,
+      "bots": 0,
+      "alive": 2,
+      "score": [
+        0,
+        0
+      ],
+      "zone": {
+        "r": 450,
+        "phase": 0,
+        "shrinking": false
+      },
+      "tickMs": 0.422,
+      "tickP50Ms": 0.292,
+      "tickP95Ms": 0.67,
+      "tickP99Ms": 1.822,
+      "tickMaxMs": 2.599,
+      "tickOverBudget": 0,
+      "tickSamples": 600,
+      "tickWindowCapacity": 600,
+      "tickCount": 5867,
+      "tickTotalMs": 1870.81,
+      "tickLifetimeMaxMs": 4.637,
+      "snapshotKiBps": 1.69,
+      "droppedInputs": 0,
+      "skippedSnapshots": 0,
+      "staleInputs": 8804,
+      "simResets": 0,
+      "avgPing": 236,
+      "uptime": 98
+    }
+  },
+  "checks": [
+    {
+      "name": "both clients found a destructible glass cluster",
+      "ok": true,
+      "detail": {
+        "a": 4,
+        "b": 2
+      }
+    },
+    {
+      "name": "glass cluster is close enough for an RPG blast",
+      "ok": true,
+      "detail": {
+        "a": 9.4,
+        "b": 18.2
+      }
+    },
+    {
+      "name": "near shot uses close recordings",
+      "ok": true,
+      "detail": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mid shot uses distant recordings",
+      "ok": false,
+      "detail": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shot beyond 420 m still routes to the 640 m distant range",
+      "ok": false,
+      "detail": [
+        {
+          "sound": "shot",
+          "position": [
+            -306,
+            6,
+            94
+          ]
+        }
+      ]
+    },
+    {
+      "name": "authoritative shot event far away routes to distant sound",
+      "ok": false,
+      "detail": []
+    },
+    {
+      "name": "vehicle destruction plays once across event + observation",
+      "ok": false,
+      "detail": {
+        "plays": 2
+      }
+    },
+    {
+      "name": "reload does not layer a full recording and per-phase cues",
+      "ok": true,
+      "detail": [
+        "reloadRifle"
+      ]
+    },
+    {
+      "name": "continuous bird ambience is off by default",
+      "ok": false,
+      "detail": {
+        "birdsLoop": true
+      }
+    },
+    {
+      "name": "dry-fire plays at most once per trigger pull",
+      "ok": false,
+      "detail": {
+        "dryFireCalls": 2
+      }
+    },
+    {
+      "name": "RPG explosions destroyed authoritative glass panes",
+      "ok": true,
+      "detail": {
+        "totalDestroyed": 8,
+        "alpha": [
+          2,
+          2,
+          2,
+          0
+        ],
+        "bravo": 2
+      }
+    },
+    {
+      "name": "clients observed the glass removals",
+      "ok": true,
+      "detail": {
+        "observedGlass": 8,
+        "alpha": [
+          2,
+          4,
+          6,
+          6
+        ],
+        "bravo": 8
+      }
+    },
+    {
+      "name": "RPG launch played explosion/rocket audio",
+      "ok": true,
+      "detail": [
+        [
+          "shot",
+          "explosion",
+          "destruction",
+          "destruction"
+        ],
+        [
+          "shot",
+          "explosion",
+          "destruction"
+        ],
+        [
+          "explosion",
+          "destruction",
+          "dryFire"
+        ],
+        [
+          "distantExplosion",
+          "dryFire",
+          "dryFire"
+        ],
+        [
+          "explosion",
+          "destruction",
+          "destruction",
+          "dryFire",
+          "dryFire"
+        ]
+      ]
+    },
+    {
+      "name": "no browser errors",
+      "ok": true,
+      "detail": []
+    }
+  ],
+  "errors": []
+}
